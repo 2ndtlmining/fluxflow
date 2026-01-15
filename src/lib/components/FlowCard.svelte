@@ -144,7 +144,7 @@
           <button
             class="bar-segment"
             class:clickable={segment.count > 0}
-            style="height: {segment.heightInBar}%; background: {segment.color};"
+            style="height: {segment.heightInBar}%; background: linear-gradient(to right, {segment.color}, {segment.color}dd);"
             on:click={() => handleSegmentClick(segment)}
             on:mouseenter={() => hoveredSegment = segment.key}
             on:mouseleave={() => hoveredSegment = null}
@@ -210,16 +210,42 @@
     margin-left: 8px;
   }
   
+  /* 3D Bar Container - IDEA 3 ENHANCEMENTS */
   .bar-container {
     width: 120px;
     height: 400px;
     position: relative;
     display: flex;
     align-items: flex-end;
-    background: rgba(255, 255, 255, 0.03);
-    border: 2px solid var(--border-color);
-    border-radius: 8px;
-    padding: 4px;
+    background: linear-gradient(
+      to bottom,
+      rgba(6, 182, 212, 0.05) 0%,
+      rgba(26, 26, 46, 0.8) 100%
+    );
+    border: 2px solid rgba(6, 182, 212, 0.3);
+    border-radius: 12px;
+    padding: 8px;
+    box-shadow: 
+      inset 0 2px 10px rgba(0, 0, 0, 0.5),
+      0 10px 30px rgba(0, 0, 0, 0.3);
+    transform: perspective(1000px) rotateX(2deg);
+    transform-style: preserve-3d;
+  }
+  
+  /* Reflection effect - IDEA 3 ENHANCEMENT */
+  .bar-container::after {
+    content: '';
+    position: absolute;
+    bottom: -8px;
+    left: 4px;
+    right: 4px;
+    height: 50%;
+    background: inherit;
+    border-radius: 12px;
+    opacity: 0.2;
+    filter: blur(8px);
+    transform: scaleY(-0.5) translateY(100%);
+    pointer-events: none;
   }
   
   .bar-wrapper {
@@ -229,16 +255,22 @@
     border-radius: 6px;
     overflow: hidden;
     transition: height 0.5s ease;
+    transform-style: preserve-3d;
   }
   
+  /* 3D Bar Segments - IDEA 3 ENHANCEMENTS */
   .bar-segment {
     width: 100%;
     border: none;
     padding: 0;
-    transition: all 0.2s ease;
+    transition: all 0.3s ease;
     cursor: default;
     position: relative;
-    border-top: 1px solid rgba(0, 0, 0, 0.2);
+    border-top: 1px solid rgba(0, 0, 0, 0.3);
+    box-shadow: 
+      0 2px 8px rgba(0, 0, 0, 0.4),
+      inset 0 1px 0 rgba(255, 255, 255, 0.1);
+    transform: translateZ(0);
   }
   
   .bar-segment:last-child {
@@ -249,10 +281,15 @@
     cursor: pointer;
   }
   
+  /* 3D Hover Effect - IDEA 3 ENHANCEMENT */
   .bar-segment.clickable:hover {
-    filter: brightness(1.3);
-    transform: scaleX(1.05);
+    filter: brightness(1.4) saturate(1.2);
+    transform: translateZ(20px) scale(1.05);
     z-index: 10;
+    box-shadow: 
+      0 5px 20px currentColor,
+      0 0 40px currentColor,
+      inset 0 1px 0 rgba(255, 255, 255, 0.3);
   }
   
   .segment-tooltip {
