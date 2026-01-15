@@ -4,7 +4,10 @@ node_modules/
 .pnp.js
 
 # Database
-data/
+/data/
+src/lib/data/*.db
+src/lib/data/*.db-shm
+src/lib/data/*.db-wal
 *.db
 *.db-shm
 *.db-wal

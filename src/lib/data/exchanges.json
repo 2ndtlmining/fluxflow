@@ -1,0 +1,56 @@
+{
+  "exchanges": [
+    {
+      "name": "Coinex",
+      "addresses": [
+        "t1bLYKTWBMUSAhrU2ezDEzC2BXYbafz5L9e"
+      ],
+      "logo": "/static/logos/coinex.png"
+    },
+    {
+      "name": "GateIO",
+      "addresses": [
+        "t1YvimnGBmVA7xDiPnqwbKsvujmSJz4X5m2"
+      ],
+      "logo": "/static/logos/gate.png"
+    },
+    {
+      "name": "Kucoin",
+      "addresses": [
+        "t1g7QCktktwReoHgwWtAgNBVvzzboQVZy19",
+        "t1gorwQHhWsvfgSEE3YzBZFnyewfGaimUbF"
+      ],
+      "logo": "/static/logos/kucoin.png"
+    },
+    {
+      "name": "NonKYC",
+      "addresses": [
+        "t1LXVRNWEugRtoWdNgxnozCBGksGtCvvWsy",
+        "XYC"
+      ],
+      "logo": "/static/logos/nonkyc.png"
+    }
+  ],
+  "foundation": {
+    "name": "Flux Foundation",
+    "addresses": [
+      "t3c51GjrkUg7pUiS8bzNdTnW2hD25egWUih",
+      "t3ZQQsd8hJNw6UQKYLwfofdL3ntPmgkwofH",
+      "t3XjYMBvwxnXVv9jqg4CgokZ3f7kAoXPQL8",
+      "t1XWTigDqS5Dy9McwQc752ShtZV1ffTMJB3",
+      "t1eabPBaLCqNgttQMnAoohPaQM6u2vFwTNJ",
+      "t3PMbbA5YBMrjSD3dD16SSdXKuKovwmj6tS",
+      "t1abAp9oZenibGLFuZKyUjmL6FiATTaCYaj",
+      "t1cjcLaDHkNcuXh6uoyNL7u1jx7GxvzfYAN",
+      "t3ThbWogDoAjGuS6DEnmN1GWJBRbVjSUK4T",
+      "t3heoBJT9gn9mne7Q5aynajJo7tReyDv2NV",
+      "t1ZLpyVr6hs3vAH7qKujJRpu17G3VdxAkrY",
+      "t1SHUuYiE8UT7Hnu9Qr3QcGu3W4L55W98pU",
+      "t1Yum7okNzR5kW84dfgwqB23yy1BCcpHFPq",
+      "t1Zj9vUsAMoG4M9LSy5ahDzZUmokKGXqwcT",
+      "t3c4EfxLoXXSRZCRnPRF3RpjPi9mBzF5yoJ",
+      "t1PGMqZxGPzPQcpJKWVyLc4c9D7SvjVe4kq"
+    ],
+    "logo": "/logos/flux-foundation.svg"
+  }
+}
