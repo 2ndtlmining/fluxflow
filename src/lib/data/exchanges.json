@@ -18,7 +18,8 @@
       "name": "Kucoin",
       "addresses": [
         "t1g7QCktktwReoHgwWtAgNBVvzzboQVZy19",
-        "t1gorwQHhWsvfgSEE3YzBZFnyewfGaimUbF"
+        "t1gorwQHhWsvfgSEE3YzBZFnyewfGaimUbF",
+        "t1bVAMF4KUxcyVZa3X3sPB4Tx5jmdgS876X"
       ],
       "logo": "/static/logos/kucoin.png"
     },

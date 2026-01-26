@@ -1,22 +1,20 @@
 // Flux Flow Tracker Configuration
-// All constants and configuration in one place for easy maintenance
+// PHASE 1: Added Flux Indexer (192.168.10.65) as primary data source
 
 export const FLUX_CONFIG = {
   // ============================================================================
   // BLOCK CONFIGURATION
   // ============================================================================
-  BLOCK_TIME_SECONDS: 30,  // Flux block time
+  BLOCK_TIME_SECONDS: 30,
   
-  // Time periods defined in blocks (based on 30-second blocks)
   PERIODS: {
-    '24H': Math.floor((24 * 60 * 60) / 30),        // 2,880 blocks (~1 day)
-    '7D': Math.floor((7 * 24 * 60 * 60) / 30),     // 20,160 blocks (~7 days)
-    '30D': Math.floor((30 * 24 * 60 * 60) / 30),   // 86,400 blocks (~30 days)
-    '90D': Math.floor((90 * 24 * 60 * 60) / 30),   // 259,200 blocks (~90 days)
-    '1Y': Math.floor((365 * 24 * 60 * 60) / 30)    // 1,051,200 blocks (~1 year)
+    '24H': Math.floor((24 * 60 * 60) / 30),
+    '7D': Math.floor((7 * 24 * 60 * 60) / 30),
+    '30D': Math.floor((30 * 24 * 60 * 60) / 30),
+    '90D': Math.floor((90 * 24 * 60 * 60) / 30),
+    '1Y': Math.floor((365 * 24 * 60 * 60) / 30)
   },
 
-  // Display names for periods
   PERIOD_LABELS: {
     '24H': 'Today',
     '7D': 'This Week', 
@@ -26,28 +24,79 @@ export const FLUX_CONFIG = {
   },
 
   // ============================================================================
-  // BLOCK ANALYSIS CONFIGURATION - WEEK 1 CONSERVATIVE SETTINGS
+  // DATA SOURCES - FLUX INDEXER PRIMARY, BLOCKBOOK FALLBACK
   // ============================================================================
   
-  // Maximum blocks to keep in memory
-  MAX_BLOCKS_IN_MEMORY: 100000,  // ~34 days worth of blocks
+  DATA_SOURCES: {
+    FLUX_INDEXER: {
+      enabled: true,
+      baseUrl: 'http://192.168.10.65:42067',
+      apiVersion: 'v1',
+      timeout: 30000,
+      endpoints: {
+        health: '/health',
+        status: '/api/v1/status',
+        latestBlocks: '/api/v1/blocks/latest',
+        block: '/api/v1/blocks',
+        transaction: '/api/v1/transactions',
+        address: '/api/v1/addresses',
+        addressTxs: '/api/v1/addresses',
+        addressUtxos: '/api/v1/addresses',
+        dashboard: '/api/v1/stats/dashboard'
+      }
+    },
+    
+    BLOCKBOOK: {
+      enabled: true,
+      baseUrl: 'https://blockbook.runonflux.io',
+      apiVersion: 'v2',
+      timeout: 30000,
+      endpoints: {
+        root: '/api/v2',
+        block: '/api/v2/block',
+        transaction: '/api/v2/tx',
+        address: '/api/v2/address'
+      }
+    }
+  },
+
+  ACTIVE_DATA_SOURCE: 'FLUX_INDEXER',
+
+  // ============================================================================
+  // BLOCK SYNC CONFIGURATION - DUAL SETTINGS
+  // ============================================================================
   
-  // How often to fetch new blocks (milliseconds)
-  BLOCK_FETCH_INTERVAL: 30000,  // 30 seconds (match block time)
+  // Default/legacy settings (used as fallback)
+  MAX_BLOCKS_IN_MEMORY: 100000,
+  BLOCK_FETCH_INTERVAL: 30000,
+  INITIAL_SYNC_BATCH_SIZE: 30,
+  BATCH_DELAY: 1000,
+  MAX_CONCURRENT_REQUESTS: 2,
+  MIN_REQUEST_DELAY: 200,
   
-  // UPDATED: Batch size for initial sync - WEEK 1 CONSERVATIVE
-  INITIAL_SYNC_BATCH_SIZE: 30,  // Conservative: 30 blocks per batch (was 20)
+  // PHASE 1B: Source-specific sync settings
+  SYNC_SETTINGS: {
+    FLUX_INDEXER: {
+      // Aggressive settings for local indexer (no rate limits!)
+      BATCH_SIZE: 500,              // 100 blocks per batch (vs 30)
+      MAX_CONCURRENT: 10,           // 10 concurrent requests (vs 2)
+      MIN_REQUEST_DELAY: 10,        // 10ms delay (vs 200ms)
+      BATCH_DELAY: 100,             // 100ms between batches (vs 1000ms)
+      ENABLE_RATE_LIMITING: false,  // No rate limit backoff needed
+      TRANSACTION_FETCH_LIMIT: 50   // Fetch up to 50 txs per block
+    },
+    
+    BLOCKBOOK: {
+      // Conservative settings for public API (rate limited)
+      BATCH_SIZE: 30,               // 30 blocks per batch
+      MAX_CONCURRENT: 2,            // Only 2 concurrent
+      MIN_REQUEST_DELAY: 200,       // 200ms delay
+      BATCH_DELAY: 1000,            // 1 second between batches
+      ENABLE_RATE_LIMITING: true,   // Use exponential backoff
+      TRANSACTION_FETCH_LIMIT: 20   // Fetch up to 20 txs per block
+    }
+  },
   
-  // UPDATED: Delay between batches - WEEK 1 CONSERVATIVE
-  BATCH_DELAY: 1000,  // Conservative: 1 second between batches (was 2000)
-  
-  // UPDATED: Maximum concurrent API requests - WEEK 1 CONSERVATIVE
-  MAX_CONCURRENT_REQUESTS: 2,  // Conservative: Only 2 concurrent (was 5)
-  
-  // NEW: Minimum request delay - WEEK 1 CONSERVATIVE
-  MIN_REQUEST_DELAY: 200,  // 200ms minimum between requests
-  
-  // Minimum blocks required before showing data for each period
   MIN_BLOCKS_REQUIRED: {
     '24H': Math.floor((24 * 60 * 60) / 30),
     '7D': Math.floor((7 * 24 * 60 * 60) / 30),
@@ -57,105 +106,120 @@ export const FLUX_CONFIG = {
   },
 
   // ============================================================================
-  // API ENDPOINTS - MATCHING FLUXTRACKER
+  // LEGACY ENDPOINTS (for compatibility)
   // ============================================================================
   
-  // Flux Core APIs
   FLUX_BASE: 'https://api.runonflux.io',
   DAEMON: 'https://api.runonflux.io/daemon',
-  
-  // Blockbook endpoints for transaction data (will try in order if one fails)
-  BLOCKBOOK_ENDPOINTS: [
-    'https://blockbook.runonflux.io/api/v2'         // Primary
-
-  ],
-  
-  // Current active blockbook endpoint (will be rotated on rate limits)
+  BLOCKBOOK_ENDPOINTS: ['https://blockbook.runonflux.io/api/v2'],
   BLOCKBOOK_API: 'https://blockbook.runonflux.io/api/v2',
-  
-  // Flux Nodes API
   FLUX_NODES_API: 'https://explorer.runonflux.io/api/status?q=getFluxNodes',
   
-  // API Rate Limiting
   API_RETRY_ATTEMPTS: 3,
-  API_RETRY_DELAY: 2000,  // 2 seconds between retries
-  API_TIMEOUT: 30000,  // 30 second timeout
-  RATE_LIMIT_RETRY_DELAY: 5000,  // 5 seconds delay after rate limit before rotating endpoint
+  API_RETRY_DELAY: 2000,
+  API_TIMEOUT: 30000,
+  RATE_LIMIT_RETRY_DELAY: 5000,
 
   // ============================================================================
   // NODE OPERATOR CONFIGURATION
   // ============================================================================
   
-  // How often to refresh the node operator list (in blocks)
-  NODE_REFRESH_BLOCKS: 100,  // Refresh every 100 blocks (~50 minutes)
+  NODE_REFRESH_BLOCKS: 100,
   
-  // Node tier information
   NODE_TIERS: {
-    CUMULUS: {
-      collateral: 1000,
-      cores: 2,
-      ram: 8,
-      storage: 220
-    },
-    NIMBUS: {
-      collateral: 12500,
-      cores: 4,
-      ram: 32,
-      storage: 440
-    },
-    STRATUS: {
-      collateral: 40000,
-      cores: 8,
-      ram: 64,
-      storage: 880
-    }
+    CUMULUS: { collateral: 1000, cores: 2, ram: 8, storage: 220 },
+    NIMBUS: { collateral: 12500, cores: 4, ram: 32, storage: 440 },
+    STRATUS: { collateral: 40000, cores: 8, ram: 64, storage: 880 }
   },
 
   // ============================================================================
   // DATA CLASSIFICATION
   // ============================================================================
   
-  // Path to exchange configuration file
   EXCHANGES_CONFIG_PATH: './src/lib/data/exchanges.json',
+  MIN_TRANSACTION_VALUE: 1,
+
+  // ============================================================================
+  // WALLET ENHANCEMENT (PHASE 1 - New!)
+  // ============================================================================
   
-  // Minimum transaction value to consider (in FLUX)
-  MIN_TRANSACTION_VALUE: 1,  // Ignore dust transactions
-  
+  ENHANCEMENT: {
+    MAX_HOPS: 1,  // Only analyze 1 level deep
+    TIME_WINDOW_BLOCKS: 100,  // 50 minutes at 30s/block
+    MIN_CONFIDENCE: 0.8,
+    BATCH_SIZE: 100
+  },
+
   // ============================================================================
   // UI CONFIGURATION
   // ============================================================================
   
-  // Default selected period on load
   DEFAULT_PERIOD: '24H',
-  
-  // Chart configuration
-  CHART_MAX_POINTS: 100,  // Maximum data points to show on charts
-  
-  // Auto-refresh interval for frontend (milliseconds)
-  FRONTEND_REFRESH_INTERVAL: 300000,  // 5 minutes
-  
+  CHART_MAX_POINTS: 100,
+  FRONTEND_REFRESH_INTERVAL: 300000,
+
   // ============================================================================
-  // LOGGING & DEBUGGING - WEEK 1 PERFORMANCE MONITORING
+  // LOGGING
   // ============================================================================
   
   LOGGING: {
-    ENABLE_DEBUG: false,  // Enable debug logging
-    LOG_BLOCK_PROCESSING: true,  // Log each block processed
-    LOG_API_CALLS: false,  // Log API requests
-    LOG_CLASSIFICATION: false  // Log wallet classifications
+    ENABLE_DEBUG: false,
+    LOG_BLOCK_PROCESSING: true,
+    LOG_API_CALLS: false,
+    LOG_CLASSIFICATION: false,
+    LOG_DATA_SOURCE_SWITCHES: true  // NEW: Log when switching sources
   },
   
-  // NEW: Performance monitoring for Week 1
   PERFORMANCE: {
-    LOG_BATCH_TIMING: true,   // Log how long each batch takes
-    LOG_FETCH_TIMING: true,   // Log fetch performance
-    LOG_PROCESS_TIMING: true, // Log processing performance
-    TARGET_BLOCKS_PER_MINUTE: 60  // Week 1 target: 60 blocks/minute
+    LOG_BATCH_TIMING: true,
+    LOG_FETCH_TIMING: true,
+    LOG_PROCESS_TIMING: true,
+    TARGET_BLOCKS_PER_MINUTE: 60
   }
 };
 
 // ============================================================================
-// ENDPOINT ROTATION HELPER
+// DATA SOURCE HELPERS
+// ============================================================================
+
+export function getIndexerUrl(endpoint, param = '') {
+  const config = FLUX_CONFIG.DATA_SOURCES.FLUX_INDEXER;
+  const path = config.endpoints[endpoint];
+  
+  if (!path) throw new Error(`Unknown indexer endpoint: ${endpoint}`);
+  
+  return param ? `${config.baseUrl}${path}/${param}` : `${config.baseUrl}${path}`;
+}
+
+export function getBlockbookUrl(endpoint, param = '') {
+  const config = FLUX_CONFIG.DATA_SOURCES.BLOCKBOOK;
+  const path = config.endpoints[endpoint];
+  
+  if (!path) throw new Error(`Unknown blockbook endpoint: ${endpoint}`);
+  
+  return param ? `${path}/${param}` : path;
+}
+
+export function switchToFallbackDataSource() {
+  const current = FLUX_CONFIG.ACTIVE_DATA_SOURCE;
+  
+  if (current === 'FLUX_INDEXER') {
+    FLUX_CONFIG.ACTIVE_DATA_SOURCE = 'BLOCKBOOK';
+    console.log('⚠️  Switched to Blockbook fallback');
+    return 'BLOCKBOOK';
+  } else {
+    FLUX_CONFIG.ACTIVE_DATA_SOURCE = 'FLUX_INDEXER';
+    console.log('🔄 Switched back to Flux Indexer');
+    return 'FLUX_INDEXER';
+  }
+}
+
+export function getActiveDataSource() {
+  return FLUX_CONFIG.ACTIVE_DATA_SOURCE;
+}
+
+// ============================================================================
+// LEGACY HELPERS
 // ============================================================================
 
 let currentEndpointIndex = 0;
@@ -183,10 +247,9 @@ export function resetBlockbookEndpoint() {
 }
 
 // ============================================================================
-// HELPER FUNCTIONS
+// TIME HELPERS
 // ============================================================================
 
-// Helper functions for time calculations
 export function blocksToTime(blocks) {
   const seconds = blocks * FLUX_CONFIG.BLOCK_TIME_SECONDS;
   const days = Math.floor(seconds / (24 * 60 * 60));
@@ -202,44 +265,34 @@ export function timeToBlocks(hours) {
   return Math.floor((hours * 60 * 60) / FLUX_CONFIG.BLOCK_TIME_SECONDS);
 }
 
-// Get period in blocks
 export function getPeriodBlocks(period) {
   return FLUX_CONFIG.PERIODS[period] || FLUX_CONFIG.PERIODS['24H'];
 }
 
-// Check if we have enough blocks for a period
 export function hasEnoughBlocks(currentBlockCount, period) {
   const required = FLUX_CONFIG.MIN_BLOCKS_REQUIRED[period];
   return currentBlockCount >= required;
 }
 
 // ============================================================================
-// API URL CONFIGURATION (for frontend)
+// FRONTEND API URL
 // ============================================================================
 
-/**
- * Get the API URL based on environment
- * IMPORTANT: Only call this in the browser (client-side), not during SSR!
- */
 export function getApiUrl() {
-  // Check if we're in the browser
   if (typeof window === 'undefined') {
     console.warn('⚠️ getApiUrl() called during SSR!');
     return '';
   }
 
-  // Check for explicit environment variable override
   if (import.meta.env.VITE_API_URL) {
     return import.meta.env.VITE_API_URL;
   }
 
   const hostname = window.location.hostname;
   
-  // Development: Call API directly on port 3000
   if (hostname === 'localhost' || hostname === '127.0.0.1') {
     return 'http://localhost:3000';
   }
   
-  // Production: Use same origin (proxy will handle it)
   return window.location.origin;
 }

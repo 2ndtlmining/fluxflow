@@ -1,16 +1,15 @@
 <script>
   import { onMount } from 'svelte';
   import { FLUX_CONFIG } from '$lib/config.js';
-  import { getApiUrl } from '$lib/config.js';  // ← ADD THIS LINE
+  import { getApiUrl } from '$lib/config.js';
   import Header from '$lib/components/Header.svelte';
   import FlowStats from '$lib/components/FlowStats.svelte';
   import PeriodSelector from '$lib/components/PeriodSelector.svelte';
   import FlowComparison from '$lib/components/FlowComparison.svelte';
   import TransactionTable from '$lib/components/TransactionTable.svelte';
+  import WalletEnhancement from '$lib/components/WalletEnhancement.svelte';
   
-  // IMPORTANT: Don't call getApiUrl() here - it runs during SSR!
-  // Initialize empty and set in onMount() when we're in the browser
-  let API_URL = '';  // ← ADD THIS LINE
+  let API_URL = '';
   
   let selectedPeriod = FLUX_CONFIG.DEFAULT_PERIOD;
   let flowData = null;
@@ -31,7 +30,6 @@
       loading = true;
       error = null;
       
-      // CHANGED: Use API_URL prefix
       const response = await fetch(`${API_URL}/api/flow/${selectedPeriod}`);
       const data = await response.json();
       
@@ -72,9 +70,8 @@
   
   // Initial load and refresh
   onMount(() => {
-    // Set API_URL in browser (client-side only)
-    API_URL = getApiUrl();  // ← ADD THIS LINE
-    console.log('✅ Using API URL:', API_URL);  // ← ADD THIS LINE
+    API_URL = getApiUrl();
+    console.log('✅ Using API URL:', API_URL);
     
     fetchFlowData();
     
@@ -89,6 +86,9 @@
 
 <div class="container">
   <FlowStats />
+  
+  <!-- PHASE 2: Wallet Enhancement Panel -->
+  <WalletEnhancement />
   
   <PeriodSelector 
     selected={selectedPeriod} 

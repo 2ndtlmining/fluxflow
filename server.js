@@ -5,6 +5,7 @@ import { FLUX_CONFIG } from './src/lib/config.js';
 import { startBlockSyncScheduler, getBlockSyncSchedulerStatus } from './src/lib/services/Blocksyncscheduler.js';
 import ClassificationService from './src/lib/services/classificationService.js';
 import FlowAnalysisService from './src/lib/services/flowAnalysisService.js';
+import WalletEnhancementService from './src/lib/services/walletEnhancementService.js'; // PHASE 2
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -30,6 +31,7 @@ app.use(express.json());
 let blockSyncService = null;
 let databaseService = null;
 let flowAnalysisService = null;
+let walletEnhancementService = null; // PHASE 2
 const classificationService = new ClassificationService();
 
 // ============================================================================
@@ -66,6 +68,11 @@ async function initialize() {
     console.log('   ✓ Flow analysis service created');
     console.log('   ✓ Has database reference:', !!flowAnalysisService.db);
     console.log('   ✓ Has database connection:', !!flowAnalysisService.db?.db);
+    
+    // PHASE 2: Create wallet enhancement service
+    console.log('\n4. Creating wallet enhancement service (Phase 2)...');
+    walletEnhancementService = new WalletEnhancementService(databaseService, classificationService);
+    console.log('   ✓ Wallet enhancement service created');
     
     // Show database stats
     const dbStats = databaseService.getStats();
@@ -289,6 +296,93 @@ app.get('/api/database/stats', (req, res) => {
     });
   } catch (error) {
     console.error('Error in /api/database/stats:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ============================================================================
+// PHASE 2: WALLET ENHANCEMENT ENDPOINTS
+// ============================================================================
+
+// Enhance unknown wallets - trigger 1-hop analysis
+app.post('/api/enhance-wallets', async (req, res) => {
+  try {
+    if (!walletEnhancementService) {
+      return res.status(503).json({ 
+        error: 'Service not ready',
+        message: 'Wallet enhancement service is still initializing'
+      });
+    }
+    
+    if (walletEnhancementService.isEnhancementRunning()) {
+      return res.status(409).json({
+        success: false,
+        message: 'Enhancement already in progress'
+      });
+    }
+
+    console.log('\n🔍 API: Starting wallet enhancement...');
+    
+    // Run enhancement (this will take a while)
+    const result = await walletEnhancementService.enhanceUnknownWallets();
+
+    console.log('✅ API: Enhancement complete\n');
+
+    res.json({
+      success: true,
+      message: 'Wallet enhancement completed',
+      stats: result.stats
+    });
+
+  } catch (error) {
+    console.error('❌ Enhancement API error:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+});
+
+// Get enhancement status
+app.get('/api/enhance-wallets/status', (req, res) => {
+  try {
+    if (!walletEnhancementService) {
+      return res.json({
+        isRunning: false,
+        stats: { totalAnalyzed: 0, enhancedToBuying: 0, enhancedToSelling: 0, remainedUnknown: 0, errors: 0 }
+      });
+    }
+    
+    res.json({
+      isRunning: walletEnhancementService.isEnhancementRunning(),
+      stats: walletEnhancementService.getStats()
+    });
+  } catch (error) {
+    console.error('Enhancement status error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get unknown wallet statistics
+app.get('/api/unknowns/stats', (req, res) => {
+  try {
+    if (!databaseService) {
+      return res.status(503).json({ error: 'Database not ready' });
+    }
+    
+    const unknowns = databaseService.getUnknownWallets();
+    const stats = databaseService.getStats();
+    
+    res.json({
+      unknownBuys: unknowns.buys.length,
+      unknownSells: unknowns.sells.length,
+      totalUnknowns: unknowns.total,
+      enhancementStats: stats.enhancementStats || [],
+      totalFlowEvents: stats.flowEvents
+    });
+    
+  } catch (error) {
+    console.error('Unknown stats error:', error);
     res.status(500).json({ error: error.message });
   }
 });

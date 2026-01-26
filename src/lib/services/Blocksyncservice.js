@@ -1,9 +1,8 @@
-// Block Sync Service - WEEK 1 CONSERVATIVE APPROACH
-// Optimized with concurrent fetching, transaction filtering, and batch inserts
-// Conservative settings: 2 concurrent, 30 blocks/batch, transaction pre-filtering
+// Block Sync Service - PHASE 1B
+// Updated to use Flux Indexer (192.168.10.65) as primary, Blockbook as fallback
 
 import fetch from 'node-fetch';
-import { FLUX_CONFIG } from '../config.js';
+import { FLUX_CONFIG, getIndexerUrl, getBlockbookUrl, switchToFallbackDataSource, getActiveDataSource } from '../config.js';
 
 class BlockSyncService {
   constructor(databaseService) {
@@ -13,11 +12,11 @@ class BlockSyncService {
     this.targetBlock = 0;
     this.isInitialSync = true;
     
-    // Rate limiting - CONSERVATIVE WEEK 1 SETTINGS
-    this.consecutiveErrors = 0;
-    this.lastRequestTime = 0;
-    this.minRequestDelay = FLUX_CONFIG.MIN_REQUEST_DELAY || 200;
-    this.maxConcurrent = FLUX_CONFIG.MAX_CONCURRENT_REQUESTS || 2;
+    // PHASE 1B: Track which data source we're using
+    this.activeSource = getActiveDataSource();
+    
+    // PHASE 1B: Load source-specific settings
+    this.loadSyncSettings();
     
     // Performance tracking
     this.stats = {
@@ -29,9 +28,255 @@ class BlockSyncService {
     };
     
     console.log('📌 BlockSyncService initialized with settings:');
+    console.log(`   - Data source: ${this.activeSource}`);
+    console.log(`   - Batch size: ${this.batchSize}`);
     console.log(`   - Concurrent requests: ${this.maxConcurrent}`);
     console.log(`   - Min request delay: ${this.minRequestDelay}ms`);
-    console.log(`   - Batch size: ${FLUX_CONFIG.INITIAL_SYNC_BATCH_SIZE}`);
+    console.log(`   - Batch delay: ${this.batchDelay}ms`);
+    console.log(`   - Rate limiting: ${this.enableRateLimiting ? 'enabled' : 'disabled'}`);
+  }
+
+  /**
+   * PHASE 1B: Load sync settings based on active data source
+   */
+  loadSyncSettings() {
+    const settings = FLUX_CONFIG.SYNC_SETTINGS[this.activeSource];
+    
+    if (settings) {
+      this.batchSize = settings.BATCH_SIZE;
+      this.maxConcurrent = settings.MAX_CONCURRENT;
+      this.minRequestDelay = settings.MIN_REQUEST_DELAY;
+      this.batchDelay = settings.BATCH_DELAY;
+      this.enableRateLimiting = settings.ENABLE_RATE_LIMITING;
+      this.transactionFetchLimit = settings.TRANSACTION_FETCH_LIMIT;
+    } else {
+      // Fallback to legacy settings
+      this.batchSize = FLUX_CONFIG.INITIAL_SYNC_BATCH_SIZE || 30;
+      this.maxConcurrent = FLUX_CONFIG.MAX_CONCURRENT_REQUESTS || 2;
+      this.minRequestDelay = FLUX_CONFIG.MIN_REQUEST_DELAY || 200;
+      this.batchDelay = FLUX_CONFIG.BATCH_DELAY || 1000;
+      this.enableRateLimiting = true;
+      this.transactionFetchLimit = 20;
+    }
+    
+    // Rate limiting state
+    this.consecutiveErrors = 0;
+    this.lastRequestTime = 0;
+  }
+
+  /**
+   * PHASE 1B: Reload settings when data source changes
+   */
+  reloadSettings() {
+    this.activeSource = getActiveDataSource();
+    this.loadSyncSettings();
+    
+    console.log(`🔄 Reloaded settings for ${this.activeSource}:`);
+    console.log(`   - Batch size: ${this.batchSize}`);
+    console.log(`   - Concurrent: ${this.maxConcurrent}`);
+    console.log(`   - Delay: ${this.minRequestDelay}ms`);
+  }
+
+  /**
+   * PHASE 1B: Get current blockchain tip from active data source
+   */
+  async getCurrentHeight() {
+    try {
+      if (this.activeSource === 'FLUX_INDEXER') {
+        // Flux Indexer: Try status endpoint first, fallback to latest blocks
+        let url = getIndexerUrl('status');
+        let response = await fetch(url, { timeout: 10000 });
+        
+        if (!response.ok) {
+          // If status fails, try getting latest blocks
+          console.log('   Status endpoint failed, trying latest blocks...');
+          url = getIndexerUrl('latestBlocks');
+          response = await fetch(url, { timeout: 10000 });
+        }
+        
+        if (!response.ok) {
+          throw new Error(`Indexer returned ${response.status}`);
+        }
+        
+        const data = await response.json();
+        
+        // Flux Indexer status response format (nested structure)
+        if (data.indexer && data.indexer.currentHeight) {
+          return data.indexer.currentHeight;
+        }
+        if (data.indexer && data.indexer.chainHeight) {
+          return data.indexer.chainHeight;
+        }
+        if (data.daemon && data.daemon.blocks) {
+          return data.daemon.blocks;
+        }
+        
+        // Fallback: Try direct properties
+        if (data.height) return data.height;
+        if (data.chainHeight) return data.chainHeight;
+        if (data.blockHeight) return data.blockHeight;
+        if (data.bestHeight) return data.bestHeight;
+        if (data.currentHeight) return data.currentHeight;
+        
+        // If data is an array of blocks (from latest blocks endpoint)
+        if (Array.isArray(data) && data.length > 0) {
+          return data[0].height;
+        }
+        
+        // If data has a blocks array (latest blocks endpoint format)
+        if (data.blocks && Array.isArray(data.blocks) && data.blocks.length > 0) {
+          return data.blocks[0].height;
+        }
+        
+        console.error('Indexer response:', JSON.stringify(data).substring(0, 200));
+        throw new Error('Could not determine height from Indexer response');
+        
+      } else {
+        // Blockbook: Use root endpoint
+        const url = `${FLUX_CONFIG.BLOCKBOOK_API}/`;
+        const response = await fetch(url, { timeout: 10000 });
+        
+        if (!response.ok) {
+          throw new Error(`Blockbook returned ${response.status}`);
+        }
+        
+        const data = await response.json();
+        return data.blockbook.bestHeight;
+      }
+    } catch (error) {
+      console.error(`⚠️  ${this.activeSource} failed to get height: ${error.message}`);
+      
+      // Only try fallback once
+      if (this.activeSource === 'FLUX_INDEXER') {
+        this.activeSource = switchToFallbackDataSource();
+        this.reloadSettings(); // PHASE 1B: Reload settings for new source
+        return this.getCurrentHeight(); // Retry with fallback
+      } else {
+        throw error; // Both sources failed
+      }
+    }
+  }
+
+  /**
+   * PHASE 1B: Fetch a block from active data source with fallback
+   */
+  async fetchBlock(height, retries = 3) {
+    for (let attempt = 0; attempt < retries; attempt++) {
+      try {
+        // PHASE 1B: Smart delay - only if rate limiting is enabled
+        if (this.enableRateLimiting) {
+          const delay = this.minRequestDelay * Math.pow(2, this.consecutiveErrors);
+          const timeSinceLastRequest = Date.now() - this.lastRequestTime;
+          
+          if (timeSinceLastRequest < delay) {
+            await new Promise(resolve => setTimeout(resolve, delay - timeSinceLastRequest));
+          }
+        } else {
+          // Flux Indexer: minimal delay only
+          const timeSinceLastRequest = Date.now() - this.lastRequestTime;
+          if (timeSinceLastRequest < this.minRequestDelay) {
+            await new Promise(resolve => setTimeout(resolve, this.minRequestDelay - timeSinceLastRequest));
+          }
+        }
+        
+        this.lastRequestTime = Date.now();
+        
+        // PHASE 1B: Use appropriate endpoint based on active source
+        let url, response, data;
+        
+        if (this.activeSource === 'FLUX_INDEXER') {
+          url = getIndexerUrl('block', height.toString());
+          response = await fetch(url, { 
+            timeout: FLUX_CONFIG.API_TIMEOUT,
+            signal: AbortSignal.timeout(FLUX_CONFIG.API_TIMEOUT)
+          });
+          
+          if (!response.ok) {
+            if (response.status === 429) {
+              console.log(`⚠️  Flux Indexer rate limited (unusual!), backing off...`);
+              this.consecutiveErrors++;
+              await new Promise(resolve => setTimeout(resolve, 5000 * (attempt + 1)));
+              continue;
+            }
+            throw new Error(`Indexer returned ${response.status}`);
+          }
+          
+          data = await response.json();
+          
+          // PHASE 1B: Normalize Flux Indexer response
+          // Indexer uses 'tx' (array of txids) + 'txDetails' (full transaction data)
+          // We need to convert this to Blockbook format with txs array containing vin/vout
+          
+          if (!data.txs) {
+            if (data.txDetails && Array.isArray(data.txDetails)) {
+              // Indexer provides full tx details, but we need to fetch vin/vout separately
+              // For now, convert txDetails to basic format
+              data.txs = data.tx || [];
+              
+              // Note: Indexer doesn't include vin/vout in block response
+              // We'll need to filter these during processing
+            } else if (data.tx && Array.isArray(data.tx)) {
+              // Just txid array, convert to basic format
+              data.txs = data.tx.map(txid => ({
+                txid: typeof txid === 'string' ? txid : txid,
+                vin: [],
+                vout: []
+              }));
+            } else {
+              data.txs = [];
+            }
+          }
+          
+        } else {
+          // Blockbook
+          url = `${FLUX_CONFIG.BLOCKBOOK_API}/block/${height}`;
+          response = await fetch(url, { 
+            timeout: FLUX_CONFIG.API_TIMEOUT,
+            signal: AbortSignal.timeout(FLUX_CONFIG.API_TIMEOUT)
+          });
+          
+          if (!response.ok) {
+            if (response.status === 429) {
+              this.consecutiveErrors++;
+              console.log(`⚠️  Blockbook rate limited on block ${height}, backing off...`);
+              await new Promise(resolve => setTimeout(resolve, 5000 * (attempt + 1)));
+              continue;
+            }
+            throw new Error(`Blockbook returned ${response.status}`);
+          }
+          
+          data = await response.json();
+        }
+        
+        // Success - reset error counter
+        if (this.consecutiveErrors > 0) {
+          this.consecutiveErrors--;
+        }
+        
+        return data;
+        
+      } catch (error) {
+        this.consecutiveErrors++;
+        
+        console.error(`❌ ${this.activeSource} failed on block ${height} (attempt ${attempt + 1}/${retries}): ${error.message}`);
+        
+        if (attempt === retries - 1) {
+          // Last attempt failed, try switching data source
+          console.log(`🔄 Switching data source after ${retries} failed attempts...`);
+          this.activeSource = switchToFallbackDataSource();
+          this.reloadSettings(); // PHASE 1B: Reload settings
+          
+          // One more try with fallback
+          return this.fetchBlock(height, 1);
+        }
+        
+        // Exponential backoff
+        const backoffDelay = 1000 * Math.pow(2, attempt);
+        await new Promise(resolve => setTimeout(resolve, backoffDelay));
+      }
+    }
+    
+    return null;
   }
 
   /**
@@ -41,11 +286,11 @@ class BlockSyncService {
     console.log('🔄 Initializing BlockSyncService...');
     
     try {
-      const tipResponse = await fetch(`${FLUX_CONFIG.BLOCKBOOK_API}/`);
-      const tipData = await tipResponse.json();
-      this.currentBlock = tipData.blockbook.bestHeight;
+      // PHASE 1B: Use new getCurrentHeight method
+      this.currentBlock = await this.getCurrentHeight();
       
       console.log(`📊 Current blockchain height: ${this.currentBlock.toLocaleString()}`);
+      console.log(`📊 Using data source: ${this.activeSource}`);
       
       const latestSynced = this.db.getLatestBlockHeight();
       console.log(`📊 Latest synced block: ${latestSynced.toLocaleString()}`);
@@ -67,9 +312,6 @@ class BlockSyncService {
     }
   }
 
-  /**
-   * Get service status
-   */
   getStatus() {
     const latestSynced = this.db.getLatestBlockHeight();
     const stats = this.db.getStats();
@@ -85,93 +327,105 @@ class BlockSyncService {
       isInitialSync: this.isInitialSync,
       syncProgress: syncProgress,
       isSyncing: this.isSyncing,
-      performance: this.stats
+      performance: this.stats,
+      dataSource: this.activeSource  // PHASE 1B: Expose active source
     };
   }
 
   /**
-   * Fetch a block with retry and smart rate limiting
+   * PHASE 1B: Fetch full transaction details (needed for Flux Indexer)
    */
-  async fetchBlock(height, retries = 3) {
-    const url = `${FLUX_CONFIG.BLOCKBOOK_API}/block/${height}`;
-    
-    for (let attempt = 0; attempt < retries; attempt++) {
-      try {
-        // Smart delay based on consecutive errors (exponential backoff)
-        const delay = this.minRequestDelay * Math.pow(2, this.consecutiveErrors);
-        const timeSinceLastRequest = Date.now() - this.lastRequestTime;
-        
-        if (timeSinceLastRequest < delay) {
-          await new Promise(resolve => setTimeout(resolve, delay - timeSinceLastRequest));
-        }
-        
-        this.lastRequestTime = Date.now();
-        
-        const response = await fetch(url, { 
-          timeout: FLUX_CONFIG.API_TIMEOUT,
-          signal: AbortSignal.timeout(FLUX_CONFIG.API_TIMEOUT)
-        });
+  async fetchTransaction(txid) {
+    try {
+      let url, response, data;
+      
+      if (this.activeSource === 'FLUX_INDEXER') {
+        url = getIndexerUrl('transaction', txid);
+        response = await fetch(url, { timeout: 10000 });
         
         if (!response.ok) {
-          if (response.status === 429) {
-            this.consecutiveErrors++;
-            console.log(`⚠️ Rate limited on block ${height}, backing off... (delay now: ${delay * 2}ms)`);
-            await new Promise(resolve => setTimeout(resolve, 5000 * (attempt + 1)));
-            continue;
-          }
-          throw new Error(`HTTP ${response.status}`);
+          return null;
         }
         
-        const data = await response.json();
+        data = await response.json();
         
-        // Success - gradually reduce error counter
-        if (this.consecutiveErrors > 0) {
-          this.consecutiveErrors--;
+        // CRITICAL FIX: Flux Indexer transaction format differs from Blockbook
+        // Normalize to Blockbook format with vin/vout arrays
+        
+        // Fix vout: Flux Indexer uses vout[].scriptPubKey.addresses instead of vout[].addresses
+        if (data.vout && Array.isArray(data.vout)) {
+          for (const output of data.vout) {
+            // If addresses are nested in scriptPubKey, move them up
+            if (!output.addresses && output.scriptPubKey && output.scriptPubKey.addresses) {
+              output.addresses = output.scriptPubKey.addresses;
+            }
+          }
+        }
+        
+        // If still no vin/vout, try alternative formats
+        if (!data.vin || !data.vout) {
+          if (data.inputs && Array.isArray(data.inputs)) {
+            data.vin = data.inputs.map(input => ({
+              addresses: input.address ? [input.address] : (input.addresses || []),
+              value: input.value || input.valueSat || 0
+            }));
+          } else {
+            data.vin = data.vin || [];
+          }
+          
+          if (data.outputs && Array.isArray(data.outputs)) {
+            data.vout = data.outputs.map((output, index) => ({
+              addresses: output.address ? [output.address] : (output.addresses || []),
+              value: output.value || output.valueSat || 0,
+              n: output.n !== undefined ? output.n : index
+            }));
+          } else {
+            data.vout = data.vout || [];
+          }
         }
         
         return data;
         
-      } catch (error) {
-        this.consecutiveErrors++;
+      } else {
+        // Blockbook
+        url = `${FLUX_CONFIG.BLOCKBOOK_API}/tx/${txid}`;
+        response = await fetch(url, { timeout: 10000 });
         
-        if (attempt === retries - 1) {
-          console.error(`❌ Failed to fetch block ${height} after ${retries} attempts:`, error.message);
+        if (!response.ok) {
           return null;
         }
         
-        // Exponential backoff
-        const backoffDelay = 1000 * Math.pow(2, attempt);
-        await new Promise(resolve => setTimeout(resolve, backoffDelay));
+        return await response.json();
       }
+      
+    } catch (error) {
+      console.error(`Failed to fetch tx ${txid}: ${error.message}`);
+      return null;
     }
-    
-    return null;
   }
 
   /**
-   * Fetch multiple blocks concurrently (controlled batches)
+   * Fetch multiple blocks concurrently
    */
   async fetchBlocksConcurrent(heights) {
     const results = [];
     const chunks = [];
     
-    // Split into small chunks based on maxConcurrent
+    // PHASE 1B: Use source-specific concurrent limit
     for (let i = 0; i < heights.length; i += this.maxConcurrent) {
       chunks.push(heights.slice(i, i + this.maxConcurrent));
     }
     
-    // Process each chunk
     for (let i = 0; i < chunks.length; i++) {
       const chunk = chunks[i];
       
-      // Fetch this chunk concurrently
       const promises = chunk.map(height => this.fetchBlock(height));
       const chunkResults = await Promise.all(promises);
       results.push(...chunkResults);
       
-      // Small delay between chunks (except last one)
-      if (i < chunks.length - 1) {
-        await new Promise(resolve => setTimeout(resolve, 300));
+      // PHASE 1B: Use source-specific batch delay
+      if (i < chunks.length - 1 && this.batchDelay > 0) {
+        await new Promise(resolve => setTimeout(resolve, this.batchDelay));
       }
     }
     
@@ -181,13 +435,11 @@ class BlockSyncService {
   }
 
   /**
-   * Pre-filter transactions - only process if they involve known addresses
-   * This is a HUGE performance boost - skips ~98% of transactions
+   * Pre-filter transactions
    */
   isRelevantTransaction(tx, classifier) {
     if (!tx.vin || !tx.vout) return false;
     
-    // Quick check inputs
     for (const input of tx.vin) {
       if (input.addresses && input.addresses.length > 0) {
         const classification = classifier.classifyAddress(input.addresses[0]);
@@ -197,7 +449,6 @@ class BlockSyncService {
       }
     }
     
-    // Quick check outputs
     for (const output of tx.vout) {
       if (output.addresses && output.addresses.length > 0) {
         const classification = classifier.classifyAddress(output.addresses[0]);
@@ -210,9 +461,6 @@ class BlockSyncService {
     return false;
   }
 
-  /**
-   * Classify a flow event based on from/to addresses
-   */
   classifyFlow(fromType, toType) {
     const fromIsExchange = fromType === 'exchange';
     const toIsExchange = toType === 'exchange';
@@ -226,15 +474,11 @@ class BlockSyncService {
     }
   }
 
-  /**
-   * Process a single transaction and return flow events
-   */
   async processTransaction(tx, blockHeight, blockTime, classifier) {
     if (!tx.vin || !tx.vout) {
       return [];
     }
     
-    // Save transaction
     this.db.saveTransaction({
       txid: tx.txid,
       blockHeight,
@@ -243,7 +487,6 @@ class BlockSyncService {
       vout: tx.vout
     });
     
-    // Get input classifications
     const inputAddresses = [];
     for (const input of tx.vin) {
       if (input.addresses && input.addresses.length > 0) {
@@ -255,7 +498,6 @@ class BlockSyncService {
       classifier.classifyAddress(addr)
     );
     
-    // Determine primary input type
     let primaryInputType = 'unknown';
     let primaryInputDetails = null;
     let primaryInputAddress = inputAddresses[0] || 'unknown';
@@ -281,7 +523,6 @@ class BlockSyncService {
       }
     }
     
-    // Process each output and build flow events
     const flowEvents = [];
     
     for (let vout = 0; vout < tx.vout.length; vout++) {
@@ -320,29 +561,55 @@ class BlockSyncService {
     return flowEvents;
   }
 
-  /**
-   * Process a single block
-   */
   async processBlock(blockData, classifier) {
-    if (!blockData || !blockData.txs) {
+    if (!blockData || (!blockData.txs && !blockData.tx)) {
       return { relevant: 0, total: 0, flowEvents: [] };
     }
     
-    // Save block
     this.db.saveBlock({
       height: blockData.height,
       hash: blockData.hash,
       time: blockData.time,
-      txCount: blockData.txs.length,
+      txCount: blockData.txCount || blockData.tx_count || blockData.tx?.length || blockData.txs?.length || 0,
       size: blockData.size
     });
+    
+    // PHASE 1B: Handle Flux Indexer format
+    let transactions = blockData.txs || [];
+    
+    // OPTIMIZATION: Filter transactions by 'kind' BEFORE fetching full details
+    // We only care about 'transfer' transactions, not 'coinbase' or 'fluxnode_confirm'
+    if (this.activeSource === 'FLUX_INDEXER' && blockData.tx && Array.isArray(blockData.tx)) {
+      // Use txDetails (summary data) to filter by 'kind' before fetching full transactions
+      const txDetails = blockData.txDetails || [];
+      
+      // Filter to ONLY 'transfer' transactions (ignore coinbase, fluxnode_confirm, etc.)
+      const relevantTxDetails = txDetails.filter(tx => tx.kind === 'transfer');
+      
+      if (relevantTxDetails.length > 0) {
+        console.log(`  🎯 Filtered to ${relevantTxDetails.length} transfer txs (out of ${txDetails.length} total)`);
+        
+        // Fetch full details ONLY for relevant transactions
+        const limit = Math.min(relevantTxDetails.length, this.transactionFetchLimit);
+        const txPromises = relevantTxDetails.slice(0, limit).map(tx => this.fetchTransaction(tx.txid));
+        const fullTxs = await Promise.all(txPromises);
+        transactions = fullTxs.filter(tx => tx !== null);
+      } else {
+        // No relevant transactions in this block
+        transactions = [];
+      }
+    }
     
     let relevantCount = 0;
     const allFlowEvents = [];
     
-    // Filter and process only relevant transactions
-    for (const tx of blockData.txs) {
-      if (this.isRelevantTransaction(tx, classifier)) {
+    // DEBUG: Log transaction processing
+    if (transactions.length > 0) {
+      console.log(`  📝 Processing ${transactions.length} transactions from block ${blockData.height}`);
+    }
+    
+    for (const tx of transactions) {
+      if (tx && this.isRelevantTransaction(tx, classifier)) {
         const flowEvents = await this.processTransaction(tx, blockData.height, blockData.time, classifier);
         if (flowEvents && flowEvents.length > 0) {
           allFlowEvents.push(...flowEvents);
@@ -351,22 +618,23 @@ class BlockSyncService {
       }
     }
     
+    // DEBUG: Log if we found flow events
+    if (allFlowEvents.length > 0) {
+      console.log(`  ✅ Found ${allFlowEvents.length} flow events in ${relevantCount} transactions`);
+    }
+    
     return { 
       relevant: relevantCount, 
-      total: blockData.txs.length,
+      total: blockData.txCount || blockData.tx_count || transactions.length,
       flowEvents: allFlowEvents
     };
   }
 
-  /**
-   * Process multiple blocks and do BATCH INSERT (prevents DB locks)
-   */
   async processBlocksBatch(blockDataArray, classifier) {
     let totalRelevant = 0;
     let totalTx = 0;
     const allFlowEvents = [];
     
-    // Process each block and collect ALL flow events
     for (const blockData of blockDataArray) {
       if (blockData) {
         const result = await this.processBlock(blockData, classifier);
@@ -376,8 +644,6 @@ class BlockSyncService {
       }
     }
     
-    // CRITICAL: Single batch insert for ALL flow events
-    // This prevents DB locks by doing ONE transaction instead of hundreds
     if (allFlowEvents.length > 0) {
       this.db.saveFlowEventsBatch(allFlowEvents);
     }
@@ -385,9 +651,6 @@ class BlockSyncService {
     return { relevant: totalRelevant, total: totalTx };
   }
 
-  /**
-   * Main sync method - processes batches with concurrent fetching
-   */
   async syncLatest(classifier) {
     if (this.isSyncing) {
       return { synced: 0, transactions: 0 };
@@ -398,10 +661,8 @@ class BlockSyncService {
       
       const batchStartTime = Date.now();
       
-      // Update blockchain tip
-      const tipResponse = await fetch(`${FLUX_CONFIG.BLOCKBOOK_API}/`);
-      const tipData = await tipResponse.json();
-      this.currentBlock = tipData.blockbook.bestHeight;
+      // PHASE 1B: Get current height from active source
+      this.currentBlock = await this.getCurrentHeight();
       
       let latestSynced = this.db.getLatestBlockHeight();
       
@@ -415,31 +676,29 @@ class BlockSyncService {
       
       let synced = 0;
       let relevantTx = 0;
-      const batchSize = FLUX_CONFIG.INITIAL_SYNC_BATCH_SIZE || 30;
+      const batchSize = this.batchSize; // Use source-specific batch size
       
-      // Sync forward (catching up to current)
+      // Sync forward
       if (latestSynced < this.currentBlock) {
         const blocksToSync = this.currentBlock - latestSynced;
         const actualBatch = Math.min(batchSize, blocksToSync);
         const startHeight = latestSynced + 1;
         const endHeight = startHeight + actualBatch - 1;
         
-        console.log(`⬆️ Syncing forward: blocks ${startHeight.toLocaleString()} to ${endHeight.toLocaleString()} (${actualBatch} blocks)`);
+        console.log(`⬆️  Syncing forward: blocks ${startHeight.toLocaleString()} to ${endHeight.toLocaleString()} (${actualBatch} blocks)`);
+        console.log(`📡 Using: ${this.activeSource}`);
         
-        // Build array of heights to fetch
         const heights = [];
         for (let height = startHeight; height <= endHeight; height++) {
           heights.push(height);
         }
         
-        // Fetch all blocks concurrently
         const fetchStart = Date.now();
         const blockDataArray = await this.fetchBlocksConcurrent(heights);
         const fetchTime = Date.now() - fetchStart;
         
         console.log(`  ⏱️  Fetched in ${(fetchTime / 1000).toFixed(1)}s (${(fetchTime / actualBatch).toFixed(0)}ms/block)`);
         
-        // Process blocks with batch insert
         const processStart = Date.now();
         const result = await this.processBlocksBatch(blockDataArray, classifier);
         const processTime = Date.now() - processStart;
@@ -450,7 +709,6 @@ class BlockSyncService {
         console.log(`  ⏱️  Processed in ${(processTime / 1000).toFixed(1)}s`);
         console.log(`  📊 ${result.relevant} relevant txs out of ${result.total} total (${((result.relevant / result.total) * 100).toFixed(1)}%)`);
       }
-      // Sync backwards (filling historical data)
       else if (stats.blocks < oneYearBlocks && latestSynced > this.targetBlock) {
         const minBlock = this.db.db.prepare('SELECT MIN(height) as min FROM blocks').get();
         const oldestBlock = minBlock?.min || latestSynced;
@@ -459,22 +717,20 @@ class BlockSyncService {
         const endHeight = Math.max(this.targetBlock, startHeight - batchSize + 1);
         const actualBatch = startHeight - endHeight + 1;
         
-        console.log(`⬇️ Syncing backwards: blocks ${startHeight.toLocaleString()} down to ${endHeight.toLocaleString()} (${actualBatch} blocks)`);
+        console.log(`⬇️  Syncing backwards: blocks ${startHeight.toLocaleString()} down to ${endHeight.toLocaleString()} (${actualBatch} blocks)`);
+        console.log(`📡 Using: ${this.activeSource}`);
         
-        // Build array of heights to fetch (in descending order)
         const heights = [];
         for (let height = startHeight; height >= endHeight; height--) {
           heights.push(height);
         }
         
-        // Fetch all blocks concurrently
         const fetchStart = Date.now();
         const blockDataArray = await this.fetchBlocksConcurrent(heights);
         const fetchTime = Date.now() - fetchStart;
         
         console.log(`  ⏱️  Fetched in ${(fetchTime / 1000).toFixed(1)}s (${(fetchTime / actualBatch).toFixed(0)}ms/block)`);
         
-        // Process blocks with batch insert
         const processStart = Date.now();
         const result = await this.processBlocksBatch(blockDataArray, classifier);
         const processTime = Date.now() - processStart;
@@ -486,7 +742,6 @@ class BlockSyncService {
         console.log(`  📊 ${result.relevant} relevant txs out of ${result.total} total`);
       }
       
-      // Update performance stats
       const batchTime = Date.now() - batchStartTime;
       this.stats.totalBlocks += synced;
       this.stats.totalTime += batchTime;
@@ -500,7 +755,6 @@ class BlockSyncService {
       console.log(`  📈 Performance: ${this.stats.avgBlocksPerMinute} blocks/min average`);
       console.log(`  🎯 Error counter: ${this.consecutiveErrors}`);
       
-      // Update sync status
       const updatedStats = this.db.getStats();
       this.isInitialSync = updatedStats.blocks < oneYearBlocks;
       
@@ -514,9 +768,6 @@ class BlockSyncService {
     }
   }
 
-  /**
-   * Sync batch - calls syncLatest
-   */
   async syncBatch(classifier) {
     const stats = this.db.getStats();
     const oneYearBlocks = FLUX_CONFIG.PERIODS['1Y'];
