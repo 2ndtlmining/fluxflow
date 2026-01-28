@@ -1,5 +1,5 @@
 // Flux Flow Tracker Configuration
-// PHASE 1: Added Flux Indexer (192.168.10.65) as primary data source
+// PHASE 4: Added background enhancement and auto-enhancement settings
 
 export const FLUX_CONFIG = {
   // ============================================================================
@@ -78,7 +78,7 @@ export const FLUX_CONFIG = {
   SYNC_SETTINGS: {
     FLUX_INDEXER: {
       // Aggressive settings for local indexer (no rate limits!)
-      BATCH_SIZE: 500,              // 100 blocks per batch (vs 30)
+      BATCH_SIZE: 300,              // 500 blocks per batch (vs 30)
       MAX_CONCURRENT: 10,           // 10 concurrent requests (vs 2)
       MIN_REQUEST_DELAY: 10,        // 10ms delay (vs 200ms)
       BATCH_DELAY: 100,             // 100ms between batches (vs 1000ms)
@@ -140,14 +140,43 @@ export const FLUX_CONFIG = {
   MIN_TRANSACTION_VALUE: 1,
 
   // ============================================================================
-  // WALLET ENHANCEMENT (PHASE 1 - New!)
+  // WALLET ENHANCEMENT - PHASE 2, 3 & 4
   // ============================================================================
   
   ENHANCEMENT: {
-    MAX_HOPS: 1,  // Only analyze 1 level deep
+    // PHASE 2: 1-hop detection
+    MAX_HOPS: 1,  // Default to 1-hop for Phase 2
     TIME_WINDOW_BLOCKS: 100,  // 50 minutes at 30s/block
     MIN_CONFIDENCE: 0.8,
-    BATCH_SIZE: 100
+    BATCH_SIZE: 100,
+    
+    // PHASE 3: Multi-hop detection
+    MULTI_HOP: {
+      ENABLED: true,
+      MAX_DEPTH: 3,  // Maximum hop depth (1, 2, or 3)
+      DEFAULT_DEPTH: 1,  // Start with 1-hop by default
+      TIME_WINDOW_BLOCKS: 100,  // Look within 100 blocks (~50 minutes)
+      MAX_BRANCHES_PER_WALLET: 5,  // Don't follow more than 5 branches from one wallet
+      CIRCULAR_DETECTION: true,  // Prevent infinite loops
+      AMOUNT_VARIANCE_THRESHOLD: 0.1,  // Allow 10% variance in amounts between hops
+      TRACK_AMOUNTS: true,  // Track if amounts change between hops
+    },
+    
+    // PHASE 4: Background enhancement & auto-enhancement
+    AUTO_ENHANCE_ON_SYNC: {
+      ENABLED: true,  // Auto-enhance after each sync batch
+      MIN_UNKNOWNS_TO_TRIGGER: 10,  // Only run if at least 10 unknowns
+      DELAY_AFTER_SYNC_MS: 2000,  // Wait 2 seconds after sync before enhancing
+      MAX_UNKNOWNS_PER_RUN: 50  // Process max 50 unknowns per sync batch
+    },
+    
+    BACKGROUND_JOB: {
+      ENABLED: true,  // Enable background enhancement job
+      INTERVAL_MINUTES: 5,  // Run every 5 minutes
+      RUN_ON_START: true,  // Run once on server startup (after 5 sec delay)
+      MIN_UNKNOWNS_THRESHOLD: 5,  // Only run if at least 5 unknowns
+      PAUSE_DURING_SYNC: false  // Don't pause during sync (enhancement is non-blocking)
+    }
   },
 
   // ============================================================================
@@ -167,7 +196,10 @@ export const FLUX_CONFIG = {
     LOG_BLOCK_PROCESSING: true,
     LOG_API_CALLS: false,
     LOG_CLASSIFICATION: false,
-    LOG_DATA_SOURCE_SWITCHES: true  // NEW: Log when switching sources
+    LOG_DATA_SOURCE_SWITCHES: true,
+    LOG_ENHANCEMENT: true,  // PHASE 2/3: Log enhancement activity
+    LOG_MULTI_HOP: true,  // PHASE 3: Log multi-hop detection
+    LOG_BACKGROUND_JOB: true  // PHASE 4: Log background enhancement
   },
   
   PERFORMANCE: {

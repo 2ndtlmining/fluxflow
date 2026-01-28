@@ -1,11 +1,14 @@
-// Server - UTXO-Aware Flow Tracker
+// Server - UTXO-Aware Flow Tracker - PHASE 4
+// Added background enhancement service and auto-enhancement
+
 import express from 'express';
 import cors from 'cors';
 import { FLUX_CONFIG } from './src/lib/config.js';
 import { startBlockSyncScheduler, getBlockSyncSchedulerStatus } from './src/lib/services/Blocksyncscheduler.js';
 import ClassificationService from './src/lib/services/classificationService.js';
 import FlowAnalysisService from './src/lib/services/flowAnalysisService.js';
-import WalletEnhancementService from './src/lib/services/walletEnhancementService.js'; // PHASE 2
+import WalletEnhancementService from './src/lib/services/walletEnhancementService.js';
+import BackgroundEnhancementService from './src/lib/services/backgroundEnhancementService.js'; // PHASE 4
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -31,7 +34,8 @@ app.use(express.json());
 let blockSyncService = null;
 let databaseService = null;
 let flowAnalysisService = null;
-let walletEnhancementService = null; // PHASE 2
+let walletEnhancementService = null;
+let backgroundEnhancementService = null; // PHASE 4
 const classificationService = new ClassificationService();
 
 // ============================================================================
@@ -40,12 +44,12 @@ const classificationService = new ClassificationService();
 
 async function initialize() {
   console.log('='.repeat(70));
-  console.log('Flux Flow Tracker - UTXO-Aware Version');
+  console.log('Flux Flow Tracker - Phase 4: Auto-Enhancement');
   console.log('='.repeat(70));
   
   try {
     // Load classification data
-    console.log('\n1. Loading classification data...');
+    console.log('\n1️⃣ Loading classification data...');
     await classificationService.refreshNodeOperators();
     
     const stats = classificationService.getStats();
@@ -54,7 +58,7 @@ async function initialize() {
     console.log(`   ✓ Loaded ${stats.nodeOperators.count} node operators (${stats.nodeOperators.totalNodes} total nodes)`);
     
     // Start block sync scheduler with database and classification
-    console.log('\n2. Starting block sync scheduler with database...');
+    console.log('\n2️⃣ Starting block sync scheduler with database...');
     const services = await startBlockSyncScheduler(classificationService);
     blockSyncService = services.blockSyncService;
     databaseService = services.databaseService;
@@ -63,16 +67,30 @@ async function initialize() {
     console.log('   ✓ Database connection:', !!databaseService?.db);
     
     // Create flow analysis service with initialized database
-    console.log('\n3. Creating flow analysis service...');
+    console.log('\n3️⃣ Creating flow analysis service...');
     flowAnalysisService = new FlowAnalysisService(databaseService);
     console.log('   ✓ Flow analysis service created');
     console.log('   ✓ Has database reference:', !!flowAnalysisService.db);
     console.log('   ✓ Has database connection:', !!flowAnalysisService.db?.db);
     
-    // PHASE 2: Create wallet enhancement service
-    console.log('\n4. Creating wallet enhancement service (Phase 2)...');
+    // PHASE 3: Create wallet enhancement service
+    console.log('\n4️⃣ Creating wallet enhancement service (Phase 3 - Multi-hop)...');
     walletEnhancementService = new WalletEnhancementService(databaseService, classificationService);
     console.log('   ✓ Wallet enhancement service created');
+    
+    // PHASE 4: Create background enhancement service
+    console.log('\n5️⃣ Creating background enhancement service (Phase 4)...');
+    backgroundEnhancementService = new BackgroundEnhancementService(databaseService, walletEnhancementService);
+    console.log('   ✓ Background enhancement service created');
+    
+    // PHASE 4: Start background enhancement job
+    if (FLUX_CONFIG.ENHANCEMENT.BACKGROUND_JOB.ENABLED) {
+      console.log('\n6️⃣ Starting background enhancement job...');
+      backgroundEnhancementService.start();
+      console.log('   ✓ Background enhancement started');
+    } else {
+      console.log('\n6️⃣ Background enhancement disabled in config');
+    }
     
     // Show database stats
     const dbStats = databaseService.getStats();
@@ -86,11 +104,19 @@ async function initialize() {
         console.log(`     ${stat.flow_type}: ${stat.count} events (${stat.total_amount.toFixed(2)} FLUX)`);
       });
     }
+    if (dbStats.enhancementStats && dbStats.enhancementStats.length > 0) {
+      console.log(`   Enhancement Stats:`);
+      dbStats.enhancementStats.forEach(stat => {
+        console.log(`     Level ${stat.classification_level}: ${stat.count} events`);
+      });
+    }
     console.log(`   Database size: ${dbStats.dbSize}`);
     
     console.log('\n' + '='.repeat(70));
     console.log('Server ready! Block sync running every 2 minutes.');
+    console.log('Background enhancement running every ' + FLUX_CONFIG.ENHANCEMENT.BACKGROUND_JOB.INTERVAL_MINUTES + ' minutes.');
     console.log('UTXO-aware: Tracking individual outputs as flow events');
+    console.log('Multi-hop detection: Up to ' + FLUX_CONFIG.ENHANCEMENT.MULTI_HOP.DEFAULT_DEPTH + '-hop chains');
     console.log('='.repeat(70) + '\n');
     
   } catch (error) {
@@ -107,6 +133,7 @@ async function initialize() {
 // Health check
 app.get('/api/health', (req, res) => {
   const dbStats = databaseService ? databaseService.getStats() : null;
+  const bgStatus = backgroundEnhancementService ? backgroundEnhancementService.getStatus() : null;
   
   res.json({
     status: 'ok',
@@ -116,11 +143,12 @@ app.get('/api/health', (req, res) => {
       transactions: dbStats?.transactions || 0,
       flowEvents: dbStats?.flowEvents || 0
     },
-    sync: getBlockSyncSchedulerStatus()
+    sync: getBlockSyncSchedulerStatus(),
+    backgroundEnhancement: bgStatus
   });
 });
 
-// Get block status - FIXED: Returns correct property names matching frontend
+// Get block status
 app.get('/api/blocks/status', (req, res) => {
   try {
     const syncStatus = getBlockSyncSchedulerStatus();
@@ -142,7 +170,7 @@ app.get('/api/blocks/status', (req, res) => {
   }
 });
 
-// Get classification stats - FIXED: Singular endpoint name /classification/stats
+// Get classification stats
 app.get('/api/classification/stats', (req, res) => {
   try {
     const stats = classificationService.getStats();
@@ -167,7 +195,6 @@ app.get('/api/classifications/stats', (req, res) => {
 // Get flow analysis for a period
 app.get('/api/flow/:period', (req, res) => {
   try {
-    // Check if services are initialized
     if (!flowAnalysisService) {
       return res.status(503).json({ 
         error: 'Service not ready',
@@ -184,13 +211,11 @@ app.get('/api/flow/:period', (req, res) => {
     const syncStatus = getBlockSyncSchedulerStatus();
     const blockCount = syncStatus.blockCount || 0;
     
-    // Calculate data completeness
     const requiredBlocks = FLUX_CONFIG.MIN_BLOCKS_REQUIRED[period];
     const hasAnyData = blockCount > 0;
     const isComplete = blockCount >= requiredBlocks;
     const progress = (blockCount / requiredBlocks * 100).toFixed(1);
     
-    // Always try to analyze if we have ANY data
     if (!hasAnyData) {
       return res.json({
         period: period,
@@ -203,7 +228,6 @@ app.get('/api/flow/:period', (req, res) => {
       });
     }
     
-    // Get analysis with whatever data we have
     const analysis = flowAnalysisService.analyzeFlow(period);
     
     res.json({
@@ -280,7 +304,7 @@ app.get('/api/database/stats', (req, res) => {
     const stats = databaseService.getStats();
     const oneYearBlocks = FLUX_CONFIG.PERIODS['1Y'];
     const blockSpan = stats.blockRange.maxHeight - stats.blockRange.minHeight;
-    const dataAge = (blockSpan / oneYearBlocks * 365).toFixed(1); // in days
+    const dataAge = (blockSpan / oneYearBlocks * 365).toFixed(1);
     
     res.json({
       size: stats.dbSize,
@@ -301,10 +325,10 @@ app.get('/api/database/stats', (req, res) => {
 });
 
 // ============================================================================
-// PHASE 2: WALLET ENHANCEMENT ENDPOINTS
+// PHASE 2/3: WALLET ENHANCEMENT ENDPOINTS
 // ============================================================================
 
-// Enhance unknown wallets - trigger 1-hop analysis
+// Enhance unknown wallets - trigger multi-hop analysis
 app.post('/api/enhance-wallets', async (req, res) => {
   try {
     if (!walletEnhancementService) {
@@ -323,7 +347,6 @@ app.post('/api/enhance-wallets', async (req, res) => {
 
     console.log('\n🔍 API: Starting wallet enhancement...');
     
-    // Run enhancement (this will take a while)
     const result = await walletEnhancementService.enhanceUnknownWallets();
 
     console.log('✅ API: Enhancement complete\n');
@@ -349,7 +372,7 @@ app.get('/api/enhance-wallets/status', (req, res) => {
     if (!walletEnhancementService) {
       return res.json({
         isRunning: false,
-        stats: { totalAnalyzed: 0, enhancedToBuying: 0, enhancedToSelling: 0, remainedUnknown: 0, errors: 0 }
+        stats: { totalAnalyzed: 0, enhanced: { level1: 0, level2: 0, level3: 0 }, enhancedToBuying: 0, enhancedToSelling: 0, remainedUnknown: 0, errors: 0 }
       });
     }
     
@@ -388,10 +411,106 @@ app.get('/api/unknowns/stats', (req, res) => {
 });
 
 // ============================================================================
-// START SERVER
+// PHASE 4: BACKGROUND ENHANCEMENT ENDPOINTS
+// ============================================================================
+
+// Get background enhancement status
+app.get('/api/enhancement/background/status', (req, res) => {
+  try {
+    if (!backgroundEnhancementService) {
+      return res.json({
+        enabled: false,
+        isRunning: false,
+        message: 'Background enhancement service not initialized'
+      });
+    }
+    
+    const status = backgroundEnhancementService.getStatus();
+    res.json(status);
+    
+  } catch (error) {
+    console.error('Background enhancement status error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Manually trigger background enhancement
+app.post('/api/enhancement/background/trigger', async (req, res) => {
+  try {
+    if (!backgroundEnhancementService) {
+      return res.status(503).json({ 
+        error: 'Service not ready',
+        message: 'Background enhancement service not initialized'
+      });
+    }
+    
+    const result = await backgroundEnhancementService.triggerManualRun();
+    res.json(result);
+    
+  } catch (error) {
+    console.error('Manual trigger error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Start background enhancement
+app.post('/api/enhancement/background/start', (req, res) => {
+  try {
+    if (!backgroundEnhancementService) {
+      return res.status(503).json({ error: 'Service not initialized' });
+    }
+    
+    backgroundEnhancementService.start();
+    res.json({ success: true, message: 'Background enhancement started' });
+    
+  } catch (error) {
+    console.error('Start background enhancement error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Stop background enhancement
+app.post('/api/enhancement/background/stop', (req, res) => {
+  try {
+    if (!backgroundEnhancementService) {
+      return res.status(503).json({ error: 'Service not initialized' });
+    }
+    
+    backgroundEnhancementService.stop();
+    res.json({ success: true, message: 'Background enhancement stopped' });
+    
+  } catch (error) {
+    console.error('Stop background enhancement error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ============================================================================
+// START SERVER & GRACEFUL SHUTDOWN
 // ============================================================================
 
 app.listen(PORT, async () => {
   console.log(`\n🚀 Server listening on port ${PORT}`);
   await initialize();
+});
+
+// PHASE 4: Graceful shutdown
+process.on('SIGTERM', () => {
+  console.log('\n📛 SIGTERM received: closing HTTP server');
+  
+  if (backgroundEnhancementService) {
+    backgroundEnhancementService.stop();
+  }
+  
+  process.exit(0);
+});
+
+process.on('SIGINT', () => {
+  console.log('\n📛 SIGINT received: closing HTTP server');
+  
+  if (backgroundEnhancementService) {
+    backgroundEnhancementService.stop();
+  }
+  
+  process.exit(0);
 });

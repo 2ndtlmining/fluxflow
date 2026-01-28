@@ -1,5 +1,5 @@
-// Wallet Enhancement Service - PHASE 2 - v2.5
-// Keep v2's working logic + add detailed logging
+// Wallet Enhancement Service - PHASE 3: Multi-Hop Detection
+// Implements BFS algorithm for 2-hop and 3-hop wallet chain analysis
 
 import fetch from 'node-fetch';
 import { FLUX_CONFIG } from '../config.js';
@@ -12,21 +12,25 @@ class WalletEnhancementService {
     
     this.stats = {
       totalAnalyzed: 0,
+      enhanced: {
+        level1: 0,  // 1-hop
+        level2: 0,  // 2-hop
+        level3: 0   // 3-hop
+      },
       enhancedToBuying: 0,
       enhancedToSelling: 0,
       remainedUnknown: 0,
-      errors: 0
+      errors: 0,
+      circularDetections: 0
     };
     
-    console.log('🔍 WalletEnhancementService initialized (v2.5 - debug logging)');
+    console.log('🔍 WalletEnhancementService initialized (Phase 3 - Multi-hop)');
   }
 
   isNodeOperator(address) {
     return this.classifier.nodeOperators.has(address);
   }
 
-  // Get node details (count and tiers) from classification service
-// Get node details (count and tiers) from classification service
   getNodeDetails(address) {
     if (!this.classifier.nodeOperators.has(address)) {
       return null;
@@ -34,10 +38,6 @@ class WalletEnhancementService {
     
     const nodeData = this.classifier.nodeOperators.get(address);
     
-    // Debug: log what we got
-    console.log(`     🔍 Node data for ${address.substring(0, 15)}:`, nodeData);
-    
-    // Try multiple possible field names
     const nodeCount = nodeData.nodeCount || nodeData.count || nodeData.nodes?.length || 0;
     const tiers = nodeData.tiers || nodeData.tierBreakdown || nodeData.breakdown || { CUMULUS: 0, NIMBUS: 0, STRATUS: 0 };
     
@@ -54,17 +54,28 @@ class WalletEnhancementService {
 
     try {
       this.isEnhancing = true;
-      console.log('\n🔍 PHASE 2: Wallet Enhancement Started (v2.5)\n');
+      console.log('\n🔍 PHASE 3: Multi-Hop Wallet Enhancement Started\n');
 
-      this.stats = { totalAnalyzed: 0, enhancedToBuying: 0, enhancedToSelling: 0, remainedUnknown: 0, errors: 0 };
+      this.stats = { 
+        totalAnalyzed: 0, 
+        enhanced: { level1: 0, level2: 0, level3: 0 },
+        enhancedToBuying: 0, 
+        enhancedToSelling: 0, 
+        remainedUnknown: 0, 
+        errors: 0,
+        circularDetections: 0
+      };
 
       const unknowns = this.db.getUnknownWallets();
       console.log(`📊 Found ${unknowns.buys.length} unknown buying, ${unknowns.sells.length} unknown selling\n`);
 
+      const maxDepth = FLUX_CONFIG.ENHANCEMENT.MULTI_HOP.DEFAULT_DEPTH;
+      console.log(`🎯 Multi-hop depth: ${maxDepth} (max: ${FLUX_CONFIG.ENHANCEMENT.MULTI_HOP.MAX_DEPTH})\n`);
+
       if (unknowns.buys.length > 0) {
         console.log('🔵 Analyzing BUYING events...');
         for (const event of unknowns.buys) {
-          await this.analyzeBuyingEvent(event);
+          await this.analyzeBuyingEventMultiHop(event, maxDepth);
           this.stats.totalAnalyzed++;
         }
       }
@@ -72,13 +83,18 @@ class WalletEnhancementService {
       if (unknowns.sells.length > 0) {
         console.log('\n🔴 Analyzing SELLING events...');
         for (const event of unknowns.sells) {
-          await this.analyzeSellingEvent(event);
+          await this.analyzeSellingEventMultiHop(event, maxDepth);
           this.stats.totalAnalyzed++;
         }
       }
 
       console.log('\n✅ Enhancement Complete');
-      console.log(`📊 Total: ${this.stats.totalAnalyzed}, Enhanced Buys: ${this.stats.enhancedToBuying}, Enhanced Sells: ${this.stats.enhancedToSelling}, Unknown: ${this.stats.remainedUnknown}\n`);
+      console.log(`📊 Total: ${this.stats.totalAnalyzed}`);
+      console.log(`   L1 (1-hop): ${this.stats.enhanced.level1}`);
+      console.log(`   L2 (2-hop): ${this.stats.enhanced.level2}`);
+      console.log(`   L3 (3-hop): ${this.stats.enhanced.level3}`);
+      console.log(`   Unknown: ${this.stats.remainedUnknown}`);
+      console.log(`   Circular detections: ${this.stats.circularDetections}\n`);
 
       return { success: true, stats: this.stats };
 
@@ -90,39 +106,47 @@ class WalletEnhancementService {
     }
   }
 
-  async analyzeBuyingEvent(event) {
+  /**
+   * PHASE 3: Multi-hop buying event analysis (BFS)
+   * Exchange → Wallet A → [Wallet B] → [Wallet C] → Node Operator
+   */
+  async analyzeBuyingEventMultiHop(event, maxDepth = 2) {
     try {
-      const unknownWallet = event.to_address;
-      console.log(`\n  🔎 BUYING: ${unknownWallet.substring(0, 15)}... (tx: ${event.txid.substring(0, 10)}...)`);
+      const startWallet = event.to_address;
+      console.log(`\n  🔎 BUYING: ${startWallet.substring(0, 15)}... (tx: ${event.txid.substring(0, 10)}...)`);
       console.log(`     📍 Event at block: ${event.block_height}, timestamp: ${event.block_time}`);
+      console.log(`     🎯 Max depth: ${maxDepth} hops`);
 
-      const nextTx = await this.getNextTransactionFromWallet(unknownWallet, event.block_height, event.block_time);
+      const result = await this.analyzeMultiHop({
+        startWallet,
+        direction: 'outbound',  // Follow outgoing transactions
+        startBlockHeight: event.block_height,
+        startTimestamp: event.block_time,
+        maxDepth,
+        visitedWallets: new Set([startWallet])  // Track visited wallets for circular detection
+      });
 
-      if (!nextTx) {
-        console.log(`     ⚪ No next transaction found`);
+      if (!result) {
+        console.log(`     ⚪ No node operator found in ${maxDepth}-hop chain`);
         this.stats.remainedUnknown++;
         return;
       }
 
-      console.log(`     📤 Found next tx to: ${nextTx.toAddress.substring(0, 15)}...`);
-      
-      if (this.isNodeOperator(nextTx.toAddress)) {
-        console.log(`     ✅ IS NODE OPERATOR!`);
-        
-        this.updateFlowEventToLevel1({
-          id: event.id,
-          flowType: 'buying',
-          newType: 'node_operator',
-          intermediaryWallet: unknownWallet,
-          actualNodeWallet: nextTx.toAddress,
-          intermediaryTxid: nextTx.txid
-        });
+      console.log(`     ✅ FOUND: ${result.level}-hop chain to node operator!`);
+      console.log(`     📋 Chain: ${result.chain.map(w => w.substring(0, 10)).join(' → ')} → ${result.nodeWallet.substring(0, 10)}`);
 
-        this.stats.enhancedToBuying++;
-      } else {
-        console.log(`     ⚪ Not a node operator`);
-        this.stats.remainedUnknown++;
-      }
+      this.updateFlowEventToMultiHop({
+        id: event.id,
+        flowType: 'buying',
+        newType: 'node_operator',
+        level: result.level,
+        hopChain: result.chain,
+        nodeWallet: result.nodeWallet,
+        intermediaryTxids: result.txids
+      });
+
+      this.stats.enhanced[`level${result.level}`]++;
+      this.stats.enhancedToBuying++;
 
     } catch (error) {
       console.error(`     ❌ Error:`, error.message);
@@ -130,39 +154,47 @@ class WalletEnhancementService {
     }
   }
 
-  async analyzeSellingEvent(event) {
+  /**
+   * PHASE 3: Multi-hop selling event analysis (BFS)
+   * Node Operator → [Wallet C] → [Wallet B] → Wallet A → Exchange
+   */
+  async analyzeSellingEventMultiHop(event, maxDepth = 2) {
     try {
-      const unknownWallet = event.from_address;
-      console.log(`\n  🔎 SELLING: ${unknownWallet.substring(0, 15)}... (tx: ${event.txid.substring(0, 10)}...)`);
+      const startWallet = event.from_address;
+      console.log(`\n  🔎 SELLING: ${startWallet.substring(0, 15)}... (tx: ${event.txid.substring(0, 10)}...)`);
       console.log(`     📍 Event at block: ${event.block_height}, timestamp: ${event.block_time}`);
+      console.log(`     🎯 Max depth: ${maxDepth} hops`);
 
-      const prevTx = await this.getPreviousTransactionToWallet(unknownWallet, event.block_height, event.block_time);
+      const result = await this.analyzeMultiHop({
+        startWallet,
+        direction: 'inbound',  // Follow incoming transactions (look backwards)
+        startBlockHeight: event.block_height,
+        startTimestamp: event.block_time,
+        maxDepth,
+        visitedWallets: new Set([startWallet])
+      });
 
-      if (!prevTx) {
-        console.log(`     ⚪ No previous transaction found`);
+      if (!result) {
+        console.log(`     ⚪ No node operator found in ${maxDepth}-hop chain`);
         this.stats.remainedUnknown++;
         return;
       }
 
-      console.log(`     📥 Found prev tx from: ${prevTx.fromAddress.substring(0, 15)}...`);
+      console.log(`     ✅ FOUND: ${result.level}-hop chain from node operator!`);
+      console.log(`     📋 Chain: ${result.nodeWallet.substring(0, 10)} → ${result.chain.map(w => w.substring(0, 10)).join(' → ')}`);
 
-      if (this.isNodeOperator(prevTx.fromAddress)) {
-        console.log(`     ✅ IS NODE OPERATOR!`);
-        
-        this.updateFlowEventToLevel1({
-          id: event.id,
-          flowType: 'selling',
-          newType: 'node_operator',
-          intermediaryWallet: unknownWallet,
-          actualNodeWallet: prevTx.fromAddress,
-          intermediaryTxid: prevTx.txid
-        });
+      this.updateFlowEventToMultiHop({
+        id: event.id,
+        flowType: 'selling',
+        newType: 'node_operator',
+        level: result.level,
+        hopChain: result.chain,
+        nodeWallet: result.nodeWallet,
+        intermediaryTxids: result.txids
+      });
 
-        this.stats.enhancedToSelling++;
-      } else {
-        console.log(`     ⚪ Not a node operator`);
-        this.stats.remainedUnknown++;
-      }
+      this.stats.enhanced[`level${result.level}`]++;
+      this.stats.enhancedToSelling++;
 
     } catch (error) {
       console.error(`     ❌ Error:`, error.message);
@@ -170,184 +202,206 @@ class WalletEnhancementService {
     }
   }
 
-  // KEEP v2 LOGIC - it works!
+  /**
+   * PHASE 3: Core BFS multi-hop algorithm
+   * Traverses transaction graph to find node operators
+   */
+  async analyzeMultiHop({ startWallet, direction, startBlockHeight, startTimestamp, maxDepth, visitedWallets }) {
+    const queue = [{
+      wallet: startWallet,
+      depth: 0,
+      chain: [],
+      txids: []
+    }];
+
+    const timeWindowBlocks = FLUX_CONFIG.ENHANCEMENT.MULTI_HOP.TIME_WINDOW_BLOCKS;
+    const maxBranches = FLUX_CONFIG.ENHANCEMENT.MULTI_HOP.MAX_BRANCHES_PER_WALLET;
+    let nodesExplored = 0;
+
+    while (queue.length > 0) {
+      const current = queue.shift();
+      nodesExplored++;
+
+      // Reached max depth - stop exploring this path
+      if (current.depth >= maxDepth) {
+        continue;
+      }
+
+      // Get next transactions
+      const nextTxs = direction === 'outbound'
+        ? await this.getNextTransactionFromWallet(current.wallet, startBlockHeight, startTimestamp)
+        : await this.getPreviousTransactionToWallet(current.wallet, startBlockHeight, startTimestamp);
+
+      if (!nextTxs) continue;
+
+      // Limit branches to prevent explosion
+      const txsToExplore = Array.isArray(nextTxs) 
+        ? nextTxs.slice(0, maxBranches) 
+        : [nextTxs];
+
+      for (const tx of txsToExplore) {
+        const nextWallet = direction === 'outbound' ? tx.toAddress : tx.fromAddress;
+        
+        // Circular detection
+        if (visitedWallets.has(nextWallet)) {
+          console.log(`     🔄 Circular: ${nextWallet.substring(0, 10)} already visited`);
+          this.stats.circularDetections++;
+          continue;
+        }
+
+        // Check if we found a node operator!
+        if (this.isNodeOperator(nextWallet)) {
+          return {
+            level: current.depth + 1,
+            chain: [...current.chain, current.wallet],
+            nodeWallet: nextWallet,
+            txids: [...current.txids, tx.txid]
+          };
+        }
+
+        // Not a node operator - add to queue for deeper exploration
+        if (current.depth + 1 < maxDepth) {
+          visitedWallets.add(nextWallet);
+          queue.push({
+            wallet: nextWallet,
+            depth: current.depth + 1,
+            chain: [...current.chain, current.wallet],
+            txids: [...current.txids, tx.txid]
+          });
+        }
+      }
+    }
+
+    console.log(`     📊 Explored ${nodesExplored} nodes, no node operator found`);
+    return null;
+  }
+
+  /**
+   * Get next transaction from wallet (for buying/outbound analysis)
+   */
   async getNextTransactionFromWallet(walletAddress, afterBlockHeight, afterTimestamp) {
     try {
       const addressUrl = `${FLUX_CONFIG.DATA_SOURCES.FLUX_INDEXER.baseUrl}/api/v1/addresses/${walletAddress}/transactions`;
-      console.log(`     🌐 Fetching: ${addressUrl.substring(0, 80)}...`);
       
       const response = await fetch(addressUrl, { timeout: 10000 });
-
       if (!response.ok) throw new Error(`Indexer returned ${response.status}`);
 
       const data = await response.json();
       const transactions = data.transactions || [];
       
-      console.log(`     📊 Found ${transactions.length} total transactions for wallet`);
-      console.log(`     🎯 Criteria: block > ${afterBlockHeight}, timestamp > ${afterTimestamp}, direction = 'sent'`);
-      
-      let checkedCount = 0;
-      
       for (const tx of transactions) {
-        checkedCount++;
-        
-        // Log first few transactions
-        if (checkedCount <= 3) {
-          console.log(`     🔍 TX ${checkedCount}: ${tx.txid.substring(0,10)}... block:${tx.blockHeight} time:${tx.timestamp} dir:${tx.direction}`);
-        }
-        
-        // Apply filters
-        if (tx.blockHeight <= afterBlockHeight) {
-          if (checkedCount <= 3) console.log(`        ⏩ Skip: block ${tx.blockHeight} <= ${afterBlockHeight}`);
-          continue;
-        }
-        if (tx.timestamp <= afterTimestamp) {
-          if (checkedCount <= 3) console.log(`        ⏩ Skip: timestamp ${tx.timestamp} <= ${afterTimestamp}`);
-          continue;
-        }
-        if (tx.direction !== 'sent') {
-          if (checkedCount <= 3) console.log(`        ⏩ Skip: direction '${tx.direction}' !== 'sent'`);
-          continue;
-        }
+        if (tx.blockHeight <= afterBlockHeight) continue;
+        if (tx.timestamp <= afterTimestamp) continue;
+        if (tx.direction !== 'sent') continue;
 
-        console.log(`     ✅ MATCH FOUND: ${tx.txid.substring(0, 10)}...`);
-        
         // Fetch full transaction details
         const txUrl = `${FLUX_CONFIG.DATA_SOURCES.FLUX_INDEXER.baseUrl}/api/v1/transactions/${tx.txid}`;
         const txResponse = await fetch(txUrl, { timeout: 10000 });
         
-        if (!txResponse.ok) {
-          console.error(`     ⚠️  Failed to fetch full tx details`);
-          continue;
-        }
+        if (!txResponse.ok) continue;
         
         const fullTx = await txResponse.json();
         
         // Find receiving address from vout
         if (fullTx.vout && Array.isArray(fullTx.vout)) {
-          console.log(`     📦 Transaction has ${fullTx.vout.length} outputs`);
-          
           for (const output of fullTx.vout) {
             const addresses = output.scriptPubKey?.addresses;
             if (addresses && Array.isArray(addresses) && addresses.length > 0) {
               const outputAddr = addresses[0];
               
               if (outputAddr !== walletAddress) {
-                console.log(`     ✅ Found destination: ${outputAddr}`);
                 return {
                   txid: tx.txid,
                   fromAddress: walletAddress,
                   toAddress: outputAddr,
-                  blockHeight: tx.blockHeight
+                  blockHeight: tx.blockHeight,
+                  amount: parseFloat(output.value) / 100000000
                 };
               }
             }
           }
         }
-        
-        console.log(`     ⚠️  No valid output address found`);
       }
       
-      console.log(`     ⚪ Checked ${checkedCount} transactions, none matched`);
       return null;
 
     } catch (error) {
-      console.error(`     ❌ Error:`, error.message);
+      console.error(`     ❌ Error fetching next tx:`, error.message);
       return null;
     }
   }
 
+  /**
+   * Get previous transaction to wallet (for selling/inbound analysis)
+   */
   async getPreviousTransactionToWallet(walletAddress, beforeBlockHeight, beforeTimestamp) {
     try {
       const addressUrl = `${FLUX_CONFIG.DATA_SOURCES.FLUX_INDEXER.baseUrl}/api/v1/addresses/${walletAddress}/transactions`;
-      console.log(`     🌐 Fetching: ${addressUrl.substring(0, 80)}...`);
       
       const response = await fetch(addressUrl, { timeout: 10000 });
-
       if (!response.ok) throw new Error(`Indexer returned ${response.status}`);
 
       const data = await response.json();
       const transactions = data.transactions || [];
       
-      console.log(`     📊 Found ${transactions.length} total transactions for wallet`);
-      console.log(`     🎯 Criteria: block < ${beforeBlockHeight}, timestamp < ${beforeTimestamp}, direction = 'received'`);
-      
       const relevantTxs = transactions
         .filter(tx => tx.blockHeight < beforeBlockHeight && tx.timestamp < beforeTimestamp)
         .sort((a, b) => b.blockHeight - a.blockHeight);
 
-      console.log(`     📊 ${relevantTxs.length} transactions match time criteria`);
-      
-      let checkedCount = 0;
       for (const tx of relevantTxs) {
-        checkedCount++;
-        
-        if (tx.direction !== 'received') {
-          if (checkedCount <= 3) {
-            console.log(`     🔍 TX ${checkedCount}: ${tx.txid.substring(0,10)}... dir:${tx.direction} (skip)`);
-          }
-          continue;
-        }
+        if (tx.direction !== 'received') continue;
 
-        console.log(`     ✅ MATCH FOUND: ${tx.txid.substring(0, 10)}...`);
-        
         // Fetch full transaction details
         const txUrl = `${FLUX_CONFIG.DATA_SOURCES.FLUX_INDEXER.baseUrl}/api/v1/transactions/${tx.txid}`;
         const txResponse = await fetch(txUrl, { timeout: 10000 });
         
-        if (!txResponse.ok) {
-          console.error(`     ⚠️  Failed to fetch full tx details`);
-          continue;
-        }
+        if (!txResponse.ok) continue;
         
         const fullTx = await txResponse.json();
         
         // Find sending address from vin
         if (fullTx.vin && Array.isArray(fullTx.vin)) {
-          console.log(`     📦 Transaction has ${fullTx.vin.length} inputs`);
-          
           for (const input of fullTx.vin) {
             if (input.addresses && input.addresses.length > 0) {
               const inputAddr = input.addresses[0];
-              console.log(`        💸 Input: ${inputAddr.substring(0,15)}... (${input.value || 0} FLUX)`);
               
               if (inputAddr !== walletAddress) {
-                console.log(`     ✅ Found source: ${inputAddr}`);
                 return {
                   txid: tx.txid,
                   fromAddress: inputAddr,
                   toAddress: walletAddress,
-                  blockHeight: tx.blockHeight
+                  blockHeight: tx.blockHeight,
+                  amount: parseFloat(input.value) / 100000000
                 };
               }
             }
           }
         }
-        
-        console.log(`     ⚠️  No valid input address found`);
       }
       
-      console.log(`     ⚪ No matching received transactions found`);
       return null;
 
     } catch (error) {
-      console.error(`     ❌ Error:`, error.message);
+      console.error(`     ❌ Error fetching prev tx:`, error.message);
       return null;
     }
   }
 
-  updateFlowEventToLevel1(params) {
-    const { id, flowType, newType, intermediaryWallet, actualNodeWallet, intermediaryTxid } = params;
+  /**
+   * PHASE 3: Update flow event with multi-hop detection results
+   */
+  updateFlowEventToMultiHop(params) {
+    const { id, flowType, newType, level, hopChain, nodeWallet, intermediaryTxids } = params;
 
     try {
       // Fetch node details from classification service
-      const nodeDetails = this.getNodeDetails(actualNodeWallet);
+      const nodeDetails = this.getNodeDetails(nodeWallet);
       
       const details = {
-        nodeWallet: actualNodeWallet,
-        intermediaryTxid: intermediaryTxid,
+        nodeWallet: nodeWallet,
         detectedAt: Math.floor(Date.now() / 1000),
-        // Include node count and tiers if available
+        hopCount: level,
+        intermediaryTxids: intermediaryTxids,
         ...(nodeDetails && {
           nodeCount: nodeDetails.nodeCount,
           tiers: nodeDetails.tiers
@@ -355,8 +409,9 @@ class WalletEnhancementService {
       };
 
       const updates = {
-        classificationLevel: 1,
-        intermediaryWallet: intermediaryWallet,
+        classificationLevel: level,
+        hopChain: hopChain,  // Store the chain of intermediary wallets
+        intermediaryWallet: hopChain[0],  // First wallet in chain for backward compatibility
         analysisTimestamp: Math.floor(Date.now() / 1000),
         dataSource: 'enhanced'
       };
@@ -371,7 +426,7 @@ class WalletEnhancementService {
 
       this.db.updateFlowEventClassification(id, updates);
 
-      console.log(`     💾 Updated flow event #${id} to Level 1 (${flowType})${nodeDetails ? ` - ${nodeDetails.nodeCount} nodes` : ''}`);
+      console.log(`     💾 Updated flow event #${id} to Level ${level} (${flowType})${nodeDetails ? ` - ${nodeDetails.nodeCount} nodes` : ''}`);
 
     } catch (error) {
       console.error(`     ❌ DB update error:`, error.message);

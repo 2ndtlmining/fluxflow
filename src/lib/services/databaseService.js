@@ -1,5 +1,5 @@
 // Database Service - UTXO-Aware Flow Tracking with Automatic Cleanup
-// PHASE 1: Added enhancement tracking columns to flow_events table
+// PHASE 3: Added hop_chain column and multi-hop query methods
 
 import Database from 'better-sqlite3';
 import path from 'path';
@@ -91,7 +91,7 @@ class DatabaseService {
     this.db.exec(`CREATE INDEX IF NOT EXISTS idx_tx_block ON transactions(block_height)`);
     this.db.exec(`CREATE INDEX IF NOT EXISTS idx_tx_time ON transactions(block_time)`);
     
-    // Flow events table - PHASE 1: Added enhancement columns
+    // Flow events table - PHASE 3: Added hop_chain column
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS flow_events (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -111,11 +111,14 @@ class DatabaseService {
         flow_type TEXT NOT NULL,
         amount REAL NOT NULL,
         
-        -- PHASE 1: Enhancement tracking columns
+        -- PHASE 2: Enhancement tracking columns
         classification_level INTEGER DEFAULT 0,
         intermediary_wallet TEXT DEFAULT NULL,
         analysis_timestamp INTEGER DEFAULT NULL,
         data_source TEXT DEFAULT 'sync',
+        
+        -- PHASE 3: Multi-hop chain tracking
+        hop_chain TEXT DEFAULT NULL,
         
         created_at INTEGER DEFAULT (strftime('%s', 'now')),
         
@@ -132,7 +135,7 @@ class DatabaseService {
     this.db.exec(`CREATE INDEX IF NOT EXISTS idx_flow_from_addr ON flow_events(from_address)`);
     this.db.exec(`CREATE INDEX IF NOT EXISTS idx_flow_to_addr ON flow_events(to_address)`);
     
-    // PHASE 1: Index for finding unknown wallets to enhance
+    // PHASE 2/3: Indexes for enhancement and multi-hop
     this.db.exec(`CREATE INDEX IF NOT EXISTS idx_flow_classification_level ON flow_events(classification_level)`);
     this.db.exec(`CREATE INDEX IF NOT EXISTS idx_flow_data_source ON flow_events(data_source)`);
     
@@ -213,22 +216,20 @@ class DatabaseService {
   }
 
   saveFlowEventsBatch(flowEvents) {
-    if (!flowEvents || flowEvents.length === 0) {
-      return;
-    }
+    if (!flowEvents || flowEvents.length === 0) return;
     
-    const insertMany = this.db.transaction((events) => {
-      const stmt = this.db.prepare(`
-        INSERT OR REPLACE INTO flow_events (
-          txid, vout, block_height, block_time,
-          from_address, from_type, from_details,
-          to_address, to_type, to_details,
-          flow_type, amount
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `);
-      
+    const insert = this.db.prepare(`
+      INSERT OR REPLACE INTO flow_events (
+        txid, vout, block_height, block_time,
+        from_address, from_type, from_details,
+        to_address, to_type, to_details,
+        flow_type, amount
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    
+    const batchInsert = this.db.transaction((events) => {
       for (const event of events) {
-        stmt.run(
+        insert.run(
           event.txid,
           event.vout,
           event.blockHeight,
@@ -245,137 +246,177 @@ class DatabaseService {
       }
     });
     
-    insertMany(flowEvents);
-  }
-
-  // PHASE 1: Get unknown wallets for enhancement
-  getUnknownWallets() {
-    const unknownBuys = this.db.prepare(`
-      SELECT 
-        id, txid, vout, block_height, block_time,
-        from_address, to_address, flow_type, amount
-      FROM flow_events
-      WHERE flow_type = 'buying' 
-      AND to_type = 'unknown'
-      AND classification_level = 0
-      ORDER BY block_height DESC
-    `).all();
-    
-    const unknownSells = this.db.prepare(`
-      SELECT 
-        id, txid, vout, block_height, block_time,
-        from_address, to_address, flow_type, amount
-      FROM flow_events
-      WHERE flow_type = 'selling' 
-      AND from_type = 'unknown'
-      AND classification_level = 0
-      ORDER BY block_height DESC
-    `).all();
-    
-    return {
-      buys: unknownBuys,
-      sells: unknownSells,
-      total: unknownBuys.length + unknownSells.length
-    };
-  }
-
-  // PHASE 1: Update flow event with enhanced classification
-// PHASE 2: Update flow event with enhanced classification - FIXED with logging
-  updateFlowEventClassification(id, updates) {
-    console.log(`     🔧 Updating event #${id} with:`, {
-      fromType: updates.fromType,
-      toType: updates.toType,
-      classificationLevel: updates.classificationLevel,
-      intermediaryWallet: updates.intermediaryWallet,
-      dataSource: updates.dataSource
-    });
-    
-    const stmt = this.db.prepare(`
-      UPDATE flow_events
-      SET 
-        from_type = COALESCE(?, from_type),
-        from_details = COALESCE(?, from_details),
-        to_type = COALESCE(?, to_type),
-        to_details = COALESCE(?, to_details),
-        classification_level = ?,
-        intermediary_wallet = ?,
-        analysis_timestamp = ?,
-        data_source = ?
-      WHERE id = ?
-    `);
-    
-    const result = stmt.run(
-      updates.fromType || null,
-      updates.fromDetails ? JSON.stringify(updates.fromDetails) : null,
-      updates.toType || null,
-      updates.toDetails ? JSON.stringify(updates.toDetails) : null,
-      updates.classificationLevel || 0,
-      updates.intermediaryWallet || null,
-      updates.analysisTimestamp || Math.floor(Date.now() / 1000),
-      updates.dataSource || 'enhanced',
-      id
-    );
-    
-    console.log(`     ✅ Database update result: ${result.changes} row(s) affected`);
-    
-    // Verify the update
-    const verify = this.db.prepare(`
-      SELECT classification_level, intermediary_wallet, data_source 
-      FROM flow_events WHERE id = ?
-    `).get(id);
-    
-    console.log(`     🔍 Verification - Event #${id} now has:`, verify);
-    
-    return result.changes > 0;
+    batchInsert(flowEvents);
   }
 
   getFlowEvents(startBlock, endBlock) {
     const stmt = this.db.prepare(`
       SELECT 
-        id, txid, vout,
-        block_height as blockHeight,
-        block_time as blockTime,
-        from_address as fromAddress,
-        from_type as fromType,
-        from_details as fromDetails,
-        to_address as toAddress,
-        to_type as toType,
-        to_details as toDetails,
-        flow_type as flowType,
-        amount,
+        id, txid, vout, block_height as blockHeight, block_time as blockTime,
+        from_address as fromAddress, from_type as fromType, from_details as fromDetails,
+        to_address as toAddress, to_type as toType, to_details as toDetails,
+        flow_type as flowType, amount,
         classification_level as classificationLevel,
         intermediary_wallet as intermediaryWallet,
+        hop_chain as hopChain,
+        analysis_timestamp as analysisTimestamp,
         data_source as dataSource
       FROM flow_events
       WHERE block_height BETWEEN ? AND ?
-      ORDER BY block_time DESC
+      ORDER BY block_height DESC, id DESC
     `);
     
-    return stmt.all(startBlock, endBlock).map(event => ({
+    const events = stmt.all(startBlock, endBlock);
+    
+    return events.map(event => ({
       ...event,
       fromDetails: event.fromDetails ? JSON.parse(event.fromDetails) : null,
-      toDetails: event.toDetails ? JSON.parse(event.toDetails) : null
+      toDetails: event.toDetails ? JSON.parse(event.toDetails) : null,
+      hopChain: event.hopChain ? JSON.parse(event.hopChain) : null
     }));
   }
 
+  getFlowEventById(id) {
+    const stmt = this.db.prepare(`
+      SELECT 
+        id, txid, vout, block_height as blockHeight, block_time as blockTime,
+        from_address as fromAddress, from_type as fromType, from_details as fromDetails,
+        to_address as toAddress, to_type as toType, to_details as toDetails,
+        flow_type as flowType, amount,
+        classification_level as classificationLevel,
+        intermediary_wallet as intermediaryWallet,
+        hop_chain as hopChain,
+        analysis_timestamp as analysisTimestamp,
+        data_source as dataSource
+      FROM flow_events
+      WHERE id = ?
+    `).get(id);
+    
+    if (!stmt) return null;
+    
+    return {
+      ...stmt,
+      fromDetails: stmt.fromDetails ? JSON.parse(stmt.fromDetails) : null,
+      toDetails: stmt.toDetails ? JSON.parse(stmt.toDetails) : null,
+      hopChain: stmt.hopChain ? JSON.parse(stmt.hopChain) : null
+    };
+  }
+
+  // PHASE 2: Get unknown wallets to enhance
+  getUnknownWallets() {
+    const buys = this.db.prepare(`
+      SELECT 
+        id, txid, vout, 
+        block_height, block_time,
+        from_address, to_address,
+        amount,
+        classification_level
+      FROM flow_events
+      WHERE flow_type = 'buying' 
+        AND to_type = 'unknown'
+        AND classification_level = 0
+      ORDER BY block_height DESC
+      LIMIT 1000
+    `).all();
+    
+    const sells = this.db.prepare(`
+      SELECT 
+        id, txid, vout,
+        block_height, block_time,
+        from_address, to_address,
+        amount,
+        classification_level
+      FROM flow_events
+      WHERE flow_type = 'selling'
+        AND from_type = 'unknown'
+        AND classification_level = 0
+      ORDER BY block_height DESC
+      LIMIT 1000
+    `).all();
+    
+    return {
+      buys,
+      sells,
+      total: buys.length + sells.length
+    };
+  }
+
+  // PHASE 2/3: Update flow event classification (supports both 1-hop and multi-hop)
+  updateFlowEventClassification(id, updates) {
+    const setParts = [];
+    const values = [];
+    
+    if (updates.classificationLevel !== undefined) {
+      setParts.push('classification_level = ?');
+      values.push(updates.classificationLevel);
+    }
+    
+    if (updates.intermediaryWallet !== undefined) {
+      setParts.push('intermediary_wallet = ?');
+      values.push(updates.intermediaryWallet);
+    }
+    
+    // PHASE 3: Add hop_chain support
+    if (updates.hopChain !== undefined) {
+      setParts.push('hop_chain = ?');
+      values.push(updates.hopChain ? JSON.stringify(updates.hopChain) : null);
+    }
+    
+    if (updates.analysisTimestamp !== undefined) {
+      setParts.push('analysis_timestamp = ?');
+      values.push(updates.analysisTimestamp);
+    }
+    
+    if (updates.dataSource !== undefined) {
+      setParts.push('data_source = ?');
+      values.push(updates.dataSource);
+    }
+    
+    if (updates.fromType !== undefined) {
+      setParts.push('from_type = ?');
+      values.push(updates.fromType);
+    }
+    
+    if (updates.fromDetails !== undefined) {
+      setParts.push('from_details = ?');
+      values.push(updates.fromDetails ? JSON.stringify(updates.fromDetails) : null);
+    }
+    
+    if (updates.toType !== undefined) {
+      setParts.push('to_type = ?');
+      values.push(updates.toType);
+    }
+    
+    if (updates.toDetails !== undefined) {
+      setParts.push('to_details = ?');
+      values.push(updates.toDetails ? JSON.stringify(updates.toDetails) : null);
+    }
+    
+    if (setParts.length === 0) {
+      throw new Error('No updates provided');
+    }
+    
+    values.push(id);
+    
+    const sql = `UPDATE flow_events SET ${setParts.join(', ')} WHERE id = ?`;
+    const stmt = this.db.prepare(sql);
+    
+    return stmt.run(...values);
+  }
+
   getLatestBlockHeight() {
-    const result = this.db.prepare('SELECT MAX(height) as height FROM blocks').get();
-    return result?.height || 0;
+    const result = this.db.prepare('SELECT MAX(height) as maxHeight FROM blocks').get();
+    return result?.maxHeight || 0;
+  }
+
+  getBlockCount() {
+    return this.db.prepare('SELECT COUNT(*) as count FROM blocks').get().count;
   }
 
   getStats() {
     const blocks = this.db.prepare('SELECT COUNT(*) as count FROM blocks').get().count;
     const transactions = this.db.prepare('SELECT COUNT(*) as count FROM transactions').get().count;
     const flowEvents = this.db.prepare('SELECT COUNT(*) as count FROM flow_events').get().count;
-    
-    // PHASE 1: Add enhancement stats
-    const enhancementStats = this.db.prepare(`
-      SELECT 
-        classification_level,
-        COUNT(*) as count
-      FROM flow_events
-      GROUP BY classification_level
-    `).all();
     
     const flowStats = this.db.prepare(`
       SELECT 
@@ -386,12 +427,22 @@ class DatabaseService {
       GROUP BY flow_type
     `).all();
     
-    const sizeResult = this.db.prepare(`
-      SELECT page_count * page_size as size 
-      FROM pragma_page_count(), pragma_page_size()
-    `).get();
+    // PHASE 2/3: Enhancement statistics
+    const enhancementStats = this.db.prepare(`
+      SELECT 
+        classification_level,
+        data_source,
+        COUNT(*) as count
+      FROM flow_events
+      WHERE classification_level > 0
+      GROUP BY classification_level, data_source
+    `).all();
     
-    const bytes = sizeResult.size;
+    const result = this.db.prepare(
+      "SELECT page_count * page_size as size FROM pragma_page_count(), pragma_page_size()"
+    ).get();
+    const bytes = result?.size || 0;
+    
     let dbSize;
     if (bytes < 1024) dbSize = `${bytes} B`;
     else if (bytes < 1024 * 1024) dbSize = `${(bytes / 1024).toFixed(2)} KB`;
@@ -408,7 +459,7 @@ class DatabaseService {
       transactions,
       flowEvents,
       flowStats,
-      enhancementStats,  // PHASE 1: New
+      enhancementStats,
       dbSize,
       dbSizeBytes: bytes,
       blockRange: blockRange || { minHeight: 0, maxHeight: 0 }

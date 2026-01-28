@@ -7,7 +7,7 @@
   import PeriodSelector from '$lib/components/PeriodSelector.svelte';
   import FlowComparison from '$lib/components/FlowComparison.svelte';
   import TransactionTable from '$lib/components/TransactionTable.svelte';
-  import WalletEnhancement from '$lib/components/WalletEnhancement.svelte';
+  // PHASE 4: Removed WalletEnhancement component - now handled by background job
   
   let API_URL = '';
   
@@ -87,8 +87,7 @@
 <div class="container">
   <FlowStats />
   
-  <!-- PHASE 2: Wallet Enhancement Panel -->
-  <WalletEnhancement />
+  <!-- PHASE 4: WalletEnhancement panel removed - auto-enhancement runs in background -->
   
   <PeriodSelector 
     selected={selectedPeriod} 
