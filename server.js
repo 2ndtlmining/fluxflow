@@ -8,7 +8,7 @@ import { startBlockSyncScheduler, getBlockSyncSchedulerStatus } from './src/lib/
 import ClassificationService from './src/lib/services/classificationService.js';
 import FlowAnalysisService from './src/lib/services/flowAnalysisService.js';
 import WalletEnhancementService from './src/lib/services/walletEnhancementService.js';
-import BackgroundEnhancementService from './src/lib/services/backgroundenhancementservice.js'; // PHASE 4
+import BackgroundEnhancementService from './src/lib/services/Backgroundenhancementservice.js'; // PHASE 4
 
 const app = express();
 const PORT = process.env.PORT || 3000;
