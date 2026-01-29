@@ -1,5 +1,5 @@
 // Flux Flow Tracker Configuration
-// PHASE 4: Added background enhancement and auto-enhancement settings
+// PHASE 5: Added historical node detection via coinbase transactions
 
 export const FLUX_CONFIG = {
   // ============================================================================
@@ -78,7 +78,7 @@ export const FLUX_CONFIG = {
   SYNC_SETTINGS: {
     FLUX_INDEXER: {
       // Aggressive settings for local indexer (no rate limits!)
-      BATCH_SIZE: 300,              // 500 blocks per batch (vs 30)
+      BATCH_SIZE: 500,              // 500 blocks per batch (vs 30)
       MAX_CONCURRENT: 10,           // 10 concurrent requests (vs 2)
       MIN_REQUEST_DELAY: 10,        // 10ms delay (vs 200ms)
       BATCH_DELAY: 100,             // 100ms between batches (vs 1000ms)
@@ -140,7 +140,7 @@ export const FLUX_CONFIG = {
   MIN_TRANSACTION_VALUE: 1,
 
   // ============================================================================
-  // WALLET ENHANCEMENT - PHASE 2, 3 & 4
+  // WALLET ENHANCEMENT - PHASE 2, 3, 4 & 5
   // ============================================================================
   
   ENHANCEMENT: {
@@ -154,7 +154,7 @@ export const FLUX_CONFIG = {
     MULTI_HOP: {
       ENABLED: true,
       MAX_DEPTH: 3,  // Maximum hop depth (1, 2, or 3)
-      DEFAULT_DEPTH: 1,  // Start with 1-hop by default
+      DEFAULT_DEPTH: 2,  // Start with 2-hop by default
       TIME_WINDOW_BLOCKS: 100,  // Look within 100 blocks (~50 minutes)
       MAX_BRANCHES_PER_WALLET: 5,  // Don't follow more than 5 branches from one wallet
       CIRCULAR_DETECTION: true,  // Prevent infinite loops
@@ -176,6 +176,33 @@ export const FLUX_CONFIG = {
       RUN_ON_START: true,  // Run once on server startup (after 5 sec delay)
       MIN_UNKNOWNS_THRESHOLD: 5,  // Only run if at least 5 unknowns
       PAUSE_DURING_SYNC: false  // Don't pause during sync (enhancement is non-blocking)
+    },
+    
+    // PHASE 5: Historical node detection via coinbase transactions
+    HISTORICAL_DETECTION: {
+      ENABLED: true,  // Enable historical node operator detection
+      TIME_WINDOW_BLOCKS: 1051200,  // 1 year (~365 days at 30s/block)
+      MIN_COINBASE_COUNT: 1,  // At least 1 coinbase transaction = proof
+      APPLY_AT_ALL_LEVELS: true,  // Check at Level 0, 1, 2, and 3
+      LOG_COINBASE_CHECKS: true  // Log when checking for coinbase transactions
+    },
+    
+    // PHASE 5.1: Historical connection detection (sent to/from node operators)
+    HISTORICAL_CONNECTIONS: {
+      ENABLED: true,  // Enable historical connection detection
+      TIME_WINDOW_BLOCKS: 1051200,  // 1 year (same as coinbase detection)
+      CHECK_OUTBOUND: true,  // Check if wallet sent to node operators
+      CHECK_INBOUND: true,  // Check if wallet received from node operators
+      MAX_TRANSACTIONS_TO_CHECK: 100  // Limit API calls per wallet
+    },
+    
+    // PHASE 7.2: Parallel processing for faster enhancement
+    PARALLEL_PROCESSING: {
+      ENABLED: true,               // Enable parallel batch processing
+      BATCH_SIZE: 5,               // Process 5 unknowns concurrently
+      MAX_CONCURRENT: 10,          // Safety limit - never exceed 10 concurrent
+      LOG_BATCH_PROGRESS: true,    // Show detailed batch execution logs
+      LOG_INDIVIDUAL_TIMING: true  // Show timing for each unknown in batch
     }
   },
 
@@ -199,7 +226,8 @@ export const FLUX_CONFIG = {
     LOG_DATA_SOURCE_SWITCHES: true,
     LOG_ENHANCEMENT: true,  // PHASE 2/3: Log enhancement activity
     LOG_MULTI_HOP: true,  // PHASE 3: Log multi-hop detection
-    LOG_BACKGROUND_JOB: true  // PHASE 4: Log background enhancement
+    LOG_BACKGROUND_JOB: true,  // PHASE 4: Log background enhancement
+    LOG_HISTORICAL_DETECTION: true  // PHASE 5: Log historical node detection
   },
   
   PERFORMANCE: {

@@ -40,7 +40,6 @@
   
   function getWalletType(event) {
     const walletType = type === 'selling' ? event.fromType : event.toType;
-    // Normalize 'node' to 'node_operator'
     return walletType === 'node' ? 'node_operator' : walletType;
   }
   
@@ -69,32 +68,159 @@
     return details?.tiers || { CUMULUS: 0, NIMBUS: 0, STRATUS: 0 };
   }
   
-  // PHASE 2: Level 1 detection - check ALL possible field name variations
-  function isLevel1(event) {
-    return event.classificationLevel === 1 || 
-           event.classification_level === 1 ||
+  // PHASE 3+: Get classification level (0, 1, 2, 3)
+  function getClassificationLevel(event) {
+    return event.classificationLevel || event.classification_level || 0;
+  }
+  
+  // PHASE 3+: Check if enhanced (any level > 0)
+  function isEnhanced(event) {
+    return getClassificationLevel(event) > 0 || 
            event.dataSource === 'enhanced' ||
            event.data_source === 'enhanced';
   }
   
-  function getIntermediaryWallet(event) {
-    return event.intermediaryWallet || event.intermediary_wallet;
+  // PHASE 3+: Get hop chain (array of intermediary wallets)
+  function getHopChain(event) {
+    const chain = event.hopChain || event.hop_chain;
+    if (!chain) return null;
+    
+    // Parse if string
+    if (typeof chain === 'string') {
+      try {
+        return JSON.parse(chain);
+      } catch {
+        return null;
+      }
+    }
+    
+    return Array.isArray(chain) ? chain : null;
   }
   
+  // PHASE 3+: Get actual node wallet from details
   function getActualNodeWallet(event) {
     const details = getWalletDetails(event);
     return details?.nodeWallet || details?.node_wallet;
   }
   
-  // Debug helper - log event structure for first event
+  // PHASE 5+: Get detection method
+  function getDetectionMethod(event) {
+    const details = getWalletDetails(event);
+    return details?.detectionMethod || details?.detection_method || 'current_api';
+  }
+  
+  // PHASE 5+: Get detection status
+  function getDetectionStatus(event) {
+    const details = getWalletDetails(event);
+    return details?.status || 'active';
+  }
+  
+  // PHASE 5.1: Get historical connection info
+  function getHistoricalConnectionInfo(event) {
+    const details = getWalletDetails(event);
+    const method = getDetectionMethod(event);
+    
+    if (method === 'historical_connection') {
+      return {
+        nodeWallet: details?.nodeWallet,
+        txid: details?.connectionTxid,
+        daysAgo: details?.daysAgo,
+        status: details?.status
+      };
+    }
+    
+    if (method === 'historical_coinbase') {
+      return {
+        nodeWallet: details?.nodeWallet,
+        coinbaseCount: details?.coinbaseCount,
+        daysInactive: details?.daysInactive
+      };
+    }
+    
+    return null;
+  }
+  
+  // PHASE 3+: Build wallet display hierarchy
+  function buildWalletHierarchy(event) {
+    const level = getClassificationLevel(event);
+    const chain = getHopChain(event);
+    const nodeWallet = getActualNodeWallet(event);
+    const directWallet = getWalletAddress(event);
+    const method = getDetectionMethod(event);
+    const historicalInfo = getHistoricalConnectionInfo(event);
+    
+    // Level 0 with historical connection or coinbase
+    if (level === 0 && (method === 'historical_connection' || method === 'historical_coinbase')) {
+      return {
+        type: 'historical',
+        directWallet: directWallet,
+        nodeWallet: historicalInfo?.nodeWallet || nodeWallet,
+        method: method,
+        info: historicalInfo
+      };
+    }
+    
+    // Multi-hop (Level 1, 2, 3)
+    if (level > 0 && chain && chain.length > 0) {
+      return {
+        type: 'multi-hop',
+        chain: chain,
+        nodeWallet: nodeWallet || directWallet,
+        level: level,
+        method: method
+      };
+    }
+    
+    // Direct (Level 0, no enhancement)
+    return {
+      type: 'direct',
+      wallet: directWallet
+    };
+  }
+  
+  // PHASE 3+: Get badge info
+  function getBadgeInfo(event) {
+    const level = getClassificationLevel(event);
+    const method = getDetectionMethod(event);
+    const status = getDetectionStatus(event);
+    
+    if (!isEnhanced(event)) return null;
+    
+    const badges = {
+      level: level,
+      method: method,
+      status: status,
+      label: `L${level}`,
+      title: `Level ${level} Detection`,
+      description: ''
+    };
+    
+    // Build description
+    if (method === 'historical_coinbase') {
+      badges.description = `Historical node operator (coinbase detected)`;
+    } else if (method === 'historical_connection') {
+      badges.description = `Historical connection to node operator`;
+    } else if (method === 'current_api') {
+      badges.description = `Active node operator`;
+    }
+    
+    if (level === 0) {
+      badges.description = badges.description + ' (direct)';
+    } else {
+      badges.description = badges.description + ` (${level}-hop)`;
+    }
+    
+    return badges;
+  }
+  
+  // Debug helper
   $: if (events.length > 0 && events[0]) {
-    console.log('📊 Transaction Table - First Event Structure:', {
-      classificationLevel: events[0].classificationLevel,
-      intermediaryWallet: events[0].intermediaryWallet,
-      dataSource: events[0].dataSource,
-      fromType: events[0].fromType,
-      toType: events[0].toType,
-      isLevel1: isLevel1(events[0])
+    console.log('📊 Transaction Table - First Event:', {
+      classificationLevel: getClassificationLevel(events[0]),
+      hopChain: getHopChain(events[0]),
+      detectionMethod: getDetectionMethod(events[0]),
+      hierarchy: buildWalletHierarchy(events[0]),
+      badge: getBadgeInfo(events[0])
     });
   }
 </script>
@@ -124,7 +250,9 @@
         </thead>
         <tbody>
           {#each events as event}
-            <tr class:level-1-row={isLevel1(event)}>
+            {@const hierarchy = buildWalletHierarchy(event)}
+            {@const badgeInfo = getBadgeInfo(event)}
+            <tr class:enhanced-row={isEnhanced(event)}>
               <td>
                 <a 
                   href="https://flux.beer/tx/{event.txid}" 
@@ -155,39 +283,66 @@
                 </div>
               </td>
               <td>
-                {#if isLevel1(event) && getIntermediaryWallet(event)}
-                  <!-- PHASE 2: Show intermediary wallet for Level 1 -->
+                <!-- PHASE 5+: Multi-hop chain -->
+                {#if hierarchy.type === 'multi-hop'}
                   <div class="wallet-hierarchy">
+                    {#each hierarchy.chain as intermediary, idx}
+                      <a 
+                        href="https://flux.beer/address/{intermediary}" 
+                        target="_blank" 
+                        rel="noopener noreferrer"
+                        class="address-link intermediary"
+                        title="{intermediary} (Hop {idx + 1})"
+                      >
+                        {shortenAddress(intermediary)}
+                      </a>
+                      <span class="arrow">→</span>
+                    {/each}
                     <a 
-                      href="https://flux.beer/address/{getIntermediaryWallet(event)}" 
-                      target="_blank" 
-                      rel="noopener noreferrer"
-                      class="address-link intermediary"
-                      title="{getIntermediaryWallet(event)} (Intermediary)"
-                    >
-                      {shortenAddress(getIntermediaryWallet(event))}
-                    </a>
-                    <span class="arrow">→</span>
-                    <a 
-                      href="https://flux.beer/address/{getActualNodeWallet(event) || getWalletAddress(event)}" 
+                      href="https://flux.beer/address/{hierarchy.nodeWallet}" 
                       target="_blank" 
                       rel="noopener noreferrer"
                       class="address-link node-wallet"
-                      title="{getActualNodeWallet(event) || getWalletAddress(event)} (Node Wallet)"
+                      title="{hierarchy.nodeWallet} (Node Wallet)"
                     >
-                      {shortenAddress(getActualNodeWallet(event) || getWalletAddress(event))}
+                      {shortenAddress(hierarchy.nodeWallet)}
                     </a>
                   </div>
+                
+                <!-- PHASE 5.1: Historical connection -->
+                {:else if hierarchy.type === 'historical'}
+                  <div class="wallet-hierarchy">
+                    <a 
+                      href="https://flux.beer/address/{hierarchy.directWallet}" 
+                      target="_blank" 
+                      rel="noopener noreferrer"
+                      class="address-link"
+                      title="{hierarchy.directWallet} (Direct Wallet)"
+                    >
+                      {shortenAddress(hierarchy.directWallet)}
+                    </a>
+                    <span class="arrow historical-arrow" title="{hierarchy.method === 'historical_connection' ? 'Historical connection' : 'Historical coinbase'}">⟿</span>
+                    <a 
+                      href="https://flux.beer/address/{hierarchy.nodeWallet}" 
+                      target="_blank" 
+                      rel="noopener noreferrer"
+                      class="address-link node-wallet"
+                      title="{hierarchy.nodeWallet} (Node Wallet)"
+                    >
+                      {shortenAddress(hierarchy.nodeWallet)}
+                    </a>
+                  </div>
+                
+                <!-- Direct wallet (Level 0, no enhancement) -->
                 {:else}
-                  <!-- Level 0: Direct transaction -->
                   <a 
-                    href="https://flux.beer/address/{getWalletAddress(event)}" 
+                    href="https://flux.beer/address/{hierarchy.wallet}" 
                     target="_blank" 
                     rel="noopener noreferrer"
                     class="address-link"
-                    title={getWalletAddress(event)}
+                    title={hierarchy.wallet}
                   >
-                    {shortenAddress(getWalletAddress(event))}
+                    {shortenAddress(hierarchy.wallet)}
                   </a>
                 {/if}
               </td>
@@ -195,7 +350,7 @@
                 {#if getWalletType(event) === 'node_operator'}
                   <div class="node-operator-cell">
                     <a 
-                      href="https://fluxnode.app.runonflux.io/#/nodes?wallet={getActualNodeWallet(event) || getWalletAddress(event)}"
+                      href="https://fluxnode.app.runonflux.io/#/nodes?wallet={hierarchy.nodeWallet || hierarchy.wallet}"
                       target="_blank"
                       rel="noopener noreferrer"
                       class="wallet-type-link node_operator"
@@ -203,32 +358,32 @@
                       Node Operator
                     </a>
                     
-                    <!-- PHASE 2: Level 1 Badge -->
-                    {#if isLevel1(event)}
-                      <span class="level-badge level-1" title="1-Hop Analysis: Detected through intermediary wallet">
-                        L1
+                    <!-- PHASE 3+: Level Badge -->
+                    {#if badgeInfo}
+                      <span 
+                        class="level-badge level-{badgeInfo.level} {badgeInfo.method}" 
+                        title="{badgeInfo.title}: {badgeInfo.description}"
+                      >
+                        {badgeInfo.label}
                         <div class="level-tooltip">
                           <div class="tooltip-header">
                             <Info size={14} />
-                            <span>Level 1 Detection</span>
+                            <span>{badgeInfo.title}</span>
                           </div>
                           <div class="tooltip-content">
-                            <p>Detected via 1-hop analysis</p>
-                            <div class="flow-diagram">
-                              {#if type === 'buying'}
-                                <div class="flow-step">Exchange</div>
-                                <div class="flow-arrow">↓</div>
-                                <div class="flow-step highlight">Intermediary</div>
-                                <div class="flow-arrow">↓</div>
-                                <div class="flow-step">Node Wallet</div>
-                              {:else}
-                                <div class="flow-step">Node Wallet</div>
-                                <div class="flow-arrow">↓</div>
-                                <div class="flow-step highlight">Intermediary</div>
-                                <div class="flow-arrow">↓</div>
-                                <div class="flow-step">Exchange</div>
+                            <p><strong>Method:</strong> {badgeInfo.method.replace('_', ' ')}</p>
+                            <p><strong>Status:</strong> {badgeInfo.status}</p>
+                            {#if hierarchy.type === 'multi-hop'}
+                              <p><strong>Hops:</strong> {hierarchy.chain.length}</p>
+                            {/if}
+                            {#if hierarchy.info}
+                              {#if hierarchy.info.daysAgo !== undefined}
+                                <p><strong>Last seen:</strong> {hierarchy.info.daysAgo} days ago</p>
                               {/if}
-                            </div>
+                              {#if hierarchy.info.coinbaseCount !== undefined}
+                                <p><strong>Coinbase txs:</strong> {hierarchy.info.coinbaseCount}</p>
+                              {/if}
+                            {/if}
                           </div>
                         </div>
                       </span>
@@ -359,12 +514,12 @@
     background: rgba(6, 182, 212, 0.05);
   }
 
-  /* PHASE 2: Subtle highlight for Level 1 rows */
-  tbody tr.level-1-row {
+  /* PHASE 3+: Subtle highlight for enhanced rows */
+  tbody tr.enhanced-row {
     background: rgba(245, 158, 11, 0.02);
   }
 
-  tbody tr.level-1-row:hover {
+  tbody tr.enhanced-row:hover {
     background: rgba(245, 158, 11, 0.08);
   }
 
@@ -388,7 +543,7 @@
     text-decoration: underline;
   }
 
-  /* PHASE 2: Wallet hierarchy styling */
+  /* PHASE 3+: Wallet hierarchy styling */
   .wallet-hierarchy {
     display: flex;
     align-items: center;
@@ -402,21 +557,23 @@
 
   .address-link.node-wallet {
     color: #10b981;
-    font-weight: 600;
+    font-weight: 500;
   }
 
   .arrow {
     color: #64748b;
+    font-size: 0.875rem;
+  }
+
+  .arrow.historical-arrow {
+    color: #8b5cf6;
     font-size: 1rem;
   }
 
   .amount {
-    font-weight: 600;
-    color: #10b981;
-  }
-
-  .exchange-name {
     font-weight: 500;
+    font-family: 'Courier New', monospace;
+    color: #10b981;
   }
 
   .exchange-cell {
@@ -426,44 +583,15 @@
   }
 
   .exchange-logo {
-    width: 24px;
-    height: 24px;
+    width: 20px;
+    height: 20px;
     border-radius: 4px;
-    object-fit: contain;
-    flex-shrink: 0;
   }
 
-  .wallet-type {
-    display: inline-block;
-    padding: 0.25rem 0.75rem;
-    border-radius: 9999px;
-    font-size: 0.75rem;
-    font-weight: 500;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-  }
-
-  .wallet-type.exchange {
-    background: rgba(239, 68, 68, 0.1);
-    color: #f87171;
-  }
-
-  .wallet-type.node_operator {
-    background: rgba(59, 130, 246, 0.1);
-    color: #60a5fa;
-  }
-
-  .wallet-type.foundation {
-    background: rgba(168, 85, 247, 0.1);
-    color: #a78bfa;
-  }
-
-  .wallet-type.unknown {
-    background: rgba(148, 163, 184, 0.1);
+  .exchange-name {
     color: #94a3b8;
   }
 
-  /* Node Operator Cell Styling */
   .node-operator-cell {
     display: flex;
     align-items: center;
@@ -472,66 +600,79 @@
   }
 
   .wallet-type-link {
-    display: inline-block;
-    padding: 0.25rem 0.75rem;
-    border-radius: 9999px;
-    font-size: 0.75rem;
-    font-weight: 500;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
+    color: #10b981;
     text-decoration: none;
+    font-weight: 500;
     transition: all 0.2s;
   }
 
-  .wallet-type-link.node_operator {
-    background: rgba(59, 130, 246, 0.1);
-    color: #60a5fa;
+  .wallet-type-link:hover {
+    color: #059669;
+    text-decoration: underline;
   }
 
-  .wallet-type-link.node_operator:hover {
-    background: rgba(59, 130, 246, 0.2);
-    color: #93c5fd;
+  .wallet-type {
+    padding: 0.25rem 0.75rem;
+    border-radius: 4px;
+    font-size: 0.75rem;
+    font-weight: 500;
   }
 
-  /* PHASE 2: Level 1 Badge */
+  .wallet-type.node_operator {
+    background: rgba(16, 185, 129, 0.1);
+    color: #10b981;
+  }
+
+  .wallet-type.exchange {
+    background: rgba(6, 182, 212, 0.1);
+    color: #06b6d4;
+  }
+
+  .wallet-type.foundation {
+    background: rgba(245, 158, 11, 0.1);
+    color: #f59e0b;
+  }
+
+  .wallet-type.unknown {
+    background: rgba(148, 163, 184, 0.1);
+    color: #94a3b8;
+  }
+
+  /* PHASE 3+: Level badges */
   .level-badge {
     position: relative;
     display: inline-flex;
     align-items: center;
-    justify-content: center;
-    min-width: 32px;
-    height: 24px;
-    padding: 0 0.5rem;
-    border-radius: 12px;
-    font-size: 0.7rem;
-    font-weight: 700;
+    padding: 0.25rem 0.5rem;
+    border-radius: 4px;
+    font-size: 0.75rem;
+    font-weight: 600;
     cursor: help;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
+  }
+
+  .level-badge.level-0 {
+    background: rgba(139, 92, 246, 0.1);
+    color: #8b5cf6;
   }
 
   .level-badge.level-1 {
-    background: rgba(245, 158, 11, 0.2);
-    color: #fbbf24;
-    border: 1px solid rgba(245, 158, 11, 0.4);
+    background: rgba(245, 158, 11, 0.1);
+    color: #f59e0b;
   }
 
-  .level-tooltip {
-    position: absolute;
-    bottom: calc(100% + 8px);
-    left: 50%;
-    transform: translateX(-50%);
-    background: rgba(15, 23, 42, 0.98);
-    border: 1px solid rgba(245, 158, 11, 0.4);
-    border-radius: 8px;
-    padding: 0.75rem;
-    min-width: 200px;
-    opacity: 0;
-    visibility: hidden;
-    transition: all 0.2s;
-    pointer-events: none;
-    z-index: 1001;
-    box-shadow: 0 10px 25px rgba(0, 0, 0, 0.5);
+  .level-badge.level-2 {
+    background: rgba(239, 68, 68, 0.1);
+    color: #ef4444;
+  }
+
+  .level-badge.level-3 {
+    background: rgba(236, 72, 153, 0.1);
+    color: #ec4899;
+  }
+
+  .level-badge.historical_coinbase,
+  .level-badge.historical_connection {
+    border: 1px solid currentColor;
   }
 
   .level-badge:hover .level-tooltip {
@@ -539,71 +680,21 @@
     visibility: visible;
   }
 
-  .flow-diagram {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 0.25rem;
-    margin-top: 0.5rem;
-    font-size: 0.75rem;
-  }
-
-  .flow-step {
-    background: rgba(100, 116, 139, 0.2);
-    padding: 0.25rem 0.5rem;
-    border-radius: 4px;
-    color: #94a3b8;
-    font-size: 0.7rem;
-  }
-
-  .flow-step.highlight {
-    background: rgba(245, 158, 11, 0.2);
-    color: #fbbf24;
-    font-weight: 600;
-  }
-
-  .flow-arrow {
-    color: #64748b;
-    font-size: 1rem;
-  }
-
-  .node-count-badge {
-    position: relative;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    min-width: 24px;
-    height: 24px;
-    padding: 0 0.5rem;
-    background: rgba(6, 182, 212, 0.2);
-    color: #06b6d4;
-    border-radius: 12px;
-    font-size: 0.75rem;
-    font-weight: 600;
-    cursor: help;
-  }
-
-  .node-tooltip {
+  .level-tooltip {
     position: absolute;
-    bottom: calc(100% + 8px);
+    bottom: calc(100% + 0.5rem);
     left: 50%;
     transform: translateX(-50%);
-    background: rgba(15, 23, 42, 0.98);
-    border: 1px solid rgba(6, 182, 212, 0.3);
+    background: rgba(15, 23, 42, 0.95);
+    border: 1px solid rgba(148, 163, 184, 0.2);
     border-radius: 8px;
     padding: 0.75rem;
-    min-width: 180px;
+    min-width: 200px;
     opacity: 0;
     visibility: hidden;
     transition: all 0.2s;
-    pointer-events: none;
-    z-index: 1000;
-    box-shadow: 0 10px 25px rgba(0, 0, 0, 0.5);
-  }
-
-  .node-count-badge:hover .node-tooltip {
-    opacity: 1;
-    visibility: visible;
+    z-index: 100;
+    box-shadow: 0 10px 25px rgba(0, 0, 0, 0.3);
   }
 
   .tooltip-header {
@@ -612,78 +703,114 @@
     gap: 0.5rem;
     margin-bottom: 0.5rem;
     padding-bottom: 0.5rem;
-    border-bottom: 1px solid rgba(148, 163, 184, 0.2);
-    color: #06b6d4;
-    font-size: 0.75rem;
+    border-bottom: 1px solid rgba(148, 163, 184, 0.1);
     font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
+    color: #06b6d4;
   }
 
   .tooltip-content {
-    display: flex;
-    flex-direction: column;
-    gap: 0.5rem;
+    font-size: 0.75rem;
+    color: #cbd5e1;
   }
 
   .tooltip-content p {
-    margin: 0;
-    color: #94a3b8;
+    margin: 0.25rem 0;
+  }
+
+  .node-count-badge {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    padding: 0.25rem 0.5rem;
+    background: rgba(6, 182, 212, 0.1);
+    color: #06b6d4;
+    border-radius: 4px;
     font-size: 0.75rem;
-    line-height: 1.4;
+    font-weight: 600;
+    cursor: help;
+  }
+
+  .node-count-badge:hover .node-tooltip {
+    opacity: 1;
+    visibility: visible;
+  }
+
+  .node-tooltip {
+    position: absolute;
+    bottom: calc(100% + 0.5rem);
+    left: 50%;
+    transform: translateX(-50%);
+    background: rgba(15, 23, 42, 0.95);
+    border: 1px solid rgba(148, 163, 184, 0.2);
+    border-radius: 8px;
+    padding: 0.75rem;
+    min-width: 180px;
+    opacity: 0;
+    visibility: hidden;
+    transition: all 0.2s;
+    z-index: 100;
+    box-shadow: 0 10px 25px rgba(0, 0, 0, 0.3);
   }
 
   .tier-row {
     display: flex;
     align-items: center;
     gap: 0.5rem;
-    font-size: 0.875rem;
+    margin: 0.25rem 0;
+    font-size: 0.75rem;
   }
 
   .tier-dot {
-    width: 8px;
-    height: 8px;
+    width: 6px;
+    height: 6px;
     border-radius: 50%;
-    flex-shrink: 0;
   }
 
   .tier-row.cumulus .tier-dot {
-    background: #f87171;
+    background: #10b981;
   }
 
   .tier-row.nimbus .tier-dot {
-    background: #a78bfa;
+    background: #06b6d4;
   }
 
   .tier-row.stratus .tier-dot {
-    background: #60a5fa;
+    background: #8b5cf6;
   }
 
   .tier-name {
     color: #94a3b8;
-    flex: 1;
   }
 
   .tier-count {
     color: #e2e8f0;
     font-weight: 600;
+    margin-left: auto;
   }
 
   .block-height a {
-    color: #94a3b8;
+    color: #64748b;
     text-decoration: none;
+    font-family: 'Courier New', monospace;
     transition: color 0.2s;
   }
 
   .block-height a:hover {
-    color: #06b6d4;
+    color: #94a3b8;
     text-decoration: underline;
   }
 
-  /* Responsive */
   @media (max-width: 768px) {
     .transaction-table-container {
       padding: 1rem;
+    }
+
+    .table-wrapper {
+      overflow-x: scroll;
+    }
+
+    table {
+      min-width: 800px;
     }
 
     th, td {
@@ -691,15 +818,8 @@
       font-size: 0.75rem;
     }
 
-    .node-operator-cell {
-      flex-direction: column;
-      align-items: flex-start;
-      gap: 0.25rem;
-    }
-
     .wallet-hierarchy {
-      flex-direction: column;
-      align-items: flex-start;
+      font-size: 0.75rem;
     }
   }
 </style>
