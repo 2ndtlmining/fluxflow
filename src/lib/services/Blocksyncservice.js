@@ -295,15 +295,15 @@ class BlockSyncService {
       const latestSynced = this.db.getLatestBlockHeight();
       console.log(`📊 Latest synced block: ${latestSynced.toLocaleString()}`);
       
-      const oneYearBlocks = FLUX_CONFIG.PERIODS['1Y'];
-      this.targetBlock = Math.max(this.currentBlock - oneYearBlocks, 1);
-      
-      console.log(`📊 Target block (1 year back): ${this.targetBlock.toLocaleString()}`);
-      
+      const sixMonthBlocks = FLUX_CONFIG.PERIODS['6M'];
+      this.targetBlock = Math.max(this.currentBlock - sixMonthBlocks, 1);
+
+      console.log(`📊 Target block (6 months back): ${this.targetBlock.toLocaleString()}`);
+
       const stats = this.db.getStats();
       console.log(`📊 Blocks in database: ${stats.blocks.toLocaleString()}`);
-      
-      this.isInitialSync = stats.blocks < oneYearBlocks;
+
+      this.isInitialSync = stats.blocks < sixMonthBlocks;
       
       console.log('✓ BlockSyncService initialized');
       
@@ -315,8 +315,8 @@ class BlockSyncService {
   getStatus() {
     const latestSynced = this.db.getLatestBlockHeight();
     const stats = this.db.getStats();
-    const oneYearBlocks = FLUX_CONFIG.PERIODS['1Y'];
-    const syncProgress = Math.min(100, (stats.blocks / oneYearBlocks) * 100);
+    const sixMonthBlocks = FLUX_CONFIG.PERIODS['6M'];
+    const syncProgress = Math.min(100, (stats.blocks / sixMonthBlocks) * 100);
     
     return {
       currentBlock: this.currentBlock,
@@ -672,12 +672,12 @@ class BlockSyncService {
       }
       
       const stats = this.db.getStats();
-      const oneYearBlocks = FLUX_CONFIG.PERIODS['1Y'];
-      
+      const sixMonthBlocks = FLUX_CONFIG.PERIODS['6M'];
+
       let synced = 0;
       let relevantTx = 0;
       const batchSize = this.batchSize; // Use source-specific batch size
-      
+
       // Sync forward
       if (latestSynced < this.currentBlock) {
         const blocksToSync = this.currentBlock - latestSynced;
@@ -709,7 +709,7 @@ class BlockSyncService {
         console.log(`  ⏱️  Processed in ${(processTime / 1000).toFixed(1)}s`);
         console.log(`  📊 ${result.relevant} relevant txs out of ${result.total} total (${((result.relevant / result.total) * 100).toFixed(1)}%)`);
       }
-      else if (stats.blocks < oneYearBlocks && latestSynced > this.targetBlock) {
+      else if (stats.blocks < sixMonthBlocks && latestSynced > this.targetBlock) {
         const minBlock = this.db.db.prepare('SELECT MIN(height) as min FROM blocks').get();
         const oldestBlock = minBlock?.min || latestSynced;
         
@@ -756,7 +756,7 @@ class BlockSyncService {
       console.log(`  🎯 Error counter: ${this.consecutiveErrors}`);
       
       const updatedStats = this.db.getStats();
-      this.isInitialSync = updatedStats.blocks < oneYearBlocks;
+      this.isInitialSync = updatedStats.blocks < sixMonthBlocks;
       
       return { synced, transactions: relevantTx };
       
@@ -770,8 +770,8 @@ class BlockSyncService {
 
   async syncBatch(classifier) {
     const stats = this.db.getStats();
-    const oneYearBlocks = FLUX_CONFIG.PERIODS['1Y'];
-    const complete = stats.blocks >= oneYearBlocks;
+    const sixMonthBlocks = FLUX_CONFIG.PERIODS['6M'];
+    const complete = stats.blocks >= sixMonthBlocks;
     
     if (complete) {
       this.isInitialSync = false;

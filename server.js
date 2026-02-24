@@ -91,6 +91,13 @@ async function initialize() {
     } else {
       console.log('\n6️⃣ Background enhancement disabled in config');
     }
+
+    // Rank 6: Periodic node operator refresh (every 10 minutes)
+    setInterval(() => {
+      classificationService.checkNodeRefresh().catch(err =>
+        console.warn('⚠️  Node operator refresh error:', err.message)
+      );
+    }, 10 * 60 * 1000);
     
     // Show database stats
     const dbStats = databaseService.getStats();
@@ -302,10 +309,10 @@ app.get('/api/database/stats', (req, res) => {
     }
     
     const stats = databaseService.getStats();
-    const oneYearBlocks = FLUX_CONFIG.PERIODS['1Y'];
+    const sixMonthBlocks = FLUX_CONFIG.PERIODS['6M'];
     const blockSpan = stats.blockRange.maxHeight - stats.blockRange.minHeight;
-    const dataAge = (blockSpan / oneYearBlocks * 365).toFixed(1);
-    
+    const dataAge = (blockSpan / sixMonthBlocks * 180).toFixed(1);
+
     res.json({
       size: stats.dbSize,
       sizeBytes: stats.dbSizeBytes,
@@ -315,8 +322,8 @@ app.get('/api/database/stats', (req, res) => {
       blockRange: stats.blockRange,
       dataSpan: blockSpan,
       dataAgeDays: parseFloat(dataAge),
-      oneYearBlockTarget: oneYearBlocks,
-      percentOfTarget: ((stats.blocks / oneYearBlocks) * 100).toFixed(1)
+      sixMonthBlockTarget: sixMonthBlocks,
+      percentOfTarget: ((stats.blocks / sixMonthBlocks) * 100).toFixed(1)
     });
   } catch (error) {
     console.error('Error in /api/database/stats:', error);

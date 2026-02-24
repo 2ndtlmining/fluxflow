@@ -12,15 +12,15 @@ export const FLUX_CONFIG = {
     '7D': Math.floor((7 * 24 * 60 * 60) / 30),
     '30D': Math.floor((30 * 24 * 60 * 60) / 30),
     '90D': Math.floor((90 * 24 * 60 * 60) / 30),
-    '1Y': Math.floor((365 * 24 * 60 * 60) / 30)
+    '6M': Math.floor((180 * 24 * 60 * 60) / 30)
   },
 
   PERIOD_LABELS: {
     '24H': 'Today',
-    '7D': 'This Week', 
+    '7D': 'This Week',
     '30D': 'This Month',
     '90D': 'This Quarter',
-    '1Y': 'This Year'
+    '6M': 'Last 6 Months'
   },
 
   // ============================================================================
@@ -102,7 +102,7 @@ export const FLUX_CONFIG = {
     '7D': Math.floor((7 * 24 * 60 * 60) / 30),
     '30D': Math.floor((30 * 24 * 60 * 60) / 30),
     '90D': Math.floor((90 * 24 * 60 * 60) / 30),
-    '1Y': Math.floor((365 * 24 * 60 * 60) / 30)
+    '6M': Math.floor((180 * 24 * 60 * 60) / 30)
   },
 
   // ============================================================================
@@ -162,14 +162,7 @@ export const FLUX_CONFIG = {
       TRACK_AMOUNTS: true,  // Track if amounts change between hops
     },
     
-    // PHASE 4: Background enhancement & auto-enhancement
-    AUTO_ENHANCE_ON_SYNC: {
-      ENABLED: true,  // Auto-enhance after each sync batch
-      MIN_UNKNOWNS_TO_TRIGGER: 10,  // Only run if at least 10 unknowns
-      DELAY_AFTER_SYNC_MS: 2000,  // Wait 2 seconds after sync before enhancing
-      MAX_UNKNOWNS_PER_RUN: 50  // Process max 50 unknowns per sync batch
-    },
-    
+    // PHASE 4: Background enhancement (single pipeline - no auto-enhance on sync)
     BACKGROUND_JOB: {
       ENABLED: true,  // Enable background enhancement job
       INTERVAL_MINUTES: 5,  // Run every 5 minutes
@@ -181,7 +174,7 @@ export const FLUX_CONFIG = {
     // PHASE 5: Historical node detection via coinbase transactions
     HISTORICAL_DETECTION: {
       ENABLED: true,  // Enable historical node operator detection
-      TIME_WINDOW_BLOCKS: 1051200,  // 1 year (~365 days at 30s/block)
+      TIME_WINDOW_BLOCKS: 87600,  // 1 month (~365 days at 30s/block)
       MIN_COINBASE_COUNT: 1,  // At least 1 coinbase transaction = proof
       APPLY_AT_ALL_LEVELS: true,  // Check at Level 0, 1, 2, and 3
       LOG_COINBASE_CHECKS: true  // Log when checking for coinbase transactions
@@ -190,12 +183,15 @@ export const FLUX_CONFIG = {
     // PHASE 5.1: Historical connection detection (sent to/from node operators)
     HISTORICAL_CONNECTIONS: {
       ENABLED: true,  // Enable historical connection detection
-      TIME_WINDOW_BLOCKS: 1051200,  // 1 year (same as coinbase detection)
+      TIME_WINDOW_BLOCKS: 518400,  // 6 months (aligned with sync depth cap)
       CHECK_OUTBOUND: true,  // Check if wallet sent to node operators
       CHECK_INBOUND: true,  // Check if wallet received from node operators
       MAX_TRANSACTIONS_TO_CHECK: 100  // Limit API calls per wallet
     },
     
+    // Retry cooldown: skip wallets that were attempted and failed within this window
+    FAILED_RETRY_HOURS: 24,  // Re-attempt unresolvable wallets after 24 hours
+
     // PHASE 7.2: Parallel processing for faster enhancement
     PARALLEL_PROCESSING: {
       ENABLED: true,               // Enable parallel batch processing

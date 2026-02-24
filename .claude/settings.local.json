@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cd:*)",
+      "Bash(grep:*)",
+      "Bash(tail:*)",
+      "Bash(cd \"C:/Users/theun/OneDrive/Documents/2ndTLMining/Website/Flux/fluxflow/fluxflow\" && git rm debug-known-blocks.js deep_inspect.js diagnose_transaction.js diagnose-coinbase.js diagnose-database-storage.js Diagnostic.js find_destination.js test_wallet_flow.js test-multihop.js test-phase5.js test-phase6.1.js test-phase7.1.js test-phase7.2.js src/lib/services/Walletanalyzer.js 2>&1)",
+      "Bash(cd \"C:/Users/theun/OneDrive/Documents/2ndTLMining/Website/Flux/fluxflow/fluxflow\" && git rm debug-known-blocks.js deep_inspect.js diagnose_transaction.js Diagnostic.js find_destination.js test_wallet_flow.js test-multihop.js src/lib/services/Walletanalyzer.js 2>&1)",
+      "Bash(head:*)",
+      "Bash(curl:*)"
+    ]
+  }
+}

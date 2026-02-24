@@ -51,7 +51,7 @@ async function runSyncCycle() {
       const result = await blockSyncService.syncBatch(classificationService);
       
       if (result.complete) {
-        console.log('\n🎉 Historical sync complete! Now have 1 year of data.');
+        console.log('\n🎉 Historical sync complete! Now have 6 months of data.');
       }
     } else {
       console.log('\n✓ Historical sync already complete');
