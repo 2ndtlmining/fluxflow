@@ -303,24 +303,29 @@ class DatabaseService {
   }
 
   // PHASE 2: Get unknown wallets to enhance
+  // Skips events recently attempted but unresolvable (cooldown from config)
   getUnknownWallets() {
+    const retryAfterSeconds = (FLUX_CONFIG.ENHANCEMENT.FAILED_RETRY_HOURS || 24) * 3600;
+    const cutoff = Math.floor(Date.now() / 1000) - retryAfterSeconds;
+
     const buys = this.db.prepare(`
-      SELECT 
-        id, txid, vout, 
+      SELECT
+        id, txid, vout,
         block_height, block_time,
         from_address, to_address,
         amount,
         classification_level
       FROM flow_events
-      WHERE flow_type = 'buying' 
+      WHERE flow_type = 'buying'
         AND to_type = 'unknown'
         AND classification_level = 0
+        AND (analysis_timestamp IS NULL OR analysis_timestamp < ?)
       ORDER BY block_height DESC
       LIMIT 1000
-    `).all();
-    
+    `).all(cutoff);
+
     const sells = this.db.prepare(`
-      SELECT 
+      SELECT
         id, txid, vout,
         block_height, block_time,
         from_address, to_address,
@@ -330,10 +335,11 @@ class DatabaseService {
       WHERE flow_type = 'selling'
         AND from_type = 'unknown'
         AND classification_level = 0
+        AND (analysis_timestamp IS NULL OR analysis_timestamp < ?)
       ORDER BY block_height DESC
       LIMIT 1000
-    `).all();
-    
+    `).all(cutoff);
+
     return {
       buys,
       sells,
@@ -517,19 +523,19 @@ class DatabaseService {
   }
 
   checkAndCleanup(currentBlock) {
-    const oneYearBlocks = FLUX_CONFIG.PERIODS['1Y'];
-    
+    const sixMonthBlocks = FLUX_CONFIG.PERIODS['6M'];
+
     if (currentBlock - this.lastCleanupBlock < 1000) {
       return;
     }
-    
+
     const stats = this.getStats();
     const blockRange = stats.blockRange;
     const dataSpan = blockRange.maxHeight - blockRange.minHeight;
-    
-    if (dataSpan > oneYearBlocks * 1.1) {
-      console.log(`\n⚠️  Database has ${(dataSpan / oneYearBlocks).toFixed(2)} years of data (> 1.1 year threshold)`);
-      this.cleanupOldData(currentBlock, oneYearBlocks);
+
+    if (dataSpan > sixMonthBlocks * 1.1) {
+      console.log(`\n⚠️  Database has ${(dataSpan / sixMonthBlocks).toFixed(2)} × 6-months of data (> 1.1 threshold)`);
+      this.cleanupOldData(currentBlock, sixMonthBlocks);
       this.lastCleanupBlock = currentBlock;
     }
   }

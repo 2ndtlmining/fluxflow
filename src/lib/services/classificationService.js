@@ -150,12 +150,13 @@ class ClassificationService {
   }
 
   /**
-   * Check if node operator data needs refresh
+   * Check if node operator data needs refresh (time-based, every 10 minutes)
    */
-  async checkNodeRefresh(currentBlock) {
-    const blocksSinceRefresh = currentBlock - this.lastNodeRefresh;
-    
-    if (blocksSinceRefresh >= FLUX_CONFIG.NODE_REFRESH_BLOCKS || this.nodeOperators.size === 0) {
+  async checkNodeRefresh() {
+    const TEN_MINUTES_MS = 10 * 60 * 1000;
+    const needsRefresh = this.nodeOperators.size === 0 || (Date.now() - this.lastNodeRefresh) >= TEN_MINUTES_MS;
+
+    if (needsRefresh) {
       try {
         await this.refreshNodeOperators();
       } catch (error) {

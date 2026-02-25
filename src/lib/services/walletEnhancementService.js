@@ -587,6 +587,8 @@ class WalletEnhancementService {
       if (!result) {
         console.log(`     ⚪ No node operator found in ${maxDepth}-hop chain`);
         this.stats.remainedUnknown++;
+        // Stamp attempt time so this event is skipped for the next 24h cooldown period
+        this.db.updateFlowEventClassification(event.id, { analysisTimestamp: Math.floor(Date.now() / 1000) });
         return;
       }
 
@@ -704,6 +706,8 @@ class WalletEnhancementService {
       if (!result) {
         console.log(`     ⚪ No node operator found in ${maxDepth}-hop chain`);
         this.stats.remainedUnknown++;
+        // Stamp attempt time so this event is skipped for the next 24h cooldown period
+        this.db.updateFlowEventClassification(event.id, { analysisTimestamp: Math.floor(Date.now() / 1000) });
         return;
       }
 

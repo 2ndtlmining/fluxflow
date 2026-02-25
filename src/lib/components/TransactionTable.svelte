@@ -255,7 +255,7 @@
             <tr class:enhanced-row={isEnhanced(event)}>
               <td>
                 <a 
-                  href="https://flux.beer/tx/{event.txid}" 
+                  href="https://explore.app.runonflux.io/tx/{event.txid}" 
                   target="_blank" 
                   rel="noopener noreferrer"
                   class="txid-link"
@@ -288,7 +288,7 @@
                   <div class="wallet-hierarchy">
                     {#each hierarchy.chain as intermediary, idx}
                       <a 
-                        href="https://flux.beer/address/{intermediary}" 
+                        href="https://explore.app.runonflux.io/address/{intermediary}" 
                         target="_blank" 
                         rel="noopener noreferrer"
                         class="address-link intermediary"
@@ -299,7 +299,7 @@
                       <span class="arrow">→</span>
                     {/each}
                     <a 
-                      href="https://flux.beer/address/{hierarchy.nodeWallet}" 
+                      href="https://explore.app.runonflux.io/address/{hierarchy.nodeWallet}" 
                       target="_blank" 
                       rel="noopener noreferrer"
                       class="address-link node-wallet"
@@ -313,7 +313,7 @@
                 {:else if hierarchy.type === 'historical'}
                   <div class="wallet-hierarchy">
                     <a 
-                      href="https://flux.beer/address/{hierarchy.directWallet}" 
+                      href="https://explore.app.runonflux.io/address/{hierarchy.directWallet}" 
                       target="_blank" 
                       rel="noopener noreferrer"
                       class="address-link"
@@ -323,7 +323,7 @@
                     </a>
                     <span class="arrow historical-arrow" title="{hierarchy.method === 'historical_connection' ? 'Historical connection' : 'Historical coinbase'}">⟿</span>
                     <a 
-                      href="https://flux.beer/address/{hierarchy.nodeWallet}" 
+                      href="https://explore.app.runonflux.io/address/{hierarchy.nodeWallet}" 
                       target="_blank" 
                       rel="noopener noreferrer"
                       class="address-link node-wallet"
@@ -336,7 +336,7 @@
                 <!-- Direct wallet (Level 0, no enhancement) -->
                 {:else}
                   <a 
-                    href="https://flux.beer/address/{hierarchy.wallet}" 
+                    href="https://explore.app.runonflux.io/address/{hierarchy.wallet}" 
                     target="_blank" 
                     rel="noopener noreferrer"
                     class="address-link"
@@ -432,7 +432,7 @@
               </td>
               <td class="block-height">
                 <a 
-                  href="https://flux.beer/block/{event.blockHeight}" 
+                  href="https://explore.app.runonflux.io/block/{event.blockHeight}" 
                   target="_blank" 
                   rel="noopener noreferrer"
                 >
