@@ -1,0 +1,85 @@
+name: FluxNode pool PoC (live)
+
+# Runs the proof of concept in poc/fluxnode-pool against the live FluxNode
+# network from a GitHub-hosted runner, then commits the report + screenshots
+# to poc/fluxnode-pool/out/live on the same branch.
+
+on:
+  workflow_dispatch:
+    inputs:
+      blocks:
+        description: Blocks to fetch in the main run
+        default: '3000'
+      pool:
+        description: Max nodes used for fetching
+        default: '40'
+  push:
+    branches: [claude/gracious-heisenberg-m1ytr9]
+    paths:
+      - 'poc/fluxnode-pool/lib/**'
+      - 'poc/fluxnode-pool/run.mjs'
+      - 'poc/fluxnode-pool/report.html'
+      - '.github/workflows/fluxnode-pool-poc.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: fluxnode-pool-poc-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  live:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install app dependencies (PoC reuses the app's classification code)
+        run: npm ci --no-audit --no-fund
+
+      - name: Install Playwright for screenshots
+        run: |
+          npm install --no-save --no-audit --no-fund playwright@1.56
+          npx playwright install --with-deps chromium
+
+      - name: Run PoC against live FluxNodes
+        id: run
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          mkdir -p poc/fluxnode-pool/out/live
+          node poc/fluxnode-pool/run.mjs \
+            --blocks "${{ github.event.inputs.blocks || '3000' }}" \
+            --pool "${{ github.event.inputs.pool || '40' }}" \
+            --sample 400 \
+            --label "live FluxNode network (GitHub Actions runner)" \
+            --out poc/fluxnode-pool/out/live 2>&1 | tee poc/fluxnode-pool/out/live/run.log
+
+      - name: Screenshots
+        if: steps.run.outcome == 'success'
+        run: node poc/fluxnode-pool/screenshot.mjs poc/fluxnode-pool/out/live
+
+      - name: Commit results to branch
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add poc/fluxnode-pool/out/live
+          git commit -m "PoC: live FluxNode pool results (${{ steps.run.outcome }}) [skip ci]" || echo "nothing to commit"
+          git pull --rebase origin "${GITHUB_REF_NAME}" && git push origin "HEAD:${GITHUB_REF_NAME}"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: fluxnode-pool-live
+          path: poc/fluxnode-pool/out/live
+
+      - name: Fail if the PoC run failed
+        if: steps.run.outcome != 'success'
+        run: exit 1

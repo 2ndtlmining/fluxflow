@@ -1,0 +1,204 @@
+{
+  "hash": "7840f149356523dcd6a6a429e6a888d98b623044b9c5acf3989e1f7212a2c016",
+  "confirmations": 1071,
+  "size": 8000,
+  "height": 2148930,
+  "version": 4,
+  "merkleroot": "8b5705f792ec1a55515d1c434bb2c2da17aec8281c6caf5450ccce86ae58658a",
+  "tx": [
+    {
+      "txid": "3f177cd92b9ccf4c2a346bd9f2e4f367a9729d91e9131c1b658e3cd0e6faa129",
+      "version": 4,
+      "overwintered": true,
+      "locktime": 0,
+      "vin": [
+        {
+          "coinbase": "0320ca42",
+          "sequence": 4294967295
+        }
+      ],
+      "vout": [
+        {
+          "value": 3.75,
+          "valueZat": 375000000,
+          "valueSat": 375000000,
+          "n": 0,
+          "scriptPubKey": {
+            "type": "pubkeyhash",
+            "addresses": [
+              "t1irNbqWTaKeJXHykhqbopqsRjcf4kHZGdn"
+            ]
+          }
+        },
+        {
+          "value": 2.25,
+          "valueZat": 225000000,
+          "valueSat": 225000000,
+          "n": 1,
+          "scriptPubKey": {
+            "type": "pubkeyhash",
+            "addresses": [
+              "t1a87urZx8fNZQZAbnWQk1rebfniUHxsai5"
+            ]
+          }
+        },
+        {
+          "value": 0.75,
+          "valueZat": 75000000,
+          "valueSat": 75000000,
+          "n": 2,
+          "scriptPubKey": {
+            "type": "pubkeyhash",
+            "addresses": [
+              "t1DChfgRGS1Vuk54tjpMqD2cEjoG1qXPNo8"
+            ]
+          }
+        },
+        {
+          "value": 0.375,
+          "valueZat": 37500000,
+          "valueSat": 37500000,
+          "n": 3,
+          "scriptPubKey": {
+            "type": "pubkeyhash",
+            "addresses": [
+              "t3c51GjrkUg7pUiS8bzNdTnW2hD25egWUih"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "txid": "a9dbc295059115c3f27766f38cac5cf8b93e7372a1842870d674abd6d3e6a4e5",
+      "version": 5,
+      "type": "Confirming a fluxnode",
+      "collateral": "COutPoint(5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9, 0)",
+      "ip": "1.2.3.4",
+      "update_type": 1,
+      "benchmark_tier": "CUMULUS"
+    },
+    {
+      "txid": "581ce4fd824038d3da19e1552fff445fa8b13a9f0ee8e6dbbd0b0f582534551d",
+      "version": 5,
+      "type": "Confirming a fluxnode",
+      "collateral": "COutPoint(6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b, 0)",
+      "ip": "1.2.3.4",
+      "update_type": 1,
+      "benchmark_tier": "CUMULUS"
+    },
+    {
+      "txid": "9f16277d8672980fa27a17e2baf45d331b127641d7b5439160ea3847339d2900",
+      "version": 5,
+      "type": "Confirming a fluxnode",
+      "collateral": "COutPoint(d4735e3a265e16eee03f59718b9b5d03019c07d8b6c51f90da3a666eec13ab35, 0)",
+      "ip": "1.2.3.4",
+      "update_type": 1,
+      "benchmark_tier": "CUMULUS"
+    },
+    {
+      "txid": "61f997316f4e3e1df1a81b0dc7ba36cf8bef0c06a6ea2282a05a086c952d8daf",
+      "version": 5,
+      "type": "Confirming a fluxnode",
+      "collateral": "COutPoint(4e07408562bedb8b60ce05c1decfe3ad16b72230967de01f640b7e4729b49fce, 0)",
+      "ip": "1.2.3.4",
+      "update_type": 1,
+      "benchmark_tier": "CUMULUS"
+    },
+    {
+      "txid": "63911e84cd2732a99fcba67511720a7b965581d1d300a3a8415b96775b54d1f6",
+      "version": 5,
+      "type": "Confirming a fluxnode",
+      "collateral": "COutPoint(4b227777d4dd1fc61c6f884f48641d02b4d121d3fd328cb08b5531fcacdabf8a, 0)",
+      "ip": "1.2.3.4",
+      "update_type": 1,
+      "benchmark_tier": "CUMULUS"
+    },
+    {
+      "txid": "9cc10ccbf1c5dd1a847277553d599368cb553365470d611c8b46696db7040bbb",
+      "version": 5,
+      "type": "Confirming a fluxnode",
+      "collateral": "COutPoint(ef2d127de37b942baad06145e54b0c619a1f22327b2ebbcfbec78f5564afe39d, 0)",
+      "ip": "1.2.3.4",
+      "update_type": 1,
+      "benchmark_tier": "CUMULUS"
+    },
+    {
+      "txid": "7e3b502a45833bb4e8ff4d28ab1a40a0798903dd61bfb1c303a5471728eceb1e",
+      "version": 5,
+      "type": "Confirming a fluxnode",
+      "collateral": "COutPoint(e7f6c011776e8db7cd330b54174fd76f7d0216b612387a5ffcfb81e6f0919683, 0)",
+      "ip": "1.2.3.4",
+      "update_type": 1,
+      "benchmark_tier": "CUMULUS"
+    },
+    {
+      "txid": "90be7d08d7e90d1dca1c496624f5cae0cfc0b86d86c4137a6661a4680d01e0ce",
+      "version": 5,
+      "type": "Confirming a fluxnode",
+      "collateral": "COutPoint(7902699be42c8a8e46fbbb4501726517e86b22c56a189f7625a6da49081b2451, 0)",
+      "ip": "1.2.3.4",
+      "update_type": 1,
+      "benchmark_tier": "CUMULUS"
+    },
+    {
+      "txid": "7227075a97c3e61bfed406e8b4e2604c467204d02568ee426e4d3f5b01f2e9e6",
+      "version": 5,
+      "type": "Confirming a fluxnode",
+      "collateral": "COutPoint(2c624232cdd221771294dfbb310aca000a0df6ac8b66b696d90ef06fdefb64a3, 0)",
+      "ip": "1.2.3.4",
+      "update_type": 1,
+      "benchmark_tier": "CUMULUS"
+    },
+    {
+      "txid": "e2bafae6f20f56712d893e41709a8de516547601e369e12298dd47d03efd6029",
+      "version": 5,
+      "type": "Confirming a fluxnode",
+      "collateral": "COutPoint(19581e27de7ced00ff1ce50b2047e7a567c76b1cbaebabe5ef03f7c3017bb5b7, 0)",
+      "ip": "1.2.3.4",
+      "update_type": 1,
+      "benchmark_tier": "CUMULUS"
+    },
+    {
+      "txid": "6f3e48dd11777aeaf9b635ec1c1f4f3028698f1be6db54bd41f40ef042667e2f",
+      "version": 5,
+      "type": "Confirming a fluxnode",
+      "collateral": "COutPoint(4a44dc15364204a80fe80e9039455cc1608281820fe2b24f1e5233ade6af1dd5, 0)",
+      "ip": "1.2.3.4",
+      "update_type": 1,
+      "benchmark_tier": "CUMULUS"
+    },
+    {
+      "txid": "32057558734c3787f9d127e359fa4931bf03af6807876c260625a0e68c60d853",
+      "version": 5,
+      "type": "Confirming a fluxnode",
+      "collateral": "COutPoint(4fc82b26aecb47d2868c4efbe3581732a3e7cbcc6c2efb32062c08170a05eeb8, 0)",
+      "ip": "1.2.3.4",
+      "update_type": 1,
+      "benchmark_tier": "CUMULUS"
+    },
+    {
+      "txid": "2cc9c4c97e5a7013ce879f1d950609209f3870ea42044ec96648e2c3ed5844c4",
+      "version": 5,
+      "type": "Confirming a fluxnode",
+      "collateral": "COutPoint(6b51d431df5d7f141cbececcf79edf3dd861c3b4069f0b11661a3eefacbba918, 0)",
+      "ip": "1.2.3.4",
+      "update_type": 1,
+      "benchmark_tier": "CUMULUS"
+    },
+    {
+      "txid": "f0525f75f8af656f8516a67c18b8309f1218d5b754eb67ccd7ed7a807e99a970",
+      "version": 5,
+      "type": "Confirming a fluxnode",
+      "collateral": "COutPoint(3fdba35f04dc8c462986c992bcf875546257113072a909c162f7e470e581e278, 0)",
+      "ip": "1.2.3.4",
+      "update_type": 1,
+      "benchmark_tier": "CUMULUS"
+    }
+  ],
+  "time": 1758967900,
+  "type": "PON",
+  "collateral": "COutPoint(x, 0)",
+  "bits": "1f07ffff",
+  "difficulty": 1,
+  "previousblockhash": "164cea6d4c2852475a65b04091fbe5b7c32832a6b0dfac5a2b4bf7664d2fe3e5"
+}
