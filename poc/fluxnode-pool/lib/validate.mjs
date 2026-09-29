@@ -55,6 +55,7 @@ export async function validateBlocks(rawBlocks, classifier) {
     feeSatTotal: 0,
     outputsTotal: 0,
     outputsWithAddress: 0,
+    outputsWithoutAddress: {}, // scriptPubKey.type -> { count, sat }
     coinbaseOutputs: 0,
     coinbaseOutputsToKnownNodeOperators: 0,
     coinbaseValueSat: 0,
@@ -111,6 +112,12 @@ export async function validateBlocks(rawBlocks, classifier) {
       for (const o of tx.vout) {
         report.outputsTotal++;
         if (o.addresses.length) report.outputsWithAddress++;
+        else {
+          const k = o.scriptType || 'unknown';
+          const e = (report.outputsWithoutAddress[k] ||= { count: 0, sat: 0 });
+          e.count++;
+          e.sat += Number(o.value);
+        }
         outSat += Number(o.value);
       }
       if (complete) report.transfersWithFullInputs++;

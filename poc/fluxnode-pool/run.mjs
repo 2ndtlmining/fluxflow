@@ -82,14 +82,17 @@ async function main() {
   const verifyNodes = probe.inSync;
   const top = probe.tip - opts.confirmations;
 
-  // 3. Single-node sequential baseline (what one API endpoint gives us)
+  // 3. Single-node sequential baseline: a node with typical (median) latency,
+  // one request at a time, no hedging - roughly what depending on a single
+  // API endpoint gives you.
   const baseFrom = top - opts.baseline + 1;
-  log(`baseline: 1 node, 1 request at a time, blocks ${baseFrom}-${top}`);
+  const typical = ranked[Math.floor(ranked.length / 2)];
+  log(`baseline: 1 typical node (${Math.round(typical.latencyMs)}ms probe latency), 1 request at a time, blocks ${baseFrom}-${top}`);
   const baseline = await fetchRange({
-    nodes: [ranked[0]], verifyNodes, from: baseFrom, to: top, perNodeInflight: 1, crossCheckEvery: 0, log,
+    nodes: [typical], verifyNodes, from: baseFrom, to: top, perNodeInflight: 1, crossCheckEvery: 0, hedge: false, log,
   });
   const baselineBps = baseline.blocks.size / (baseline.fetchMs / 1000);
-  log(`baseline: ${baselineBps.toFixed(2)} blocks/s`);
+  log(`baseline: ${baselineBps.toFixed(2)} blocks/s (latency p50 ${baseline.latency?.p50}ms)`);
 
   // 4. Scaling test on disjoint ranges
   const scaling = [];
@@ -102,8 +105,8 @@ async function main() {
     cursor = from - 1;
     const r = await fetchRange({ nodes, verifyNodes, from, to, perNodeInflight: opts.inflight, crossCheckEvery: 0, log });
     const bps = r.blocks.size / (r.fetchMs / 1000);
-    scaling.push({ nodes: size, blocks: r.blocks.size, seconds: r.fetchMs / 1000, blocksPerSec: bps });
-    log(`scaling: ${size} nodes -> ${bps.toFixed(1)} blocks/s`);
+    scaling.push({ nodes: size, blocks: r.blocks.size, seconds: r.fetchMs / 1000, blocksPerSec: bps, hedges: r.hedges, latency: r.latency });
+    log(`scaling: ${size} nodes -> ${bps.toFixed(1)} blocks/s (hedges ${r.hedges.fired}/${r.hedges.won} fired/won)`);
   }
 
   // 5. Main parallel run
@@ -116,7 +119,7 @@ async function main() {
     perNodeInflight: opts.inflight, crossCheckEvery: 20, onBlock: progress('main run'), log,
   });
   const mainBps = main.blocks.size / (main.fetchMs / 1000);
-  log(`main run: ${main.blocks.size} blocks in ${(main.fetchMs / 1000).toFixed(1)}s = ${mainBps.toFixed(1)} blocks/s`);
+  log(`main run: ${main.blocks.size} blocks in ${(main.fetchMs / 1000).toFixed(1)}s = ${mainBps.toFixed(1)} blocks/s (latency p50 ${main.latency?.p50}ms p99 ${main.latency?.p99}ms, hedges fired ${main.hedges.fired}, won ${main.hedges.won})`);
   log(`integrity: missing=${main.integrity.missing.length} brokenLinks=${main.integrity.brokenLinks.length} anchor agree=${main.integrity.anchorVotes.agree}/${main.integrity.anchorVotes.agree + main.integrity.anchorVotes.disagree} evictions=${main.evictions.length}`);
 
   // 6. Data validation through FluxFlow's own code
@@ -144,13 +147,15 @@ async function main() {
       latencies: probe.probes.filter((p) => p.ok).map((p) => Math.round(p.latencyMs)),
       heightSpread: spread(probe.probes.filter((p) => p.ok).map((p) => p.height - probe.tip)),
     },
-    baseline: { blocks: baseline.blocks.size, seconds: baseline.fetchMs / 1000, blocksPerSec: baselineBps },
+    baseline: { blocks: baseline.blocks.size, seconds: baseline.fetchMs / 1000, blocksPerSec: baselineBps, probeLatencyMs: Math.round(typical.latencyMs), latency: baseline.latency },
     scaling,
     main: {
       from: mainFrom, to: mainTo, nodes: poolNodes.length, inflight: opts.inflight,
       blocks: main.blocks.size, seconds: main.fetchMs / 1000, blocksPerSec: mainBps,
       speedup: mainBps / baselineBps,
       errors: main.errors.length,
+      hedges: main.hedges,
+      latency: main.latency,
       errorKinds: countBy(main.errors, (e) => e.kind),
       evictions: main.evictions,
       integrity: main.integrity,

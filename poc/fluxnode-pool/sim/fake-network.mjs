@@ -151,7 +151,8 @@ function handle(node, req, res) {
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   withCapacity(node, async () => {
     if (node.behaviour === 'hanging') return; // never answers
-    const jitter = node.latency * (0.7 + Math.random() * 0.6);
+    // ~1% of requests hit a slow tail (GC pause, busy disk, congested uplink)
+    const jitter = node.latency * (0.7 + Math.random() * 0.6) + (Math.random() < 0.01 ? 4000 : 0);
     await sleep(jitter);
     if (node.behaviour === 'flaky' && Math.random() < 0.3) { res.writeHead(502).end('bad gateway'); return; }
     const tip = node.behaviour === 'lagging' ? TIP - 60 : TIP;

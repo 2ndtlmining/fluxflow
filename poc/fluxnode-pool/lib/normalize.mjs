@@ -31,6 +31,7 @@ export function normalizeTx(tx) {
     addresses: o.scriptPubKey?.addresses || [],
     value: String(o.valueSat ?? o.valueZat ?? Math.round(Number(o.value) * 1e8)),
     n: o.n ?? idx,
+    scriptType: o.scriptPubKey?.type,
   }));
   return { txid: tx.txid, kind, vin, vout };
 }

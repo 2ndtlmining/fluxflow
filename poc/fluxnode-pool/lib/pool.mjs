@@ -186,6 +186,7 @@ export async function fetchRange({
   maxNodeFailures = 3,
   crossCheckEvery = 20,
   probationBlocks = 3,
+  hedge = true,
   onBlock = () => {},
   log = () => {},
 }) {
@@ -262,6 +263,74 @@ export async function fetchRange({
     return 'inconclusive';
   }
 
+  // --- Hedged requests ------------------------------------------------------
+  // Tail latency dominates small batches: one slow node can hold the last few
+  // blocks for seconds. If a request runs well past the typical latency, ask a
+  // second node for the same block; the first valid answer wins.
+  const latencies = [];
+  let hedgesFired = 0;
+  let hedgesWon = 0;
+
+  function hedgeDelay() {
+    if (latencies.length < 20) return 1500;
+    const sorted = [...latencies].slice(-200).sort((a, b) => a - b);
+    const med = sorted[Math.floor(sorted.length / 2)];
+    return Math.min(3000, Math.max(400, med * 3));
+  }
+
+  function pickFetcher(exclude) {
+    const pool = nodes.filter((n) => n.baseUrl !== exclude && !banned.has(n.baseUrl));
+    return pool[Math.floor(Math.random() * pool.length)];
+  }
+
+  async function fetchBlock(baseUrl, height) {
+    const block = await fluxos(baseUrl, `/daemon/getblock/${height}/2`, { timeoutMs });
+    if (!block || block.height !== height || !Array.isArray(block.tx) || typeof block.tx[0] !== 'object') {
+      throw Object.assign(new Error('malformed block'), { kind: 'parse' });
+    }
+    return block;
+  }
+
+  function fetchHedged(primaryUrl, height) {
+    return new Promise((resolve, reject) => {
+      const start = performance.now();
+      let settled = false;
+      let pending = 0;
+      let primaryErr = null;
+      let timer = null;
+      const attempt = (url) => {
+        pending++;
+        fetchBlock(url, height).then(
+          (block) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            resolve({ block, by: url, ms: performance.now() - start });
+          },
+          (err) => {
+            pending--;
+            if (url === primaryUrl) primaryErr = err;
+            if (!settled && pending === 0) {
+              settled = true;
+              clearTimeout(timer);
+              reject(primaryErr || err);
+            }
+          },
+        );
+      };
+      if (hedge) {
+        timer = setTimeout(() => {
+          if (settled) return;
+          const alt = pickFetcher(primaryUrl);
+          if (!alt) return;
+          hedgesFired++;
+          attempt(alt.baseUrl);
+        }, hedgeDelay());
+      }
+      attempt(primaryUrl);
+    });
+  }
+
   async function worker(baseUrl) {
     const s = stats.get(baseUrl);
     while (!s.evicted) {
@@ -275,33 +344,34 @@ export async function fetchRange({
       inFlight++;
       const start = performance.now();
       try {
-        const block = await fluxos(baseUrl, `/daemon/getblock/${height}/2`, { timeoutMs });
-        if (!block || block.height !== height || !Array.isArray(block.tx) || typeof block.tx[0] !== 'object') {
-          throw Object.assign(new Error('malformed block'), { kind: 'parse' });
-        }
-        const ms = performance.now() - start;
+        const { block, by, ms } = await fetchHedged(baseUrl, height);
+        latencies.push(ms);
+        if (by !== baseUrl) hedgesWon++;
+        const src = stats.get(by);
         // Probation: a node's first blocks are always verified, then a random sample.
-        const verify = crossCheckEvery > 0 && (s.served < probationBlocks || Math.random() < 1 / crossCheckEvery);
+        const verify = crossCheckEvery > 0 && (src.served < probationBlocks || Math.random() < 1 / crossCheckEvery);
         if (verify) {
-          s.verified++;
-          const verdict = await crossCheck(height, block, baseUrl);
+          src.verified++;
+          const verdict = await crossCheck(height, block, by);
           if (verdict === 'source-bad') {
             queue.unshift(height);
-            evict(baseUrl, `mismatch at height ${height} (outvoted 2:1)`);
+            evict(by, `mismatch at height ${height} (outvoted 2:1)`);
             continue;
           }
           if (verdict === 'inconclusive') {
             throw Object.assign(new Error('cross-check inconclusive'), { kind: 'verify' });
           }
         }
+        if (banned.has(by)) { queue.unshift(height); continue; }
         blocks.set(height, block);
-        servedBy.set(height, baseUrl);
-        s.served++;
+        servedBy.set(height, by);
+        src.served++;
+        src.consecutiveErrors = 0;
         s.consecutiveErrors = 0;
-        s.totalMs += ms;
+        src.totalMs += ms;
         const bytes = JSON.stringify(block).length;
-        s.bytes += bytes;
-        events.push({ t: performance.now() - t0, node: baseUrl, height, ms, bytes });
+        src.bytes += bytes;
+        events.push({ t: performance.now() - t0, node: by, height, ms, bytes });
         onBlock(blocks.size, to - from + 1);
       } catch (err) {
         s.errors++;
@@ -364,8 +434,17 @@ export async function fetchRange({
       evictReason: s.evictReason || null,
     })),
     fetchMs,
+    hedges: { fired: hedgesFired, won: hedgesWon },
+    latency: percentiles(latencies),
     integrity: { missing, brokenLinks, anchorVotes },
   };
+}
+
+function percentiles(xs) {
+  if (!xs.length) return null;
+  const s = [...xs].sort((a, b) => a - b);
+  const q = (p) => Math.round(s[Math.min(s.length - 1, Math.floor(p * s.length))]);
+  return { p50: q(0.5), p90: q(0.9), p99: q(0.99), max: Math.round(s[s.length - 1]) };
 }
 
 export function fingerprint(block) {
