@@ -23,8 +23,8 @@ await page.goto(`file://${path.join(dir, 'report.html')}`);
 await page.waitForTimeout(300);
 await page.screenshot({ path: path.join(dir, 'report-full.png'), fullPage: true });
 
-const panels = await page.$$('main > .grid, main > .panel');
-const names = ['kpis', 'charts', 'distribution-integrity', 'data-fitness', 'sample-events', 'log'];
+const panels = await page.$$('main > .grid, main > .panel:not(.banner)');
+const names = ['kpis', 'charts', 'distribution-integrity', 'data-fitness', 'deep-history', 'sample-events', 'log'];
 for (let i = 0; i < panels.length && i < names.length; i++) {
   await panels[i].screenshot({ path: path.join(dir, `${String(i + 1).padStart(2, '0')}-${names[i]}.png`) });
 }

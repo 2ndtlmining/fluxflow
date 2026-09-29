@@ -53,7 +53,7 @@ const host = (u) => u.replace(/^https?:\/\//, '');
 const v = R.validation, m = R.main, p = R.probe;
 
 $(`<h1>FluxNode pool: parallel block ingestion PoC</h1>
-${/simulat/i.test(R.label) ? `<div class="panel" style="border-color:var(--warn);color:var(--warn);margin:8px 0 14px">Simulated network: fake local nodes returning fluxd-format data. This demonstrates the mechanics (parallelism, fault handling, validation), not live Flux network performance or real flows.</div>` : ''}
+${/simulat/i.test(R.label) ? `<div class="panel banner" style="border-color:var(--warn);color:var(--warn);margin:8px 0 14px">Simulated network: fake local nodes returning fluxd-format data. This demonstrates the mechanics (parallelism, fault handling, validation), not live Flux network performance or real flows.</div>` : ''}
 <div class="sub">Source: ${R.label} · node list from <span class="mono">${host(R.discovery.source)}</span> · tip #${fmt(p.tip)} · ${new Date(R.generatedAt).toUTCString()}</div>`);
 
 $(`<div class="grid kpis">
@@ -101,6 +101,13 @@ $(`<div class="grid two" style="margin-top:14px">
     <div class="sub" style="margin:10px 0 0">${fmt(v.relevantTxs)} relevant txs (touching an exchange, Foundation or node-operator address) out of ${fmt(v.transfers)} transfers. Exchanges hit: ${Object.entries(v.exchangeHits).map(([k, n]) => `${k} (${n})`).join(', ') || 'none in this range'}.</div>
   </div>
 </div>`);
+
+if (R.deep) { const d = R.deep; $(`<div class="panel" style="margin-top:14px"><h2>Deep history: ${fmt(d.blocks)} blocks ~6 months back (#${fmt(d.from)}–#${fmt(d.to)}${d.firstBlockTime ? ', ' + new Date(d.firstBlockTime * 1000).toISOString().slice(0, 10) : ''})</h2>
+  ${check(d.integrity.missing.length === 0 && d.integrity.brokenLinks.length === 0, 'Old blocks fetched and chained', `${fmt(d.blocks)} blocks at ${fmt(d.blocksPerSec, 0)} blk/s, ${d.integrity.missing.length} missing, ${d.integrity.brokenLinks.length} chain breaks`)}
+  ${check(d.transfersWithFullInputs === d.transfers, 'Input addresses available for old transactions', `${fmt(d.transfersWithFullInputs)} / ${fmt(d.transfers)} transfers complete`)}
+  ${check(d.conservationFailures === 0, 'Amounts consistent', `${fmt(d.conservationChecked - d.conservationFailures)} / ${fmt(d.conservationChecked)} transfers balance (inputs − outputs = fee)`)}
+  ${check(true, 'Block / tx types', Object.entries(d.blockTypes).map(([k, n]) => `${k}: ${fmt(n)}`).join(' · ') + ' — ' + Object.entries(d.txKinds).map(([k, n]) => `${k}: ${fmt(n)}`).join(' · '), 'info')}
+</div>`); }
 
 $(`<div class="panel" style="margin-top:14px"><h2>Sample buy/sell events produced by the unchanged app code</h2><div class="scroll">
   <table><tr><th>Block</th><th>Tx</th><th>Type</th><th>From</th><th>To</th><th>Exchange</th><th class="r">FLUX</th></tr>

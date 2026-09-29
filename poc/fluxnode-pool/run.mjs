@@ -13,6 +13,7 @@
 //   --baseline <n>        blocks for the single-node baseline (default 60)
 //   --scaling <list>      pool sizes for the scaling test (default 1,5,10,20,40)
 //   --scaling-blocks <n>  blocks per scaling step (default 200)
+//   --deep-blocks <n>     blocks sampled ~6 months back (default 500, 0 = skip)
 //   --out <dir>           output dir (default poc/fluxnode-pool/out)
 
 import fs from 'node:fs';
@@ -42,6 +43,7 @@ const opts = {
   baseline: Number(arg('baseline', 60)),
   scaling: arg('scaling', '1,5,10,20,40').split(',').map(Number).filter(Boolean),
   scalingBlocks: Number(arg('scaling-blocks', 200)),
+  deepBlocks: Number(arg('deep-blocks', 500)),
   out: path.resolve(arg('out', path.join(here, 'out'))),
   label: arg('label', 'live FluxNode network'),
 };
@@ -122,7 +124,27 @@ async function main() {
   log(`main run: ${main.blocks.size} blocks in ${(main.fetchMs / 1000).toFixed(1)}s = ${mainBps.toFixed(1)} blocks/s (latency p50 ${main.latency?.p50}ms p99 ${main.latency?.p99}ms, hedges fired ${main.hedges.fired}, won ${main.hedges.won})`);
   log(`integrity: missing=${main.integrity.missing.length} brokenLinks=${main.integrity.brokenLinks.length} anchor agree=${main.integrity.anchorVotes.agree}/${main.integrity.anchorVotes.agree + main.integrity.anchorVotes.disagree} evictions=${main.evictions.length}`);
 
-  // 6. Data validation through FluxFlow's own code
+  // 6. Deep history: FluxFlow needs ~6 months back, so check that old heights
+  // come back complete too (spent index present for old inputs).
+  let deep = null;
+  if (opts.deepBlocks > 0) {
+    const deepTo = probe.tip - FLUX_BLOCKS_6M;
+    const deepFrom = deepTo - opts.deepBlocks + 1;
+    log(`deep history: ${opts.deepBlocks} blocks around 6 months back (${deepFrom}-${deepTo})`);
+    const d = await fetchRange({ nodes: poolNodes, verifyNodes, from: deepFrom, to: deepTo, perNodeInflight: opts.inflight, crossCheckEvery: 20, log });
+    const classifierDeep = buildClassifier(discovery.raw, repoRoot);
+    const dv = await validateBlocks([...d.blocks.values()], classifierDeep);
+    deep = {
+      from: deepFrom, to: deepTo, blocks: d.blocks.size, seconds: d.fetchMs / 1000, blocksPerSec: d.blocks.size / (d.fetchMs / 1000),
+      integrity: d.integrity, blockTypes: dv.blockTypes, txKinds: dv.txKinds, transfers: dv.transfers,
+      transfersWithFullInputs: dv.transfersWithFullInputs, conservationChecked: dv.conservationChecked,
+      conservationFailures: dv.conservationFailures.length, flowByType: dv.flowByType,
+      firstBlockTime: d.blocks.get(deepFrom)?.time,
+    };
+    log(`deep history: ${d.blocks.size} blocks at ${deep.blocksPerSec.toFixed(1)} blocks/s, ${dv.transfersWithFullInputs}/${dv.transfers} transfers with full inputs, ${deep.conservationFailures} conservation failures, block types ${JSON.stringify(dv.blockTypes)}`);
+  }
+
+  // 7. Data validation through FluxFlow's own code
   const classifier = buildClassifier(discovery.raw, repoRoot);
   const validation = await validateBlocks([...main.blocks.values()], classifier);
   log(`validation: ${validation.transfers} transfers, ${validation.transfersWithFullInputs} with full input data, ${validation.conservationFailures.length} value-conservation failures, ${validation.flowEvents} flow events from FluxFlow's processTransaction()`);
@@ -169,6 +191,7 @@ async function main() {
       hoursAtBaselineRate: sixMonths / baselineBps / 3600,
     },
     validation,
+    deep,
     log: logLines,
   };
 

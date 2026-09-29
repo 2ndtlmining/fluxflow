@@ -23,7 +23,7 @@ const arg = (n, d) => { const i = process.argv.indexOf(`--${n}`); return i > -1 
 const NODE_COUNT = Number(arg('nodes', 300));
 const SEED_PORT = Number(arg('seed-port', 18000));
 const TIP = Number(arg('tip', 2_150_000));
-const CHAIN_DEPTH = Number(arg('depth', 6000));
+const CHAIN_DEPTH = Number(arg("depth", 530000));
 
 // Deterministic PRNG
 function rng(seed) {
