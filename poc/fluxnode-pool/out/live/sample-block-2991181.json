@@ -1,0 +1,312 @@
+{
+  "hash": "9e5b28b3c356617b8bd87d4a4b44046638b281b343b3f7986167e5ce14964f73",
+  "confirmations": 1072,
+  "size": 2845,
+  "height": 2991181,
+  "version": 100,
+  "merkleroot": "cd17e98bb63873eca937da4616f50e62e1d5edb9f71d3afdb9a0e4fbd13128a0",
+  "finalsaplingroot": "22758d2483e36192e2ca6beef539801f3d6218eb6e24125da16d9cdc7a8e98d9",
+  "tx": [
+    {
+      "txid": "8100561fbb52f6923414bc98b6d64ea49c45206ad883554b9ed78f6e289bfcd2",
+      "version": 4,
+      "overwintered": true,
+      "versiongroupid": "892f2085",
+      "locktime": 0,
+      "expiryheight": 0,
+      "vin": [
+        {
+          "coinbase": "034da42d00",
+          "sequence": 4294967295
+        }
+      ],
+      "vout": [
+        {
+          "value": 0.5,
+          "valueZat": 50000000,
+          "valueSat": 50000000,
+          "n": 0,
+          "scriptPubKey": {
+            "asm": "OP_HASH160 fa742817c4a665fccc70ce4cb40bdb71ba345db7 OP_EQUAL",
+            "hex": "a914fa742817c4a665fccc70ce4cb40bdb71ba345db787",
+            "reqSigs": 1,
+            "type": "scripthash",
+            "addresses": [
+              "t3hPu1YDeGUCp8m7BQCnnNUmRMJBa5RadyA"
+            ]
+          }
+        },
+        {
+          "value": 1,
+          "valueZat": 100000000,
+          "valueSat": 100000000,
+          "n": 1,
+          "scriptPubKey": {
+            "asm": "OP_DUP OP_HASH160 a93b24a1dc6ada4806d5c05f68f3100436f43417 OP_EQUALVERIFY OP_CHECKSIG",
+            "hex": "76a914a93b24a1dc6ada4806d5c05f68f3100436f4341788ac",
+            "reqSigs": 1,
+            "type": "pubkeyhash",
+            "addresses": [
+              "t1ZJR468HBuSt1SW2tgWjoxLfYv2yPHgGge"
+            ]
+          }
+        },
+        {
+          "value": 3.5,
+          "valueZat": 350000000,
+          "valueSat": 350000000,
+          "n": 2,
+          "scriptPubKey": {
+            "asm": "OP_DUP OP_HASH160 658ebcbf87c9cad6caafaca5f377de927e4b7b88 OP_EQUALVERIFY OP_CHECKSIG",
+            "hex": "76a914658ebcbf87c9cad6caafaca5f377de927e4b7b8888ac",
+            "reqSigs": 1,
+            "type": "pubkeyhash",
+            "addresses": [
+              "t1T8bFGiR823oMUrMRSWMowQVLHCKjTCMod"
+            ]
+          }
+        },
+        {
+          "value": 9,
+          "valueZat": 900000000,
+          "valueSat": 900000000,
+          "n": 3,
+          "scriptPubKey": {
+            "asm": "OP_DUP OP_HASH160 6c0f23413385b9a3d999cfe386809e9a01e15cd6 OP_EQUALVERIFY OP_CHECKSIG",
+            "hex": "76a9146c0f23413385b9a3d999cfe386809e9a01e15cd688ac",
+            "reqSigs": 1,
+            "type": "pubkeyhash",
+            "addresses": [
+              "t1Tiy7qgAnDDsvjXVJwAKdmTBASTEhXhabM"
+            ]
+          }
+        }
+      ],
+      "vJoinSplit": [],
+      "valueBalance": 0,
+      "valueBalanceZat": 0,
+      "vShieldedSpend": [],
+      "vShieldedOutput": []
+    },
+    {
+      "txid": "d965edc69bc43132c8d21e81ab4c35bdb7feaf320ce05904592accacfad4c941",
+      "version": 5,
+      "type": "Confirming a fluxnode",
+      "collateral_output": "COutPoint(ad4eee80ee, 0)",
+      "collateral": "COutPoint(ad4eee80eedd841031d535ef170f948f481e07016286e80ef62ffbf91c4fe2b6, 0)",
+      "txhash": "ad4eee80eedd841031d535ef170f948f481e07016286e80ef62ffbf91c4fe2b6",
+      "outidx": "0",
+      "sigtime": 1790624794,
+      "sig": "G76vavcRpUoY8W3XDEMcYSgJxKAtIfQbIFhEJxPuA8mINdTS9ILLwz71jVXChepmABIzWt4u5D1Q7RFT3B1bwA8=",
+      "ip": "84.97.96.71:16147",
+      "update_type": 1,
+      "benchmark_tier": "CUMULUS",
+      "benchmark_sigtime": 1790623125,
+      "benchmark_sig": "G5FTuFWuFKoeshPmJW4BriawzNT9/RTAsZmW1iVQPjgcf+mlbXviAVJayYu/DoT6Ai+MsccopA+2PmKBwbKtR0M="
+    },
+    {
+      "txid": "cf1a0b062598503bd6a307d4f6def0dbf5b22f6345851bc3170b45fce1b3760a",
+      "version": 5,
+      "type": "Confirming a fluxnode",
+      "collateral_output": "COutPoint(71c115a425, 32)",
+      "collateral": "COutPoint(71c115a425d95fafbd6396705293e2d0aeb6d6dba60877bc55987d2800cb41f0, 32)",
+      "txhash": "71c115a425d95fafbd6396705293e2d0aeb6d6dba60877bc55987d2800cb41f0",
+      "outidx": "32",
+      "sigtime": 1790624794,
+      "sig": "H3kVQL1cauf81meARG/EGcqCkxCTXojw18drYIky7Z00FPJUGkBjGYTeNWBQ/VI6h5ePtAoEsRROQgG5NDpvA7U=",
+      "ip": "65.108.229.78",
+      "update_type": 1,
+      "benchmark_tier": "STRATUS",
+      "benchmark_sigtime": 1790623561,
+      "benchmark_sig": "Gwz0gD4qLCMTgYBE6u9MFQQNybAY6AbAwBQNn3IJLxt+S6VEWfiq8UA/HSXuHgJk6nm3CiuA2BjZktcg7pdsvcA="
+    },
+    {
+      "txid": "b8b57ab81b2a79c9fd03f53aed3446fcc9b0b67851ea69e0a10ed03e29eb2956",
+      "version": 5,
+      "type": "Confirming a fluxnode",
+      "collateral_output": "COutPoint(71c115a425, 43)",
+      "collateral": "COutPoint(71c115a425d95fafbd6396705293e2d0aeb6d6dba60877bc55987d2800cb41f0, 43)",
+      "txhash": "71c115a425d95fafbd6396705293e2d0aeb6d6dba60877bc55987d2800cb41f0",
+      "outidx": "43",
+      "sigtime": 1790624794,
+      "sig": "H+i7ozEuJakGKXZr5I5do+45wbZtpUNtEIKastb7NNzjNON+Wr4buY9jLUYjSW7efHQxhaNYZC/4TXkJpDiaJt8=",
+      "ip": "65.108.123.204",
+      "update_type": 1,
+      "benchmark_tier": "STRATUS",
+      "benchmark_sigtime": 1790623005,
+      "benchmark_sig": "GxfhCbiGYpGHBIkDldYIbpUDzMg1GmXu4mirwCFyIlwKX8CVHpZSIH15IEnaJE8mkU+Ezlo//FOiMGP2wq4toBk="
+    },
+    {
+      "txid": "e2cec309c5e55f38107f89b8f3dee4eb644ab51445f3bb2f443ad475217583e0",
+      "version": 5,
+      "type": "Confirming a fluxnode",
+      "collateral_output": "COutPoint(017a041b31, 0)",
+      "collateral": "COutPoint(017a041b316d4452efd6fb82c73a792071f7a8dcba892811478965cc0ed15608, 0)",
+      "txhash": "017a041b316d4452efd6fb82c73a792071f7a8dcba892811478965cc0ed15608",
+      "outidx": "0",
+      "sigtime": 1790624794,
+      "sig": "G4nai6LySDe5wsZHcOHoxO5s2rgKP4cx+A0995i9Mq++YGHpzUr2ARhqo/4SYec4iX1vdcWnf358Y6Neb/8wjto=",
+      "ip": "90.24.3.81:16177",
+      "update_type": 1,
+      "benchmark_tier": "NIMBUS",
+      "benchmark_sigtime": 1790623088,
+      "benchmark_sig": "G4vJm7TH9libpmsVLfa9QTguKO8PzGn2hZJB4nD40jbyPXXX1qCj9rRj9oTGnjPX2f5aUyM5o+CRZvlv07edI7I="
+    },
+    {
+      "txid": "dc61548aaaf1e76c8d8569b8a594a363a0aab33990fa0ee43673a8c4452b4f19",
+      "version": 5,
+      "type": "Confirming a fluxnode",
+      "collateral_output": "COutPoint(d5d36d2f34, 0)",
+      "collateral": "COutPoint(d5d36d2f344919b3942b8a212ff5237187eeb9e611682993af03adc7c18a546f, 0)",
+      "txhash": "d5d36d2f344919b3942b8a212ff5237187eeb9e611682993af03adc7c18a546f",
+      "outidx": "0",
+      "sigtime": 1790624794,
+      "sig": "HKXG/fozM1RZ9oxpOH1HSlkE6HKPZlU50bsQou7oC+uyQ+qzHmjdyn4szdA46BN3GDTtFqIfDKutF1ddm+Z5mK8=",
+      "ip": "97.91.9.250:16187",
+      "update_type": 1,
+      "benchmark_tier": "CUMULUS",
+      "benchmark_sigtime": 1790623437,
+      "benchmark_sig": "HPZDcSW69VrxRZ24nFoAIfTjoAP537gZqNg3edT0/iLjQokbJ0L7SY8CYr2dQP127b3Hg6COYd2bk8AxP3CVO7g="
+    },
+    {
+      "txid": "e9267e7768383a8354beb655d527b7d29a0f4a4bde5efdf193992b79a72c31fc",
+      "version": 5,
+      "type": "Confirming a fluxnode",
+      "collateral_output": "COutPoint(b2f8a9038e, 0)",
+      "collateral": "COutPoint(b2f8a9038e9a72172ff04888a64568c9c27be02fe0656d9b186d94a1b62531b4, 0)",
+      "txhash": "b2f8a9038e9a72172ff04888a64568c9c27be02fe0656d9b186d94a1b62531b4",
+      "outidx": "0",
+      "sigtime": 1790624794,
+      "sig": "IKLigU9IKUbO+5wntedymZ+ym+7jm6ddILl+fX8Sn5ITMSOTThX6zt2mPJmEIu81szpeqBvBiecfo3fUf9PnQaM=",
+      "ip": "216.82.5.221:16157",
+      "update_type": 1,
+      "benchmark_tier": "NIMBUS",
+      "benchmark_sigtime": 1790623116,
+      "benchmark_sig": "HMCn+xgRTB14wnrIEa5yPfpCKiJCRn5Sk0iP412sF+/BcyeoElaW2vI1sFWB9spLCFoYsIx+9zGQ2hIW1lC9QTc="
+    },
+    {
+      "txid": "6d5a30925fec5b84d5be77a6519a1bf05ed413cda010d7c7cfa25d190e408fee",
+      "version": 5,
+      "type": "Confirming a fluxnode",
+      "collateral_output": "COutPoint(9d3dc7c786, 0)",
+      "collateral": "COutPoint(9d3dc7c7865276d8e9b6f877128471c9b4165b3d679caad93f5be98ba97a683b, 0)",
+      "txhash": "9d3dc7c7865276d8e9b6f877128471c9b4165b3d679caad93f5be98ba97a683b",
+      "outidx": "0",
+      "sigtime": 1790624794,
+      "sig": "HBko+2CbQ+4eubRBslXfrZ2bNTxf/PPW0vpRkEAI3x4wdelV1tQT1fipR04x1TG56dDm8dLYwvOVXjZOcFdIX6E=",
+      "ip": "37.187.79.189:16197",
+      "update_type": 1,
+      "benchmark_tier": "CUMULUS",
+      "benchmark_sigtime": 1790624003,
+      "benchmark_sig": "HCSgp0fVPn11a2+86YuLwpY4NlqkaFLJ3xIwmi9rMKzfRltwnwJAuHG7Z8GPGmXIsOJhdYm5H1M6I12gPIbpdFg="
+    },
+    {
+      "txid": "f6782f132b0cedf803788a0b8bdaa4c1ae6d7fa318c62b79f22fcc2a5c4f4e39",
+      "version": 5,
+      "type": "Confirming a fluxnode",
+      "collateral_output": "COutPoint(b8fc6e55ba, 0)",
+      "collateral": "COutPoint(b8fc6e55bad570609d788b68b24812216da67bfaaa30d81d2ab6e4cff7479a91, 0)",
+      "txhash": "b8fc6e55bad570609d788b68b24812216da67bfaaa30d81d2ab6e4cff7479a91",
+      "outidx": "0",
+      "sigtime": 1790624794,
+      "sig": "HB1eqPfC5wxcTAxhppK2PCZ49dwU5zMRe5511Hhk1usiQPXArD+Ju4QwcfVkW35J60Y0mUawKc6Ue8MaLNRFoig=",
+      "ip": "148.251.89.99:16137",
+      "update_type": 1,
+      "benchmark_tier": "CUMULUS",
+      "benchmark_sigtime": 1790623821,
+      "benchmark_sig": "G3a+6UKZqaaT7jjsxjuhLDSDXELdKRgN+d/nvn6+b1GqSGjZmVFckAPtxytCzDxu2N2BCoxcvvWrogx1+5PHJf0="
+    },
+    {
+      "txid": "4547092556357d06e078e4597ab6dcaf1eb8d730fd34618bd78cecd21286f478",
+      "version": 5,
+      "type": "Confirming a fluxnode",
+      "collateral_output": "COutPoint(a5bc7f81e5, 0)",
+      "collateral": "COutPoint(a5bc7f81e56645b9f2245cd84d1f11f93abda9fa6e9edfe26878194c92319741, 0)",
+      "txhash": "a5bc7f81e56645b9f2245cd84d1f11f93abda9fa6e9edfe26878194c92319741",
+      "outidx": "0",
+      "sigtime": 1790624794,
+      "sig": "HDQNNFzg/WMoB3tTHA/S5/GVI2avQJJU1HcE3n8bAgIAFSDHROufJ8LC+NbLfrJeejeEIdMvumhFUA1cxAjXSDU=",
+      "ip": "188.250.36.83:16187",
+      "update_type": 1,
+      "benchmark_tier": "CUMULUS",
+      "benchmark_sigtime": 1790624160,
+      "benchmark_sig": "G23WijUQaQopedz3Yi3FZxEhX27Tbbvb7wtv4zxCOvEqbj+O4eve8U1hn8xls1opikfPLJF9JJW2D2C4nmkpK0E="
+    },
+    {
+      "txid": "70515cab22f5a0e72de5adb6747fa14dd05a07dcbc3bcce76e1b485b3ac3843c",
+      "version": 5,
+      "type": "Confirming a fluxnode",
+      "collateral_output": "COutPoint(45739596f0, 0)",
+      "collateral": "COutPoint(45739596f013e9e2e18d1fcafd2d67ab9439462d45c3a168a6119c77e7972228, 0)",
+      "txhash": "45739596f013e9e2e18d1fcafd2d67ab9439462d45c3a168a6119c77e7972228",
+      "outidx": "0",
+      "sigtime": 1790624794,
+      "sig": "GyvmNU4tJY1t8nbnRn93231K8uxSbUe7eahvhA+Sw8uBPLKZoz30MHZo50KTt8US3HPT271SLPMS8NSmiUIUF/E=",
+      "ip": "176.9.125.180:16187",
+      "update_type": 1,
+      "benchmark_tier": "NIMBUS",
+      "benchmark_sigtime": 1790623339,
+      "benchmark_sig": "G5/TxQaETCEcoTTuUSVUoHTdHCuNn5s+EX2SMD3R9lWYTSVtlUoMry0EITs4NrGi99+7E0o+X6t+hz82lgV8fXA="
+    },
+    {
+      "txid": "66c4e5a51152563d1474f2b67ff7430129108a0d2fa611ec099a1b0dbee05236",
+      "version": 5,
+      "type": "Confirming a fluxnode",
+      "collateral_output": "COutPoint(698fbee402, 0)",
+      "collateral": "COutPoint(698fbee40213162b7a61ed69bb22ebb1ac6662e33a5e61c0717ef4a2e8e876aa, 0)",
+      "txhash": "698fbee40213162b7a61ed69bb22ebb1ac6662e33a5e61c0717ef4a2e8e876aa",
+      "outidx": "0",
+      "sigtime": 1790624795,
+      "sig": "G4vHtBt6wKOxISZPwo3W1K+8k5mmqZ08rMWRGE/JOPeZTg6WORKmSIAtnvTRVAZ9uJuycM4/ukvvHWYUjxXInD8=",
+      "ip": "80.95.215.213:16147",
+      "update_type": 1,
+      "benchmark_tier": "CUMULUS",
+      "benchmark_sigtime": 1790624367,
+      "benchmark_sig": "G+fFfjNuav7XC2Y7r2zTB7J+8cLxmey7IlTqygNlniztYR3fUWexbt8/QztYGG84k0+jiLzqmFwMffXty2tlEPo="
+    },
+    {
+      "txid": "a2ab3b11c940a12ed0f490905114d7e75bd3e6e7be72aaba1a9b67e15b028e77",
+      "version": 5,
+      "type": "Confirming a fluxnode",
+      "collateral_output": "COutPoint(e5965dd3f2, 0)",
+      "collateral": "COutPoint(e5965dd3f2de56d1cb1c4002252c60f66f38d464dd0222bcb7f5fcc2ea526dc7, 0)",
+      "txhash": "e5965dd3f2de56d1cb1c4002252c60f66f38d464dd0222bcb7f5fcc2ea526dc7",
+      "outidx": "0",
+      "sigtime": 1790624794,
+      "sig": "Gz1GC/oRCznjb6rBSRNG4+m14oZhUiba81Pvk4DPIkOyWjKdpPwupz/2OGv/bHaa4mr0B3Z42y3szJzj09el6I8=",
+      "ip": "191.113.211.231:16137",
+      "update_type": 1,
+      "benchmark_tier": "CUMULUS",
+      "benchmark_sigtime": 1790623944,
+      "benchmark_sig": "HEPNWCzR5DjH0IUcqg7JFHSn04XTprMboZ6zu9cuVbLmRGgVqkca8e+msrAjrzOvTqGiykQEKZjbSS+jney3tV0="
+    }
+  ],
+  "time": 1790624824,
+  "type": "PON",
+  "collateral": "COutPoint(4a7e3daa87, 0)",
+  "blocksig": "3045022100f7073feb5278f4be0f57856b6c64aad1a966204b98d1e83d9c27a75a69581585022077a8e944219a719a1980a1d7bcc6895f1b7c6c99a384f267c1adf535c2dca482",
+  "bits": "1f6c4e46",
+  "difficulty": 0.07386481628577136,
+  "chainwork": "0000000000000000000000000000000000000000000000000ed315efdead3c2f",
+  "anchor": "fc439aa2b153ede3a49ce1bac05189abc277ec1a2dc3a0608366a71035d90dbd",
+  "valuePools": [
+    {
+      "id": "sprout",
+      "monitored": true,
+      "chainValue": 19291.17735041,
+      "chainValueZat": 1929117735041,
+      "valueDelta": 0,
+      "valueDeltaZat": 0
+    },
+    {
+      "id": "sapling",
+      "monitored": true,
+      "chainValue": 77188.75921324,
+      "chainValueZat": 7718875921324,
+      "valueDelta": 0,
+      "valueDeltaZat": 0
+    }
+  ],
+  "previousblockhash": "f569e72e2fe37cbcf57547401ccde0802e5fbc896833dcc11e4cf0edf6947bf7",
+  "nextblockhash": "1e86e048d9f318b168a92bb83eccf11a0bda9572bc5f4b82c7c9fa31a700cde7"
+}
