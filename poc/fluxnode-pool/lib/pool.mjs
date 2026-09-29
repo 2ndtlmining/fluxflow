@@ -187,6 +187,7 @@ export async function fetchRange({
   crossCheckEvery = 20,
   probationBlocks = 3,
   hedge = true,
+  verifyTimeoutMs = 4000,
   onBlock = () => {},
   log = () => {},
 }) {
@@ -230,14 +231,18 @@ export async function fetchRange({
     }
   }
 
+  // Verifiers come from the (fast) fetch pool first, then any in-sync node.
   function pickVerifier(exclude) {
-    const pool = verifyNodes.filter((n) => !exclude.includes(n.baseUrl) && !banned.has(n.baseUrl));
-    return pool[Math.floor(Math.random() * pool.length)];
+    for (const set of [nodes, verifyNodes]) {
+      const pool = set.filter((n) => !exclude.includes(n.baseUrl) && !banned.has(n.baseUrl));
+      if (pool.length) return pool[Math.floor(Math.random() * pool.length)];
+    }
+    return undefined;
   }
 
   async function fingerprintFrom(node, height) {
     try {
-      const b = await fluxos(node.baseUrl, `/daemon/getblock/${height}/2`, { timeoutMs });
+      const b = await fluxos(node.baseUrl, `/daemon/getblock/${height}/2`, { timeoutMs: verifyTimeoutMs });
       return fingerprint(b);
     } catch {
       return null; // unavailable: not evidence either way
@@ -348,19 +353,23 @@ export async function fetchRange({
         latencies.push(ms);
         if (by !== baseUrl) hedgesWon++;
         const src = stats.get(by);
-        // Probation: a node's first blocks are always verified, then a random sample.
+        // Probation: a node's first blocks are always verified, then a random
+        // sample. Verification runs in the background so a slow verifier never
+        // stalls this worker; a bad verdict re-queues the block afterwards.
         const verify = crossCheckEvery > 0 && (src.served < probationBlocks || Math.random() < 1 / crossCheckEvery);
         if (verify) {
           src.verified++;
-          const verdict = await crossCheck(height, block, by);
-          if (verdict === 'source-bad') {
-            queue.unshift(height);
-            evict(by, `mismatch at height ${height} (outvoted 2:1)`);
-            continue;
-          }
-          if (verdict === 'inconclusive') {
-            throw Object.assign(new Error('cross-check inconclusive'), { kind: 'verify' });
-          }
+          const p = crossCheck(height, block, by).then((verdict) => {
+            if (verdict === 'source-bad') {
+              evict(by, `mismatch at height ${height} (outvoted 2:1)`); // re-queues everything it served
+            } else if (verdict === 'inconclusive' && servedBy.get(height) === by) {
+              blocks.delete(height);
+              servedBy.delete(height);
+              queue.push(height);
+            }
+          });
+          pendingVerifications.add(p);
+          p.finally(() => pendingVerifications.delete(p));
         }
         if (banned.has(by)) { queue.unshift(height); continue; }
         blocks.set(height, block);
@@ -388,11 +397,18 @@ export async function fetchRange({
   }
 
   let inFlight = 0;
-  const workers = [];
-  for (const n of nodes) {
-    for (let i = 0; i < perNodeInflight; i++) workers.push(worker(n.baseUrl));
-  }
-  await Promise.all(workers);
+  const pendingVerifications = new Set();
+  // Workers drain the queue; background verifications may re-queue blocks,
+  // so repeat until both the queue and the verifications are settled.
+  do {
+    const workers = [];
+    for (const n of nodes) {
+      if (stats.get(n.baseUrl).evicted) continue;
+      for (let i = 0; i < perNodeInflight; i++) workers.push(worker(n.baseUrl));
+    }
+    await Promise.all(workers);
+    while (pendingVerifications.size) await Promise.all([...pendingVerifications]);
+  } while (queue.length && nodes.some((n) => !stats.get(n.baseUrl).evicted));
   const fetchMs = performance.now() - t0;
 
   // --- Chain continuity + anchor ------------------------------------------
