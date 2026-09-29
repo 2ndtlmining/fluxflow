@@ -1,0 +1,353 @@
+{
+  "hash": "f974d3928c5f008238a96c8fba043c69ab81d5ca010a9f6cb492be363f305373",
+  "confirmations": 1072,
+  "size": 2763,
+  "height": 2991163,
+  "version": 100,
+  "merkleroot": "41c9827bc0bcd1c599090415c44456d5d28b0ae58edf70fa8cc1a24a73087357",
+  "finalsaplingroot": "22758d2483e36192e2ca6beef539801f3d6218eb6e24125da16d9cdc7a8e98d9",
+  "tx": [
+    {
+      "txid": "41a8e6c3c1b621b5cb8ec59955733886d2c2ba971e176ad321848839e98a4d18",
+      "version": 4,
+      "overwintered": true,
+      "versiongroupid": "892f2085",
+      "locktime": 0,
+      "expiryheight": 0,
+      "vin": [
+        {
+          "coinbase": "033ba42d00",
+          "sequence": 4294967295
+        }
+      ],
+      "vout": [
+        {
+          "value": 0.5,
+          "valueZat": 50000000,
+          "valueSat": 50000000,
+          "n": 0,
+          "scriptPubKey": {
+            "asm": "OP_HASH160 fa742817c4a665fccc70ce4cb40bdb71ba345db7 OP_EQUAL",
+            "hex": "a914fa742817c4a665fccc70ce4cb40bdb71ba345db787",
+            "reqSigs": 1,
+            "type": "scripthash",
+            "addresses": [
+              "t3hPu1YDeGUCp8m7BQCnnNUmRMJBa5RadyA"
+            ]
+          }
+        },
+        {
+          "value": 1,
+          "valueZat": 100000000,
+          "valueSat": 100000000,
+          "n": 1,
+          "scriptPubKey": {
+            "asm": "OP_DUP OP_HASH160 a93b24a1dc6ada4806d5c05f68f3100436f43417 OP_EQUALVERIFY OP_CHECKSIG",
+            "hex": "76a914a93b24a1dc6ada4806d5c05f68f3100436f4341788ac",
+            "reqSigs": 1,
+            "type": "pubkeyhash",
+            "addresses": [
+              "t1ZJR468HBuSt1SW2tgWjoxLfYv2yPHgGge"
+            ]
+          }
+        },
+        {
+          "value": 3.5,
+          "valueZat": 350000000,
+          "valueSat": 350000000,
+          "n": 2,
+          "scriptPubKey": {
+            "asm": "OP_DUP OP_HASH160 bd9c723406c7216fe962575683a16a5cbba2c5c3 OP_EQUALVERIFY OP_CHECKSIG",
+            "hex": "76a914bd9c723406c7216fe962575683a16a5cbba2c5c388ac",
+            "reqSigs": 1,
+            "type": "pubkeyhash",
+            "addresses": [
+              "t1bAB8f6HykLMtL2mvFZvUU7uBjCaUK7Uwr"
+            ]
+          }
+        },
+        {
+          "value": 9,
+          "valueZat": 900000000,
+          "valueSat": 900000000,
+          "n": 3,
+          "scriptPubKey": {
+            "asm": "OP_HASH160 a51b120b87df4f2fc759c92f1b6aab2747df1525 OP_EQUAL",
+            "hex": "a914a51b120b87df4f2fc759c92f1b6aab2747df152587",
+            "reqSigs": 1,
+            "type": "scripthash",
+            "addresses": [
+              "t3ZccrRNem6oTcN8kcPmgCh1HopR6zxH1Mq"
+            ]
+          }
+        }
+      ],
+      "vJoinSplit": [],
+      "valueBalance": 0,
+      "valueBalanceZat": 0,
+      "vShieldedSpend": [],
+      "vShieldedOutput": []
+    },
+    {
+      "txid": "af253f278e4b79d8e03fc8f68d32469776f37d30c4338bad787e4ed601743abd",
+      "version": 4,
+      "overwintered": true,
+      "versiongroupid": "892f2085",
+      "locktime": 0,
+      "expiryheight": 2991222,
+      "vin": [
+        {
+          "txid": "a7a9ee19c73b894b4e524a1ddd9960a924182e99f6e7fb5fc845de2f835478aa",
+          "vout": 1,
+          "scriptSig": {
+            "asm": "3044022040c3b72377c18105138fd9cf776414964ad4623879c4de436fc2b5794b8b400402204ec78f28210e0a9d86924b196c6df8a3a6602311343e8262420c5b0e226ac9a9[ALL] 027b4ebecbf314d77b3a3b60dde270c76531974b2ae2d7429e347913c57c5ce96c",
+            "hex": "473044022040c3b72377c18105138fd9cf776414964ad4623879c4de436fc2b5794b8b400402204ec78f28210e0a9d86924b196c6df8a3a6602311343e8262420c5b0e226ac9a90121027b4ebecbf314d77b3a3b60dde270c76531974b2ae2d7429e347913c57c5ce96c"
+          },
+          "value": 2293.06690381,
+          "valueSat": 229306690381,
+          "address": "t1Mzja9iJcEYeW5B4m4s1tJG8M42odFZ16A",
+          "sequence": 4294967295
+        }
+      ],
+      "vout": [
+        {
+          "value": 0.02,
+          "valueZat": 2000000,
+          "valueSat": 2000000,
+          "n": 0,
+          "scriptPubKey": {
+            "asm": "OP_HASH160 2f28e0d2e51b2e0745779d76ccecc620370c837f OP_EQUAL",
+            "hex": "a9142f28e0d2e51b2e0745779d76ccecc620370c837f87",
+            "reqSigs": 1,
+            "type": "scripthash",
+            "addresses": [
+              "t3NryfAQLGeFs9jEoeqsxmBN2QLRaRKFLUX"
+            ]
+          }
+        },
+        {
+          "value": 2293.04690381,
+          "valueZat": 229304690381,
+          "valueSat": 229304690381,
+          "n": 1,
+          "scriptPubKey": {
+            "asm": "OP_DUP OP_HASH160 2d39baffcd2118e9e057177fee007132e4bd6f3c OP_EQUALVERIFY OP_CHECKSIG",
+            "hex": "76a9142d39baffcd2118e9e057177fee007132e4bd6f3c88ac",
+            "reqSigs": 1,
+            "type": "pubkeyhash",
+            "addresses": [
+              "t1Mzja9iJcEYeW5B4m4s1tJG8M42odFZ16A"
+            ]
+          },
+          "spentTxId": "66e65ebbef976a56da5a456f5a2532fc0812c21e3f20849a6a0c570e8b4d35a8",
+          "spentIndex": 0,
+          "spentHeight": 2991209
+        },
+        {
+          "value": 0,
+          "valueZat": 0,
+          "valueSat": 0,
+          "n": 2,
+          "scriptPubKey": {
+            "asm": "OP_RETURN 66353865366133623430323334393233386330353365316261343265353134313539353632363330396362366633613733356537303536653563633135343031",
+            "hex": "6a4066353865366133623430323334393233386330353365316261343265353134313539353632363330396362366633613733356537303536653563633135343031",
+            "type": "nulldata"
+          }
+        }
+      ],
+      "vJoinSplit": [],
+      "valueBalance": 0,
+      "valueBalanceZat": 0,
+      "vShieldedSpend": [],
+      "vShieldedOutput": []
+    },
+    {
+      "txid": "1418407b4f4c0c08ac716a55a35ec89c2af838d191b4f6fdd315962f711603ae",
+      "version": 5,
+      "type": "Confirming a fluxnode",
+      "collateral_output": "COutPoint(8cd9e0afff, 0)",
+      "collateral": "COutPoint(8cd9e0afff6e503ecc3db89be805bd60d239748d33966ce47c62d90733007bd7, 0)",
+      "txhash": "8cd9e0afff6e503ecc3db89be805bd60d239748d33966ce47c62d90733007bd7",
+      "outidx": "0",
+      "sigtime": 1790624254,
+      "sig": "HDtG4ECoRIy1JD5C9LAdWh94X600+qWmQLhV1cZm5AZ8eyzSmLZ/7AQmMgWlgevDq2eCENylRfDMuNeqwCpH63Y=",
+      "ip": "91.226.198.224",
+      "update_type": 1,
+      "benchmark_tier": "STRATUS",
+      "benchmark_sigtime": 1790624232,
+      "benchmark_sig": "G8WS/J2bTe40zpC3j4q/xrOVGOlMi+Uk9oDJNHysAmIKOm84MAWJqVsxGz57L/GNqmZn9jzrFK5oC64Wokkny1Q="
+    },
+    {
+      "txid": "e18a28d566f13f72d364da2f32d773020affca65f6c0a50db261a105ed79b4c5",
+      "version": 5,
+      "type": "Confirming a fluxnode",
+      "collateral_output": "COutPoint(8e5ce8a881, 25)",
+      "collateral": "COutPoint(8e5ce8a881c01dc5a2942800416b3333dad75a4330af60135ea2ac4bbd05307c, 25)",
+      "txhash": "8e5ce8a881c01dc5a2942800416b3333dad75a4330af60135ea2ac4bbd05307c",
+      "outidx": "25",
+      "sigtime": 1790624254,
+      "sig": "H69TtpWf72ShKhgABmWbho9JhbsR6nDRL+NpA7hkripxVPQXoeyXse95Y4elMcagMUW8xQp1xM54yQRoJCrt/Qc=",
+      "ip": "168.119.128.14",
+      "update_type": 1,
+      "benchmark_tier": "STRATUS",
+      "benchmark_sigtime": 1790623534,
+      "benchmark_sig": "G/BjppC06WSlGzPnE2NTtW+53buaHysfgFIvQVPZ0nGNOMBL8HMmfr7LoHBSEOyukc53tbh7e3+I2nyVUtT+hd8="
+    },
+    {
+      "txid": "34ac7b5b7d3de680081f8b30236c970fdfb4fa4a061723813972099ac632710f",
+      "version": 5,
+      "type": "Confirming a fluxnode",
+      "collateral_output": "COutPoint(26c93a34c7, 0)",
+      "collateral": "COutPoint(26c93a34c78ac5cb6f5cc863c17c0bad1286ba4c112acc5212e51ec9cd5e4346, 0)",
+      "txhash": "26c93a34c78ac5cb6f5cc863c17c0bad1286ba4c112acc5212e51ec9cd5e4346",
+      "outidx": "0",
+      "sigtime": 1790624255,
+      "sig": "HLi397Z6974tFX/pQQMaiTAA/kzQu2F+eYi2p7YgZa8iQU0z8DW7ns8D1fzkzky2xm2S8njPTtsJIsaiSKgUTak=",
+      "ip": "47.18.217.44:16137",
+      "update_type": 1,
+      "benchmark_tier": "NIMBUS",
+      "benchmark_sigtime": 1790623229,
+      "benchmark_sig": "HFaoMERLdsJcDm6Z65oNMLCmi5skBTL5WNWC/4wI5mJIauzimGHQW3eRl/cvBak6KDgi05Nsag2pEoppqCHu4Qw="
+    },
+    {
+      "txid": "5dde0a484207eb96c08504c87690fb6ab888a31c0edcefee17101a31c721fb3d",
+      "version": 5,
+      "type": "Confirming a fluxnode",
+      "collateral_output": "COutPoint(c2d6569ecc, 0)",
+      "collateral": "COutPoint(c2d6569eccde25519b9dc00c72a0d54270aeaa2d99239d46de258364c380d313, 0)",
+      "txhash": "c2d6569eccde25519b9dc00c72a0d54270aeaa2d99239d46de258364c380d313",
+      "outidx": "0",
+      "sigtime": 1790624254,
+      "sig": "HM3sRWCbokFZhZruWUo3mC/M8mEgaJyHWCHlD+v6aJuxZCHNHzh2JGp4ZZf2Swg+cUyD0KupbTy5cdAS8sS8AoY=",
+      "ip": "31.37.244.125:16137",
+      "update_type": 1,
+      "benchmark_tier": "NIMBUS",
+      "benchmark_sigtime": 1790623615,
+      "benchmark_sig": "G8OBBtf07qmoq8gZ6ZmrxCwtPCJNHEABB4j6AO4KBbLiHHXYT8FtOP17DGS3yXoitNAbV9irubSvxMrOWToANo8="
+    },
+    {
+      "txid": "e867abb29c0fbeab3267fede7f3e1f01823f0a1ff4d0934d65cfa0df1581e46d",
+      "version": 5,
+      "type": "Confirming a fluxnode",
+      "collateral_output": "COutPoint(cc5a4a3ce1, 0)",
+      "collateral": "COutPoint(cc5a4a3ce1cbe25840362729f4e35544772b7e8b0e7649786d3eeb8aeb32cbfd, 0)",
+      "txhash": "cc5a4a3ce1cbe25840362729f4e35544772b7e8b0e7649786d3eeb8aeb32cbfd",
+      "outidx": "0",
+      "sigtime": 1790624254,
+      "sig": "HLRoBOMrfJ3e9X1Pl1g8P9gqR2+huTPuX3pHC0Hz+vj6Fs95rhmwbLTcVMIo9vPlAI1iU+dhHPhLZKOaiKFNbns=",
+      "ip": "45.152.51.172:16137",
+      "update_type": 1,
+      "benchmark_tier": "STRATUS",
+      "benchmark_sigtime": 1790622968,
+      "benchmark_sig": "HAxElKbnKqd2gvv0WjIM2la9DaoOnXKEt5243SH4MD5KJ90VYTqk7Zmgwg2+ZpnMxero4goVb3NQKMjnVT2rc4Y="
+    },
+    {
+      "txid": "f7c9341e0bb613f09289becc29b5e4d7dbc276970f7a7e223cd033fc54b9cc8b",
+      "version": 5,
+      "type": "Confirming a fluxnode",
+      "collateral_output": "COutPoint(33c40aa4ea, 0)",
+      "collateral": "COutPoint(33c40aa4eaec7e5fd1d1c10f7319e5bc69e7c60caaf549b7ad73ac4d541aa5bc, 0)",
+      "txhash": "33c40aa4eaec7e5fd1d1c10f7319e5bc69e7c60caaf549b7ad73ac4d541aa5bc",
+      "outidx": "0",
+      "sigtime": 1790624247,
+      "sig": "G6TcD8tTbtiVpnqNyK032ilxL/8YpuO2DJ250BdhH6ZSD1ZcEwFTawofLH97BSUP5sqp8xBFAFwhsGXHE0Gdeb8=",
+      "ip": "75.152.90.118:16147",
+      "update_type": 1,
+      "benchmark_tier": "NIMBUS",
+      "benchmark_sigtime": 1790622915,
+      "benchmark_sig": "G/0WZgC3p1j20vbZ+QCqeb3wmZujvfscSheQT1E2I5eLWKW7CnI1e3oMwKnW/h7sTiu69vtB5CwZKRXBgfNUk50="
+    },
+    {
+      "txid": "20778b26971d85422bcde1b5c5eacd3ef1c5cb81edc467612df62709f0efc9ea",
+      "version": 5,
+      "type": "Confirming a fluxnode",
+      "collateral_output": "COutPoint(30671433c2, 0)",
+      "collateral": "COutPoint(30671433c239dd4ce115584e012beeb9bfd1b076724971ab147713c243112d2c, 0)",
+      "txhash": "30671433c239dd4ce115584e012beeb9bfd1b076724971ab147713c243112d2c",
+      "outidx": "0",
+      "sigtime": 1790624255,
+      "sig": "H34ONuLyvdgvWpZ/dCTDYUXbaJkGejhUJC84KxxCV52EOhnewlxBmPyGiEPHTyQWoqowvhtEbKjjQNMncTOpA8M=",
+      "ip": "38.247.82.134:16147",
+      "update_type": 1,
+      "benchmark_tier": "STRATUS",
+      "benchmark_sigtime": 1790622993,
+      "benchmark_sig": "G1cB1CMYY+cj58ZK18okWBUVPTMCXrq5px8Pt2pzg85vX90N9pcIIZFmrxwfbcz78x/26VdYE5BHB1+KWMWjng8="
+    },
+    {
+      "txid": "c5c564db1bdaf0b3854d14aa647591aeb50c9ee01765930959a76eda620cd2ed",
+      "version": 5,
+      "type": "Confirming a fluxnode",
+      "collateral_output": "COutPoint(ed14f984da, 0)",
+      "collateral": "COutPoint(ed14f984da531d1f879fbdc26fe2e4149d3e5e84ee012ac07b207a94ce8ad044, 0)",
+      "txhash": "ed14f984da531d1f879fbdc26fe2e4149d3e5e84ee012ac07b207a94ce8ad044",
+      "outidx": "0",
+      "sigtime": 1790624254,
+      "sig": "HHaHFLzKaHtb6cTXgPvFU4dtHLRnancQdo9QYI0qdmHiUpWdZVFzzkkk2RS/t4peJKhNYWirbsFT8zImL/In24M=",
+      "ip": "80.219.202.23:16167",
+      "update_type": 1,
+      "benchmark_tier": "NIMBUS",
+      "benchmark_sigtime": 1790622979,
+      "benchmark_sig": "HHTFqykgJ92ce9DUHdASPqdDI+Ha/n9SP9x4kPqHy1c9efH8rRuAOn7MC8BAG7dzkugf4EhXhfPsGr4SMFNSIrw="
+    },
+    {
+      "txid": "93938d35427641f62d88c1845bdfde302b2b4ce9359f227fc418c52c27d546b9",
+      "version": 5,
+      "type": "Confirming a fluxnode",
+      "collateral_output": "COutPoint(326436d9ef, 0)",
+      "collateral": "COutPoint(326436d9ef91e366b5f56ce7c04270640629da3ca832ee10b87070e214f64be9, 0)",
+      "txhash": "326436d9ef91e366b5f56ce7c04270640629da3ca832ee10b87070e214f64be9",
+      "outidx": "0",
+      "sigtime": 1790624254,
+      "sig": "HONzlmIXvMvhrjDVGyZsZH21udAbuSWpNc/qeBE5DkcrYZk4AP79J63zALgJe1q4Ng5FL/uaUxxGWRlzr39qz7U=",
+      "ip": "90.228.206.207:16147",
+      "update_type": 1,
+      "benchmark_tier": "CUMULUS",
+      "benchmark_sigtime": 1790623151,
+      "benchmark_sig": "HONdYSExYGmSfEDskQmHMQac1cPi6aYiF3xst3hmXk4oX39ZwrPObci7qgL6fHZySdKs7QeMuq8JxRFLogyV1/o="
+    },
+    {
+      "txid": "22eccb97e2a3677417c70935300721b8f32f8abc1277f191c4b9fb452f757881",
+      "version": 5,
+      "type": "Confirming a fluxnode",
+      "collateral_output": "COutPoint(506ff00eac, 0)",
+      "collateral": "COutPoint(506ff00eac15d513f8fbdab6791498bb8d7675e9d2aa3fa13b5d5fe51655817e, 0)",
+      "txhash": "506ff00eac15d513f8fbdab6791498bb8d7675e9d2aa3fa13b5d5fe51655817e",
+      "outidx": "0",
+      "sigtime": 1790624254,
+      "sig": "G09YFF8OAGHF5wGkue7+QCE9B8/u1zIzgL1zxNXZ9k+ZFtzJ60Zm9FGCMo5RUdqa9QLEbXTFytsSwoe4zynYyP0=",
+      "ip": "213.166.195.190:16177",
+      "update_type": 1,
+      "benchmark_tier": "CUMULUS",
+      "benchmark_sigtime": 1790623221,
+      "benchmark_sig": "HJgyxaPRYa25sLoftLgM4+vIX+1zM8FpEVhk1uGIY5imMmGR2/00zU6x+B9idBWpO826qYxUuPg6hvBZHJh0RrE="
+    }
+  ],
+  "time": 1790624284,
+  "type": "PON",
+  "collateral": "COutPoint(09ac60d60d, 0)",
+  "blocksig": "3045022100c362dda2340dbc085884bf289f757e1d77030cf75c17b7f889bf7aaac956e6c002206a26cc427dcea0f77181c5f30e89431d619b2a04ef177cfe227b8bef9352d9b4",
+  "bits": "1f6d503d",
+  "difficulty": 0.07318391421510295,
+  "chainwork": "0000000000000000000000000000000000000000000000000ed303efdead3c2f",
+  "anchor": "fc439aa2b153ede3a49ce1bac05189abc277ec1a2dc3a0608366a71035d90dbd",
+  "valuePools": [
+    {
+      "id": "sprout",
+      "monitored": true,
+      "chainValue": 19291.17735041,
+      "chainValueZat": 1929117735041,
+      "valueDelta": 0,
+      "valueDeltaZat": 0
+    },
+    {
+      "id": "sapling",
+      "monitored": true,
+      "chainValue": 77188.75921324,
+      "chainValueZat": 7718875921324,
+      "valueDelta": 0,
+      "valueDeltaZat": 0
+    }
+  ],
+  "previousblockhash": "da26aea944a04457d4e1d297eef8213a9a3283cf5d6ac9cbec1344419eb4ee7c",
+  "nextblockhash": "cf835e5d8ffd5099423aa8d76cd49c27a378a32f13eb1bcdfee1e8995367c3f8"
+}
