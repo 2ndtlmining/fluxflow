@@ -6,17 +6,7 @@ import prettier from 'eslint-config-prettier';
 
 export default tseslint.config(
   {
-    ignores: [
-      'build/',
-      'dist/',
-      '.svelte-kit/',
-      'node_modules/',
-      'coverage/',
-      'static/',
-      'src/lib/services/**',
-      'src/lib/config.js',
-      'server.js'
-    ]
+    ignores: ['build/', 'dist/', '.svelte-kit/', 'node_modules/', 'coverage/', 'static/']
   },
 
   js.configs.recommended,
@@ -45,7 +35,7 @@ export default tseslint.config(
 
   // Server code: enforce explicit, unambiguous imports.
   {
-    files: ['src/lib/server/**/*.ts', 'src/server.ts'],
+    files: ['src/lib/server/**/*.ts', 'src/server.ts', 'scripts/**/*.ts'],
     rules: {
       'no-console': 'error',
       eqeqeq: ['error', 'always', { null: 'ignore' }],
@@ -61,9 +51,9 @@ export default tseslint.config(
     }
   },
 
-  // Client code: console is still noisy but not an error during the migration.
+  // Browser code: logging to the console is still noisy, but not an error.
   {
-    files: ['src/lib/**/*.js', 'src/routes/**/*.js'],
+    files: ['src/lib/**/*.js', 'src/routes/**/*.js', 'src/lib/**/*.svelte'],
     rules: {
       'no-console': 'off'
     }

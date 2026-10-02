@@ -2,8 +2,10 @@
 node_modules
 npm-debug.log
 yarn-error.log
-package-lock.json
 yarn.lock
+# NOTE: package-lock.json MUST stay. Excluding it (as v1 did) silently downgrades the
+# image build to a floating `npm install`, so the container's dependency versions are
+# whatever resolved on the day it was built.
 
 # Build outputs
 .svelte-kit

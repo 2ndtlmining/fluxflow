@@ -1,96 +1,87 @@
-# Production Dockerfile for Flux Flow Tracker
-# Runs both Express API (port 3000) and SvelteKit Frontend (port 5173)
+# syntax=docker/dockerfile:1
 
-FROM node:18-alpine
+# ==============================================================================
+# FluxFlow - single container, single process, single port.
+#
+# Replaces the v1 image, which ran Express on 3000 and SvelteKit on 4173 with a proxy
+# between them, shipped a C++ toolchain to build better-sqlite3 at image-build time, and
+# never worked when reached by anything other than localhost (#9, #11, #22).
+# ==============================================================================
 
-# Set working directory
+# ─── deps ───────────────────────────────────────────────────────────────────
+FROM node:22-alpine AS deps
+
+# better-sqlite3 ships prebuilt binaries for Node 22 on linux-x64, so no toolchain is
+# needed. `libc6-compat` is required by the prebuilt .node file; python3/make/g++ are only
+# installed for the platforms where no prebuild exists.
+RUN apk add --no-cache libc6-compat python3 make g++
+
 WORKDIR /app
 
-# Install system dependencies for better-sqlite3 and runtime utilities
-RUN apk add --no-cache \
-    python3 \
-    make \
-    g++ \
-    sqlite \
-    sqlite-dev \
-    pkgconfig \
-    build-base \
-    curl \
-    wget
+# Only the manifests, so this layer is cached until dependencies actually change.
+COPY package.json package-lock.json ./
 
-# Copy package files first for better Docker layer caching
-COPY package*.json ./
+RUN --mount=type=cache,target=/root/.npm \
+    npm ci --omit=dev --ignore-scripts=false
 
-# Install all dependencies with proper environment for better-sqlite3
-ENV PYTHON=/usr/bin/python3
-RUN npm install --legacy-peer-deps
-
-# Rebuild better-sqlite3 for Alpine Linux
+# Rebuild the native module for this exact platform/ABI, then drop the toolchain need.
 RUN npm rebuild better-sqlite3
 
-# Copy ALL source code (including server.js at root and src/ directory)
+# ─── build ──────────────────────────────────────────────────────────────────
+FROM node:22-alpine AS build
+
+RUN apk add --no-cache libc6-compat python3 make g++
+
+WORKDIR /app
+
+COPY package.json package-lock.json ./
+RUN --mount=type=cache,target=/root/.npm npm ci
+
 COPY . .
 
-# Build the SvelteKit frontend for production
-RUN npm run build
+# SvelteKit -> build/ (adapter-node), and the server entry -> dist/ (tsc).
+RUN npm run build \
+ && npm run build:server
 
-# Create non-root user for security BEFORE setting permissions
-RUN addgroup -g 1001 -S nodejs && \
-    adduser -S fluxapp -u 1001
+# ─── runtime ────────────────────────────────────────────────────────────────
+FROM node:22-alpine AS runtime
 
-# Create ALL necessary directories with proper permissions
-RUN mkdir -p /app/data && \
-    mkdir -p /app/src/lib/db && \
-    mkdir -p /app/static/logos && \
-    mkdir -p /app/build && \
-    chown -R fluxapp:nodejs /app && \
-    chmod -R 775 /app/data
+# tini reaps zombies and, critically, forwards SIGTERM to node. Without a real init the
+# container gets SIGKILLed after the grace period, which is how v1 lost blocks mid-write
+# (#14): its own SIGTERM handler called process.exit(0) immediately.
+RUN apk add --no-cache libc6-compat tini
 
-# Make startup script executable BEFORE switching user
-RUN chmod +x /app/startup.sh
+ENV NODE_ENV=production \
+    HOST=0.0.0.0 \
+    PORT=3000 \
+    DATABASE_PATH=/app/data/flux-flow.db \
+    LABELS_PATH=/app/config/labels.json
 
-# Switch to non-root user
-USER fluxapp
+WORKDIR /app
 
-# Set production environment variables
-ENV NODE_ENV=production
-ENV HOST=0.0.0.0
+# Production dependencies only, carried over from the build stage.
+COPY --from=deps --chown=node:node /app/node_modules ./node_modules
+COPY --from=build --chown=node:node /app/build ./build
+COPY --from=build --chown=node:node /app/dist ./dist
+COPY --from=build --chown=node:node /app/package.json ./package.json
+COPY --from=build --chown=node:node /app/config ./config
 
-# ========================================
-# DATABASE CONFIGURATION
-# ========================================
-# CRITICAL: Set database to use the /app/data directory
-ENV DATABASE_PATH=/app/data/flux-flow.db
+RUN mkdir -p /app/data && chown -R node:node /app
 
-# ========================================
-# PORT CONFIGURATION
-# ========================================
-# Backend API port (Express server)
-ENV API_PORT=3000
+USER node
 
-# Frontend port (SvelteKit)
-ENV FRONTEND_PORT=5173
-
-# CORS origin (update this for production if needed)
-ENV ORIGIN=http://localhost:5173
-
-# API base for hooks proxy
-ENV API_BASE=http://127.0.0.1:3000
-
-# ========================================
-# EXPOSE PORTS
-# ========================================
-# API port
+# One port serves both /api and the web app.
 EXPOSE 3000
-# Frontend port
-EXPOSE 5173
 
-# Volume for persistent data
 VOLUME ["/app/data"]
 
-# Health check for the API server
-HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
-    CMD wget --no-verbose --tries=1 --spider http://localhost:3000/api/health || exit 1
+# O(1) and dependency-free: no curl or wget in the image, and no table scans (#3).
+HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3 \
+  CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||3000)+'/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 
-# Start both services using the startup script
-CMD ["/bin/sh", "/app/startup.sh"]
+# Ingestion commits in batches; give the in-flight transaction time to finish rather than
+# being SIGKILLed mid-write.
+STOPSIGNAL SIGTERM
+
+ENTRYPOINT ["/sbin/tini", "--"]
+CMD ["node", "dist/server.js"]
