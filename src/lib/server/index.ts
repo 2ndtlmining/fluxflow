@@ -17,6 +17,7 @@ import { BlockbookDataSource } from './ingest/datasource/blockbook.js';
 import { FluxIndexerDataSource } from './ingest/datasource/fluxindexer.js';
 import { FailoverDataSource } from './ingest/datasource/circuitbreaker.js';
 import type { DataSource } from './ingest/datasource/types.js';
+import { SyncService } from './ingest/sync.js';
 import { createApiRouter, errorHandler } from './api/router.js';
 
 /** How long a graceful shutdown may take before the process exits anyway. */
@@ -32,6 +33,8 @@ export interface Service {
   readonly db: Db;
   readonly labels: LabelLookup;
   readonly dataSource: FailoverDataSource;
+  /** Absent when `SYNC_ENABLED=0`. */
+  readonly sync: SyncService | null;
   listen(): Promise<Server>;
   close(): Promise<void>;
   /** Record a successful sync cycle, which `/api/health` reads to decide if we are stale. */
@@ -44,6 +47,13 @@ export interface CreateServiceOptions {
   readonly env?: NodeJS.ProcessEnv;
   /** Injected for tests so no network call happens at boot. */
   readonly sources?: DataSource[];
+  /**
+   * Start the ingestion loop immediately.
+   *
+   * Tests set this to `false` to exercise the wiring — including the staleness check — and
+   * then drive `service.sync.runOnce()` themselves, rather than racing a real poll.
+   */
+  readonly autoStartSync?: boolean;
 }
 
 /**
@@ -110,6 +120,19 @@ export function createService(options: CreateServiceOptions = {}): Service {
   // Probing runs unref'd, so it never keeps the process alive on its own.
   if (config.syncEnabled) dataSource.startProbing(60_000);
 
+  const sync = config.syncEnabled
+    ? new SyncService({
+        config,
+        db: database.db,
+        labels,
+        dataSource,
+        log: log.child({ component: 'ingest' }),
+        limiter
+      })
+    : null;
+
+  if (sync && options.autoStartSync !== false) sync.start();
+
   const health = {
     startedAt: Date.now(),
     lastSuccessfulSyncAt: null as number | null,
@@ -149,7 +172,18 @@ export function createService(options: CreateServiceOptions = {}): Service {
 
   app.disable('x-powered-by');
   app.use('/api', express.json({ limit: '64kb' }));
-  app.use('/api', createApiRouter({ config, db: database.db, labels, dataSource, health }));
+  app.use(
+    '/api',
+    createApiRouter({
+      config,
+      db: database.db,
+      labels,
+      dataSource,
+      log: log.child({ component: 'api' }),
+      health,
+      ...(sync ? { sync } : {})
+    })
+  );
   app.use('/api', errorHandler(config, log.child({ component: 'api' })));
 
   let server: Server | undefined;
@@ -162,6 +196,7 @@ export function createService(options: CreateServiceOptions = {}): Service {
     db: database.db,
     labels,
     dataSource,
+    sync,
 
     async listen(): Promise<Server> {
       if (server) return server;
@@ -205,6 +240,10 @@ export function createService(options: CreateServiceOptions = {}): Service {
 
       dataSource.stopProbing();
 
+      // Stop the loop before closing the database, otherwise an in-flight cycle would try
+      // to commit against a closed handle.
+      await sync?.stop();
+
       if (server) {
         await new Promise<void>((resolve) => {
           // close() waits for in-flight requests, which is the point: an interrupted
@@ -214,6 +253,7 @@ export function createService(options: CreateServiceOptions = {}): Service {
         });
       }
 
+      await sync?.drain();
       await limiter.drain();
       database.close();
 
@@ -224,6 +264,7 @@ export function createService(options: CreateServiceOptions = {}): Service {
     /** Exposed so the ingest worker can record progress for `/api/health`. */
     markSyncSuccess(at = Date.now()): void {
       health.lastSuccessfulSyncAt = at;
+      sync?.markSuccess(at);
     }
   };
 }

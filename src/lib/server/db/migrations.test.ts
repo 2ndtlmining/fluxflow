@@ -172,6 +172,42 @@ describe('migrate', () => {
     ).toThrow(/CHECK constraint failed/);
   });
 
+  it('records node rewards per height so a reorg can roll them back', () => {
+    migrate(db);
+
+    const columns = db
+      .prepare<[], { name: string }>(`PRAGMA table_info(node_rewards)`)
+      .all()
+      .map((row) => row.name);
+
+    expect(columns).toEqual(
+      expect.arrayContaining(['address', 'height', 'day', 'reward_count', 'sat'])
+    );
+  });
+
+  it('overwrites a node reward for a re-synced block instead of adding to it', () => {
+    migrate(db);
+
+    const upsert = db.prepare<[string, number, number, number, number], never>(
+      `INSERT INTO node_rewards (address, height, day, reward_count, sat)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT (address, height) DO UPDATE SET
+         day = excluded.day, reward_count = excluded.reward_count, sat = excluded.sat`
+    );
+
+    upsert.run('t1miner', 100, 200, 1, 500);
+    upsert.run('t1miner', 100, 200, 1, 500);
+
+    const row = db
+      .prepare<[], { reward_count: number; sat: number }>(
+        `SELECT reward_count, sat FROM node_rewards WHERE address = 't1miner' AND height = 100`
+      )
+      .get();
+
+    // An additive aggregate would report 2 rewards / 1000 sat after re-syncing one block.
+    expect(row).toEqual({ reward_count: 1, sat: 500 });
+  });
+
   it('indexes the three dashboard query shapes', () => {
     migrate(db);
 
