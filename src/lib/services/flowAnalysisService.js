@@ -16,13 +16,13 @@ class FlowAnalysisService {
       console.error('Database not initialized');
       return [];
     }
-    
+
     const currentHeight = this.db.getLatestBlockHeight();
     if (currentHeight === 0) return [];
-    
+
     const blocksInPeriod = getPeriodBlocks(period);
     const cutoffBlock = currentHeight - blocksInPeriod;
-    
+
     return this.db.getFlowEvents(cutoffBlock, currentHeight);
   }
 
@@ -31,7 +31,7 @@ class FlowAnalysisService {
    */
   analyzeFlow(period) {
     const flowEvents = this.getFlowEventsForPeriod(period);
-    
+
     const analysis = {
       period: period,
       blockRange: {
@@ -70,14 +70,14 @@ class FlowAnalysisService {
         p2pEvents: 0
       }
     };
-    
+
     // Process each flow event
     for (const event of flowEvents) {
       if (event.flowType === 'buying') {
         analysis.buying.total += event.amount;
         analysis.buying.events.push(event);
         analysis.stats.buyingEvents++;
-        
+
         // Breakdown by destination
         if (event.toType === 'node_operator') {
           analysis.buying.breakdown.toNodeOperators += event.amount;
@@ -86,7 +86,7 @@ class FlowAnalysisService {
         } else if (event.toType === 'foundation') {
           analysis.buying.breakdown.toFoundation += event.amount;
         }
-        
+
         // By exchange
         if (event.fromDetails?.name) {
           const exchangeName = event.fromDetails.name;
@@ -100,12 +100,11 @@ class FlowAnalysisService {
           analysis.buying.byExchange[exchangeName].total += event.amount;
           analysis.buying.byExchange[exchangeName].count++;
         }
-        
       } else if (event.flowType === 'selling') {
         analysis.selling.total += event.amount;
         analysis.selling.events.push(event);
         analysis.stats.sellingEvents++;
-        
+
         // Breakdown by source
         if (event.fromType === 'node_operator') {
           analysis.selling.breakdown.fromNodeOperators += event.amount;
@@ -114,7 +113,7 @@ class FlowAnalysisService {
         } else if (event.fromType === 'foundation') {
           analysis.selling.breakdown.fromFoundation += event.amount;
         }
-        
+
         // By exchange
         if (event.toDetails?.name) {
           const exchangeName = event.toDetails.name;
@@ -128,17 +127,16 @@ class FlowAnalysisService {
           analysis.selling.byExchange[exchangeName].total += event.amount;
           analysis.selling.byExchange[exchangeName].count++;
         }
-        
       } else if (event.flowType === 'p2p') {
         analysis.p2p.total += event.amount;
         analysis.p2p.events.push(event);
         analysis.stats.p2pEvents++;
       }
     }
-    
+
     // Calculate net flow (buying - selling)
     analysis.netFlow = analysis.buying.total - analysis.selling.total;
-    
+
     return analysis;
   }
 
@@ -146,12 +144,11 @@ class FlowAnalysisService {
    * Get top buyers (addresses receiving from exchanges)
    */
   getTopBuyers(period, limit = 10) {
-    const flowEvents = this.getFlowEventsForPeriod(period)
-      .filter(e => e.flowType === 'buying');
-    
+    const flowEvents = this.getFlowEventsForPeriod(period).filter((e) => e.flowType === 'buying');
+
     // Aggregate by destination address
     const buyers = new Map();
-    
+
     for (const event of flowEvents) {
       const key = event.toAddress;
       if (!buyers.has(key)) {
@@ -163,21 +160,21 @@ class FlowAnalysisService {
           exchanges: new Set()
         });
       }
-      
+
       const buyer = buyers.get(key);
       buyer.totalBought += event.amount;
       buyer.eventCount++;
-      
+
       if (event.fromDetails?.name) {
         buyer.exchanges.add(event.fromDetails.name);
       }
     }
-    
+
     // Convert to array and sort
     return Array.from(buyers.values())
       .sort((a, b) => b.totalBought - a.totalBought)
       .slice(0, limit)
-      .map(b => ({
+      .map((b) => ({
         ...b,
         exchanges: Array.from(b.exchanges)
       }));
@@ -187,12 +184,11 @@ class FlowAnalysisService {
    * Get top sellers (addresses sending to exchanges)
    */
   getTopSellers(period, limit = 10) {
-    const flowEvents = this.getFlowEventsForPeriod(period)
-      .filter(e => e.flowType === 'selling');
-    
+    const flowEvents = this.getFlowEventsForPeriod(period).filter((e) => e.flowType === 'selling');
+
     // Aggregate by source address
     const sellers = new Map();
-    
+
     for (const event of flowEvents) {
       const key = event.fromAddress;
       if (!sellers.has(key)) {
@@ -204,21 +200,21 @@ class FlowAnalysisService {
           exchanges: new Set()
         });
       }
-      
+
       const seller = sellers.get(key);
       seller.totalSold += event.amount;
       seller.eventCount++;
-      
+
       if (event.toDetails?.name) {
         seller.exchanges.add(event.toDetails.name);
       }
     }
-    
+
     // Convert to array and sort
     return Array.from(sellers.values())
       .sort((a, b) => b.totalSold - a.totalSold)
       .slice(0, limit)
-      .map(s => ({
+      .map((s) => ({
         ...s,
         exchanges: Array.from(s.exchanges)
       }));
@@ -234,9 +230,9 @@ class FlowAnalysisService {
         blockRange: { newest: 0, oldest: 0 }
       };
     }
-    
+
     const stats = this.db.getStats();
-    
+
     return {
       eventCount: stats.flowEvents,
       blockRange: {

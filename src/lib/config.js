@@ -6,7 +6,7 @@ export const FLUX_CONFIG = {
   // BLOCK CONFIGURATION
   // ============================================================================
   BLOCK_TIME_SECONDS: 30,
-  
+
   PERIODS: {
     '24H': Math.floor((24 * 60 * 60) / 30),
     '7D': Math.floor((7 * 24 * 60 * 60) / 30),
@@ -26,7 +26,7 @@ export const FLUX_CONFIG = {
   // ============================================================================
   // DATA SOURCES - FLUX INDEXER PRIMARY, BLOCKBOOK FALLBACK
   // ============================================================================
-  
+
   DATA_SOURCES: {
     FLUX_INDEXER: {
       enabled: true,
@@ -45,7 +45,7 @@ export const FLUX_CONFIG = {
         dashboard: '/api/v1/stats/dashboard'
       }
     },
-    
+
     BLOCKBOOK: {
       enabled: true,
       baseUrl: 'https://blockbook.runonflux.io',
@@ -65,7 +65,7 @@ export const FLUX_CONFIG = {
   // ============================================================================
   // BLOCK SYNC CONFIGURATION - DUAL SETTINGS
   // ============================================================================
-  
+
   // Default/legacy settings (used as fallback)
   MAX_BLOCKS_IN_MEMORY: 100000,
   BLOCK_FETCH_INTERVAL: 30000,
@@ -73,30 +73,30 @@ export const FLUX_CONFIG = {
   BATCH_DELAY: 1000,
   MAX_CONCURRENT_REQUESTS: 2,
   MIN_REQUEST_DELAY: 200,
-  
+
   // PHASE 1B: Source-specific sync settings
   SYNC_SETTINGS: {
     FLUX_INDEXER: {
       // Aggressive settings for local indexer (no rate limits!)
-      BATCH_SIZE: 500,              // 500 blocks per batch (vs 30)
-      MAX_CONCURRENT: 10,           // 10 concurrent requests (vs 2)
-      MIN_REQUEST_DELAY: 10,        // 10ms delay (vs 200ms)
-      BATCH_DELAY: 100,             // 100ms between batches (vs 1000ms)
-      ENABLE_RATE_LIMITING: false,  // No rate limit backoff needed
-      TRANSACTION_FETCH_LIMIT: 50   // Fetch up to 50 txs per block
+      BATCH_SIZE: 500, // 500 blocks per batch (vs 30)
+      MAX_CONCURRENT: 10, // 10 concurrent requests (vs 2)
+      MIN_REQUEST_DELAY: 10, // 10ms delay (vs 200ms)
+      BATCH_DELAY: 100, // 100ms between batches (vs 1000ms)
+      ENABLE_RATE_LIMITING: false, // No rate limit backoff needed
+      TRANSACTION_FETCH_LIMIT: 50 // Fetch up to 50 txs per block
     },
-    
+
     BLOCKBOOK: {
       // Conservative settings for public API (rate limited)
-      BATCH_SIZE: 30,               // 30 blocks per batch
-      MAX_CONCURRENT: 2,            // Only 2 concurrent
-      MIN_REQUEST_DELAY: 200,       // 200ms delay
-      BATCH_DELAY: 1000,            // 1 second between batches
-      ENABLE_RATE_LIMITING: true,   // Use exponential backoff
-      TRANSACTION_FETCH_LIMIT: 20   // Fetch up to 20 txs per block
+      BATCH_SIZE: 30, // 30 blocks per batch
+      MAX_CONCURRENT: 2, // Only 2 concurrent
+      MIN_REQUEST_DELAY: 200, // 200ms delay
+      BATCH_DELAY: 1000, // 1 second between batches
+      ENABLE_RATE_LIMITING: true, // Use exponential backoff
+      TRANSACTION_FETCH_LIMIT: 20 // Fetch up to 20 txs per block
     }
   },
-  
+
   MIN_BLOCKS_REQUIRED: {
     '24H': Math.floor((24 * 60 * 60) / 30),
     '7D': Math.floor((7 * 24 * 60 * 60) / 30),
@@ -108,13 +108,13 @@ export const FLUX_CONFIG = {
   // ============================================================================
   // LEGACY ENDPOINTS (for compatibility)
   // ============================================================================
-  
+
   FLUX_BASE: 'https://api.runonflux.io',
   DAEMON: 'https://api.runonflux.io/daemon',
   BLOCKBOOK_ENDPOINTS: ['https://blockbook.runonflux.io/api/v2'],
   BLOCKBOOK_API: 'https://blockbook.runonflux.io/api/v2',
   FLUX_NODES_API: 'https://explorer.runonflux.io/api/status?q=getFluxNodes',
-  
+
   API_RETRY_ATTEMPTS: 3,
   API_RETRY_DELAY: 2000,
   API_TIMEOUT: 30000,
@@ -123,9 +123,9 @@ export const FLUX_CONFIG = {
   // ============================================================================
   // NODE OPERATOR CONFIGURATION
   // ============================================================================
-  
+
   NODE_REFRESH_BLOCKS: 100,
-  
+
   NODE_TIERS: {
     CUMULUS: { collateral: 1000, cores: 2, ram: 8, storage: 220 },
     NIMBUS: { collateral: 12500, cores: 4, ram: 32, storage: 440 },
@@ -135,77 +135,77 @@ export const FLUX_CONFIG = {
   // ============================================================================
   // DATA CLASSIFICATION
   // ============================================================================
-  
+
   EXCHANGES_CONFIG_PATH: './src/lib/data/exchanges.json',
   MIN_TRANSACTION_VALUE: 1,
 
   // ============================================================================
   // WALLET ENHANCEMENT - PHASE 2, 3, 4 & 5
   // ============================================================================
-  
+
   ENHANCEMENT: {
     // PHASE 2: 1-hop detection
-    MAX_HOPS: 1,  // Default to 1-hop for Phase 2
-    TIME_WINDOW_BLOCKS: 100,  // 50 minutes at 30s/block
+    MAX_HOPS: 1, // Default to 1-hop for Phase 2
+    TIME_WINDOW_BLOCKS: 100, // 50 minutes at 30s/block
     MIN_CONFIDENCE: 0.8,
     BATCH_SIZE: 100,
-    
+
     // PHASE 3: Multi-hop detection
     MULTI_HOP: {
       ENABLED: true,
-      MAX_DEPTH: 3,  // Maximum hop depth (1, 2, or 3)
-      DEFAULT_DEPTH: 2,  // Start with 2-hop by default
-      TIME_WINDOW_BLOCKS: 100,  // Look within 100 blocks (~50 minutes)
-      MAX_BRANCHES_PER_WALLET: 5,  // Don't follow more than 5 branches from one wallet
-      CIRCULAR_DETECTION: true,  // Prevent infinite loops
-      AMOUNT_VARIANCE_THRESHOLD: 0.1,  // Allow 10% variance in amounts between hops
-      TRACK_AMOUNTS: true,  // Track if amounts change between hops
+      MAX_DEPTH: 3, // Maximum hop depth (1, 2, or 3)
+      DEFAULT_DEPTH: 2, // Start with 2-hop by default
+      TIME_WINDOW_BLOCKS: 100, // Look within 100 blocks (~50 minutes)
+      MAX_BRANCHES_PER_WALLET: 5, // Don't follow more than 5 branches from one wallet
+      CIRCULAR_DETECTION: true, // Prevent infinite loops
+      AMOUNT_VARIANCE_THRESHOLD: 0.1, // Allow 10% variance in amounts between hops
+      TRACK_AMOUNTS: true // Track if amounts change between hops
     },
-    
+
     // PHASE 4: Background enhancement (single pipeline - no auto-enhance on sync)
     BACKGROUND_JOB: {
-      ENABLED: true,  // Enable background enhancement job
-      INTERVAL_MINUTES: 5,  // Run every 5 minutes
-      RUN_ON_START: true,  // Run once on server startup (after 5 sec delay)
-      MIN_UNKNOWNS_THRESHOLD: 5,  // Only run if at least 5 unknowns
-      PAUSE_DURING_SYNC: false  // Don't pause during sync (enhancement is non-blocking)
+      ENABLED: true, // Enable background enhancement job
+      INTERVAL_MINUTES: 5, // Run every 5 minutes
+      RUN_ON_START: true, // Run once on server startup (after 5 sec delay)
+      MIN_UNKNOWNS_THRESHOLD: 5, // Only run if at least 5 unknowns
+      PAUSE_DURING_SYNC: false // Don't pause during sync (enhancement is non-blocking)
     },
-    
+
     // PHASE 5: Historical node detection via coinbase transactions
     HISTORICAL_DETECTION: {
-      ENABLED: true,  // Enable historical node operator detection
-      TIME_WINDOW_BLOCKS: 87600,  // 1 month (~365 days at 30s/block)
-      MIN_COINBASE_COUNT: 1,  // At least 1 coinbase transaction = proof
-      APPLY_AT_ALL_LEVELS: true,  // Check at Level 0, 1, 2, and 3
-      LOG_COINBASE_CHECKS: true  // Log when checking for coinbase transactions
+      ENABLED: true, // Enable historical node operator detection
+      TIME_WINDOW_BLOCKS: 87600, // 1 month (~365 days at 30s/block)
+      MIN_COINBASE_COUNT: 1, // At least 1 coinbase transaction = proof
+      APPLY_AT_ALL_LEVELS: true, // Check at Level 0, 1, 2, and 3
+      LOG_COINBASE_CHECKS: true // Log when checking for coinbase transactions
     },
-    
+
     // PHASE 5.1: Historical connection detection (sent to/from node operators)
     HISTORICAL_CONNECTIONS: {
-      ENABLED: true,  // Enable historical connection detection
-      TIME_WINDOW_BLOCKS: 518400,  // 6 months (aligned with sync depth cap)
-      CHECK_OUTBOUND: true,  // Check if wallet sent to node operators
-      CHECK_INBOUND: true,  // Check if wallet received from node operators
-      MAX_TRANSACTIONS_TO_CHECK: 100  // Limit API calls per wallet
+      ENABLED: true, // Enable historical connection detection
+      TIME_WINDOW_BLOCKS: 518400, // 6 months (aligned with sync depth cap)
+      CHECK_OUTBOUND: true, // Check if wallet sent to node operators
+      CHECK_INBOUND: true, // Check if wallet received from node operators
+      MAX_TRANSACTIONS_TO_CHECK: 100 // Limit API calls per wallet
     },
-    
+
     // Retry cooldown: skip wallets that were attempted and failed within this window
-    FAILED_RETRY_HOURS: 24,  // Re-attempt unresolvable wallets after 24 hours
+    FAILED_RETRY_HOURS: 24, // Re-attempt unresolvable wallets after 24 hours
 
     // PHASE 7.2: Parallel processing for faster enhancement
     PARALLEL_PROCESSING: {
-      ENABLED: true,               // Enable parallel batch processing
-      BATCH_SIZE: 5,               // Process 5 unknowns concurrently
-      MAX_CONCURRENT: 10,          // Safety limit - never exceed 10 concurrent
-      LOG_BATCH_PROGRESS: true,    // Show detailed batch execution logs
-      LOG_INDIVIDUAL_TIMING: true  // Show timing for each unknown in batch
+      ENABLED: true, // Enable parallel batch processing
+      BATCH_SIZE: 5, // Process 5 unknowns concurrently
+      MAX_CONCURRENT: 10, // Safety limit - never exceed 10 concurrent
+      LOG_BATCH_PROGRESS: true, // Show detailed batch execution logs
+      LOG_INDIVIDUAL_TIMING: true // Show timing for each unknown in batch
     }
   },
 
   // ============================================================================
   // UI CONFIGURATION
   // ============================================================================
-  
+
   DEFAULT_PERIOD: '24H',
   CHART_MAX_POINTS: 100,
   FRONTEND_REFRESH_INTERVAL: 300000,
@@ -213,19 +213,19 @@ export const FLUX_CONFIG = {
   // ============================================================================
   // LOGGING
   // ============================================================================
-  
+
   LOGGING: {
     ENABLE_DEBUG: false,
     LOG_BLOCK_PROCESSING: true,
     LOG_API_CALLS: false,
     LOG_CLASSIFICATION: false,
     LOG_DATA_SOURCE_SWITCHES: true,
-    LOG_ENHANCEMENT: true,  // PHASE 2/3: Log enhancement activity
-    LOG_MULTI_HOP: true,  // PHASE 3: Log multi-hop detection
-    LOG_BACKGROUND_JOB: true,  // PHASE 4: Log background enhancement
-    LOG_HISTORICAL_DETECTION: true  // PHASE 5: Log historical node detection
+    LOG_ENHANCEMENT: true, // PHASE 2/3: Log enhancement activity
+    LOG_MULTI_HOP: true, // PHASE 3: Log multi-hop detection
+    LOG_BACKGROUND_JOB: true, // PHASE 4: Log background enhancement
+    LOG_HISTORICAL_DETECTION: true // PHASE 5: Log historical node detection
   },
-  
+
   PERFORMANCE: {
     LOG_BATCH_TIMING: true,
     LOG_FETCH_TIMING: true,
@@ -241,24 +241,24 @@ export const FLUX_CONFIG = {
 export function getIndexerUrl(endpoint, param = '') {
   const config = FLUX_CONFIG.DATA_SOURCES.FLUX_INDEXER;
   const path = config.endpoints[endpoint];
-  
+
   if (!path) throw new Error(`Unknown indexer endpoint: ${endpoint}`);
-  
+
   return param ? `${config.baseUrl}${path}/${param}` : `${config.baseUrl}${path}`;
 }
 
 export function getBlockbookUrl(endpoint, param = '') {
   const config = FLUX_CONFIG.DATA_SOURCES.BLOCKBOOK;
   const path = config.endpoints[endpoint];
-  
+
   if (!path) throw new Error(`Unknown blockbook endpoint: ${endpoint}`);
-  
+
   return param ? `${path}/${param}` : path;
 }
 
 export function switchToFallbackDataSource() {
   const current = FLUX_CONFIG.ACTIVE_DATA_SOURCE;
-  
+
   if (current === 'FLUX_INDEXER') {
     FLUX_CONFIG.ACTIVE_DATA_SOURCE = 'BLOCKBOOK';
     console.log('⚠️  Switched to Blockbook fallback');
@@ -288,11 +288,11 @@ export function rotateBlockbookEndpoint() {
   const previousEndpoint = FLUX_CONFIG.BLOCKBOOK_ENDPOINTS[currentEndpointIndex];
   currentEndpointIndex = (currentEndpointIndex + 1) % FLUX_CONFIG.BLOCKBOOK_ENDPOINTS.length;
   FLUX_CONFIG.BLOCKBOOK_API = FLUX_CONFIG.BLOCKBOOK_ENDPOINTS[currentEndpointIndex];
-  
+
   console.log(`⚠️  Rotated Blockbook endpoint`);
   console.log(`   Previous: ${previousEndpoint}`);
   console.log(`   Current:  ${FLUX_CONFIG.BLOCKBOOK_API}`);
-  
+
   return FLUX_CONFIG.BLOCKBOOK_API;
 }
 
@@ -311,7 +311,7 @@ export function blocksToTime(blocks) {
   const days = Math.floor(seconds / (24 * 60 * 60));
   const hours = Math.floor((seconds % (24 * 60 * 60)) / (60 * 60));
   const minutes = Math.floor((seconds % (60 * 60)) / 60);
-  
+
   if (days > 0) return `${days}d ${hours}h`;
   if (hours > 0) return `${hours}h ${minutes}m`;
   return `${minutes}m`;
@@ -345,10 +345,10 @@ export function getApiUrl() {
   }
 
   const hostname = window.location.hostname;
-  
+
   if (hostname === 'localhost' || hostname === '127.0.0.1') {
     return 'http://localhost:3000';
   }
-  
+
   return window.location.origin;
 }

@@ -1,6 +1,6 @@
 /**
  * DATABASE LAYER - Pure SQL Operations
- * 
+ *
  * Low-level database access - no business logic
  * Similar structure to Fluxtracker's database.js
  */
@@ -20,14 +20,14 @@ export function initDatabase(dbPath = './data/flux-flow.db') {
   if (!existsSync(dir)) {
     mkdirSync(dir, { recursive: true });
   }
-  
+
   // Open database
   db = new Database(dbPath);
   db.pragma('journal_mode = WAL');
-  
+
   // Create schema
   createSchema();
-  
+
   return db;
 }
 
@@ -120,7 +120,7 @@ export function insertBlock(block) {
     INSERT OR REPLACE INTO blocks (height, hash, time, tx_count, size)
     VALUES (?, ?, ?, ?, ?)
   `);
-  
+
   stmt.run(
     block.height,
     block.hash,
@@ -139,13 +139,17 @@ export function getBlockCount() {
 }
 
 export function getBlockRange() {
-  return db.prepare(`
+  return db
+    .prepare(
+      `
     SELECT 
       MIN(height) as min_height,
       MAX(height) as max_height,
       COUNT(*) as count
     FROM blocks
-  `).get();
+  `
+    )
+    .get();
 }
 
 export function getLatestBlock() {
@@ -163,14 +167,14 @@ export function insertTransaction(tx) {
       from_addresses, to_addresses, flow_type, flow_direction
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `);
-  
+
   stmt.run(
     tx.txid,
     tx.blockHeight,
     tx.blockTime,
     tx.value,
-    JSON.stringify(tx.from?.map(c => c.address) || []),
-    JSON.stringify(tx.to?.map(c => c.address) || []),
+    JSON.stringify(tx.from?.map((c) => c.address) || []),
+    JSON.stringify(tx.to?.map((c) => c.address) || []),
     tx.flowType || null,
     tx.flowDirection || null
   );
@@ -189,20 +193,28 @@ export function getTransactionsInBlock(blockHeight) {
 }
 
 export function getTransactionsInPeriod(startBlock, endBlock) {
-  return db.prepare(`
+  return db
+    .prepare(
+      `
     SELECT * FROM transactions 
     WHERE block_height BETWEEN ? AND ?
     ORDER BY block_height DESC
-  `).all(startBlock, endBlock);
+  `
+    )
+    .all(startBlock, endBlock);
 }
 
 export function getTransactionsByFlowType(flowType, limit = 100) {
-  return db.prepare(`
+  return db
+    .prepare(
+      `
     SELECT * FROM transactions 
     WHERE flow_type = ?
     ORDER BY block_time DESC
     LIMIT ?
-  `).all(flowType, limit);
+  `
+    )
+    .all(flowType, limit);
 }
 
 // ============================================================================
@@ -215,7 +227,7 @@ export function insertClassification(classification) {
       txid, classification_type, address, direction, details
     ) VALUES (?, ?, ?, ?, ?)
   `);
-  
+
   stmt.run(
     classification.txid,
     classification.type,
@@ -230,42 +242,50 @@ export function insertTransactionClassifications(txid, fromClassifications, toCl
     INSERT INTO tx_classifications (txid, classification_type, address, direction, details)
     VALUES (?, ?, ?, ?, ?)
   `);
-  
+
   // Insert from classifications
   for (const c of fromClassifications) {
     const details = { ...c };
     delete details.type;
     delete details.address;
-    
+
     stmt.run(txid, c.type, c.address, 'from', JSON.stringify(details));
   }
-  
+
   // Insert to classifications
   for (const c of toClassifications) {
     const details = { ...c };
     delete details.type;
     delete details.address;
-    
+
     stmt.run(txid, c.type, c.address, 'to', JSON.stringify(details));
   }
 }
 
 export function getClassificationsForTransaction(txid) {
-  return db.prepare(`
+  return db
+    .prepare(
+      `
     SELECT * FROM tx_classifications 
     WHERE txid = ?
     ORDER BY direction, classification_type
-  `).all(txid);
+  `
+    )
+    .all(txid);
 }
 
 export function getClassificationStats() {
-  return db.prepare(`
+  return db
+    .prepare(
+      `
     SELECT 
       classification_type,
       COUNT(*) as count
     FROM tx_classifications
     GROUP BY classification_type
-  `).all();
+  `
+    )
+    .all();
 }
 
 // ============================================================================
@@ -277,15 +297,15 @@ export function setSyncState(key, value) {
     INSERT OR REPLACE INTO sync_state (key, value, updated_at)
     VALUES (?, ?, strftime('%s', 'now'))
   `);
-  
+
   stmt.run(key, typeof value === 'string' ? value : JSON.stringify(value));
 }
 
 export function getSyncState(key) {
   const result = db.prepare('SELECT value FROM sync_state WHERE key = ?').get(key);
-  
+
   if (!result) return null;
-  
+
   try {
     return JSON.parse(result.value);
   } catch {
@@ -300,9 +320,13 @@ export function getSyncState(key) {
 export function getDatabaseStats() {
   const blocks = db.prepare('SELECT COUNT(*) as count FROM blocks').get().count;
   const transactions = db.prepare('SELECT COUNT(*) as count FROM transactions').get().count;
-  const classifications = db.prepare('SELECT COUNT(*) as count FROM tx_classifications').get().count;
-  
-  const flowStats = db.prepare(`
+  const classifications = db
+    .prepare('SELECT COUNT(*) as count FROM tx_classifications')
+    .get().count;
+
+  const flowStats = db
+    .prepare(
+      `
     SELECT 
       flow_type,
       COUNT(*) as count,
@@ -310,8 +334,10 @@ export function getDatabaseStats() {
     FROM transactions
     WHERE flow_type IS NOT NULL
     GROUP BY flow_type
-  `).all();
-  
+  `
+    )
+    .all();
+
   return {
     blocks,
     transactions,
@@ -339,9 +365,11 @@ export function analyze() {
 }
 
 export function getDatabaseSize() {
-  const result = db.prepare("SELECT page_count * page_size as size FROM pragma_page_count(), pragma_page_size()").get();
+  const result = db
+    .prepare('SELECT page_count * page_size as size FROM pragma_page_count(), pragma_page_size()')
+    .get();
   const bytes = result.size;
-  
+
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(2)} KB`;
   if (bytes < 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(2)} MB`;

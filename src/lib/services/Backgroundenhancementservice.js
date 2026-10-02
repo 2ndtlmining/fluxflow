@@ -11,10 +11,10 @@ class BackgroundEnhancementService {
     this.timer = null;
     this.lastEnhancementTime = 0;
     this.totalEnhanced = 0;
-    
+
     // Get interval from config (convert minutes to ms)
     this.interval = FLUX_CONFIG.ENHANCEMENT.BACKGROUND_JOB.INTERVAL_MINUTES * 60 * 1000;
-    
+
     console.log('🤖 BackgroundEnhancementService initialized');
     console.log(`   Interval: ${FLUX_CONFIG.ENHANCEMENT.BACKGROUND_JOB.INTERVAL_MINUTES} minutes`);
   }
@@ -35,7 +35,9 @@ class BackgroundEnhancementService {
 
     this.isRunning = true;
     console.log('🤖 Background enhancement service started');
-    console.log(`   Will run every ${FLUX_CONFIG.ENHANCEMENT.BACKGROUND_JOB.INTERVAL_MINUTES} minutes\n`);
+    console.log(
+      `   Will run every ${FLUX_CONFIG.ENHANCEMENT.BACKGROUND_JOB.INTERVAL_MINUTES} minutes\n`
+    );
 
     // Run immediately on start if configured
     if (FLUX_CONFIG.ENHANCEMENT.BACKGROUND_JOB.RUN_ON_START) {
@@ -115,10 +117,11 @@ class BackgroundEnhancementService {
       const result = await this.enhancer.enhanceUnknownWallets();
 
       if (result.success) {
-        const enhanced = result.stats.enhanced.level1 + 
-                        result.stats.enhanced.level2 + 
-                        result.stats.enhanced.level3;
-        
+        const enhanced =
+          result.stats.enhanced.level1 +
+          result.stats.enhanced.level2 +
+          result.stats.enhanced.level3;
+
         this.totalEnhanced += enhanced;
 
         console.log('\n✅ Background enhancement complete');
@@ -130,7 +133,6 @@ class BackgroundEnhancementService {
       }
 
       this.lastEnhancementTime = now;
-
     } catch (error) {
       console.error('❌ Background enhancement error:', error.message);
       console.error(error);
@@ -142,16 +144,18 @@ class BackgroundEnhancementService {
    */
   getStatus() {
     const now = Date.now();
-    const timeSinceLastRun = this.lastEnhancementTime > 0 
-      ? Math.floor((now - this.lastEnhancementTime) / 1000 / 60) 
-      : null;
+    const timeSinceLastRun =
+      this.lastEnhancementTime > 0
+        ? Math.floor((now - this.lastEnhancementTime) / 1000 / 60)
+        : null;
 
     return {
       isRunning: this.isRunning,
       enabled: FLUX_CONFIG.ENHANCEMENT.BACKGROUND_JOB.ENABLED,
       intervalMinutes: FLUX_CONFIG.ENHANCEMENT.BACKGROUND_JOB.INTERVAL_MINUTES,
       lastRunMinutesAgo: timeSinceLastRun,
-      lastRunTime: this.lastEnhancementTime > 0 ? new Date(this.lastEnhancementTime).toISOString() : null,
+      lastRunTime:
+        this.lastEnhancementTime > 0 ? new Date(this.lastEnhancementTime).toISOString() : null,
       totalEnhanced: this.totalEnhanced,
       isEnhancing: this.enhancer.isEnhancementRunning()
     };
@@ -170,7 +174,7 @@ class BackgroundEnhancementService {
 
     console.log('🤖 Manual enhancement triggered');
     await this.runEnhancement();
-    
+
     return {
       success: true,
       message: 'Manual enhancement completed'

@@ -1,22 +1,22 @@
 <script>
   import { Info } from 'lucide-svelte';
-  
+
   export let transactions = [];
   export let title = 'Flow Event Details';
   export let type = 'selling';
-  
+
   $: events = transactions;
-  
+
   function shortenTxid(txid) {
     if (!txid) return '';
     return `${txid.substring(0, 8)}...${txid.substring(txid.length - 6)}`;
   }
-  
+
   function shortenAddress(address) {
     if (!address) return '';
     return `${address.substring(0, 8)}...${address.substring(address.length - 6)}`;
   }
-  
+
   function getExchangeName(event) {
     if (type === 'selling') {
       return event.toDetails?.name || 'Unknown Exchange';
@@ -25,7 +25,7 @@
     }
     return 'N/A';
   }
-  
+
   function getExchangeLogo(exchangeName) {
     if (!exchangeName || exchangeName === 'Unknown Exchange' || exchangeName === 'N/A') {
       return null;
@@ -33,58 +33,60 @@
     const filename = exchangeName.toLowerCase() + '.png';
     return `/logos/${filename}`;
   }
-  
+
   function getWalletAddress(event) {
     return type === 'selling' ? event.fromAddress : event.toAddress;
   }
-  
+
   function getWalletType(event) {
     const walletType = type === 'selling' ? event.fromType : event.toType;
     return walletType === 'node' ? 'node_operator' : walletType;
   }
-  
+
   function getWalletDetails(event) {
     return type === 'selling' ? event.fromDetails : event.toDetails;
   }
-  
+
   function getWalletTypeDisplay(walletType) {
     const typeMap = {
-      'node_operator': 'Node Operator',
-      'node': 'Node Operator',
-      'exchange': 'Exchange',
-      'foundation': 'Foundation',
-      'unknown': 'Unknown Wallet'
+      node_operator: 'Node Operator',
+      node: 'Node Operator',
+      exchange: 'Exchange',
+      foundation: 'Foundation',
+      unknown: 'Unknown Wallet'
     };
     return typeMap[walletType] || walletType;
   }
-  
+
   function getNodeCount(event) {
     const details = getWalletDetails(event);
     return details?.nodeCount || 0;
   }
-  
+
   function getNodeTiers(event) {
     const details = getWalletDetails(event);
     return details?.tiers || { CUMULUS: 0, NIMBUS: 0, STRATUS: 0 };
   }
-  
+
   // PHASE 3+: Get classification level (0, 1, 2, 3)
   function getClassificationLevel(event) {
     return event.classificationLevel || event.classification_level || 0;
   }
-  
+
   // PHASE 3+: Check if enhanced (any level > 0)
   function isEnhanced(event) {
-    return getClassificationLevel(event) > 0 || 
-           event.dataSource === 'enhanced' ||
-           event.data_source === 'enhanced';
+    return (
+      getClassificationLevel(event) > 0 ||
+      event.dataSource === 'enhanced' ||
+      event.data_source === 'enhanced'
+    );
   }
-  
+
   // PHASE 3+: Get hop chain (array of intermediary wallets)
   function getHopChain(event) {
     const chain = event.hopChain || event.hop_chain;
     if (!chain) return null;
-    
+
     // Parse if string
     if (typeof chain === 'string') {
       try {
@@ -93,33 +95,33 @@
         return null;
       }
     }
-    
+
     return Array.isArray(chain) ? chain : null;
   }
-  
+
   // PHASE 3+: Get actual node wallet from details
   function getActualNodeWallet(event) {
     const details = getWalletDetails(event);
     return details?.nodeWallet || details?.node_wallet;
   }
-  
+
   // PHASE 5+: Get detection method
   function getDetectionMethod(event) {
     const details = getWalletDetails(event);
     return details?.detectionMethod || details?.detection_method || 'current_api';
   }
-  
+
   // PHASE 5+: Get detection status
   function getDetectionStatus(event) {
     const details = getWalletDetails(event);
     return details?.status || 'active';
   }
-  
+
   // PHASE 5.1: Get historical connection info
   function getHistoricalConnectionInfo(event) {
     const details = getWalletDetails(event);
     const method = getDetectionMethod(event);
-    
+
     if (method === 'historical_connection') {
       return {
         nodeWallet: details?.nodeWallet,
@@ -128,7 +130,7 @@
         status: details?.status
       };
     }
-    
+
     if (method === 'historical_coinbase') {
       return {
         nodeWallet: details?.nodeWallet,
@@ -136,10 +138,10 @@
         daysInactive: details?.daysInactive
       };
     }
-    
+
     return null;
   }
-  
+
   // PHASE 3+: Build wallet display hierarchy
   function buildWalletHierarchy(event) {
     const level = getClassificationLevel(event);
@@ -148,7 +150,7 @@
     const directWallet = getWalletAddress(event);
     const method = getDetectionMethod(event);
     const historicalInfo = getHistoricalConnectionInfo(event);
-    
+
     // Level 0 with historical connection or coinbase
     if (level === 0 && (method === 'historical_connection' || method === 'historical_coinbase')) {
       return {
@@ -159,7 +161,7 @@
         info: historicalInfo
       };
     }
-    
+
     // Multi-hop (Level 1, 2, 3)
     if (level > 0 && chain && chain.length > 0) {
       return {
@@ -170,22 +172,22 @@
         method: method
       };
     }
-    
+
     // Direct (Level 0, no enhancement)
     return {
       type: 'direct',
       wallet: directWallet
     };
   }
-  
+
   // PHASE 3+: Get badge info
   function getBadgeInfo(event) {
     const level = getClassificationLevel(event);
     const method = getDetectionMethod(event);
     const status = getDetectionStatus(event);
-    
+
     if (!isEnhanced(event)) return null;
-    
+
     const badges = {
       level: level,
       method: method,
@@ -194,7 +196,7 @@
       title: `Level ${level} Detection`,
       description: ''
     };
-    
+
     // Build description
     if (method === 'historical_coinbase') {
       badges.description = `Historical node operator (coinbase detected)`;
@@ -203,16 +205,16 @@
     } else if (method === 'current_api') {
       badges.description = `Active node operator`;
     }
-    
+
     if (level === 0) {
       badges.description = badges.description + ' (direct)';
     } else {
       badges.description = badges.description + ` (${level}-hop)`;
     }
-    
+
     return badges;
   }
-  
+
   // Debug helper
   $: if (events.length > 0 && events[0]) {
     console.log('📊 Transaction Table - First Event:', {
@@ -230,7 +232,7 @@
     <h3>{title}</h3>
     <span class="event-count">{events.length} event{events.length !== 1 ? 's' : ''}</span>
   </div>
-  
+
   {#if events.length === 0}
     <div class="no-data">
       <p>No transactions found for this period</p>
@@ -254,9 +256,9 @@
             {@const badgeInfo = getBadgeInfo(event)}
             <tr class:enhanced-row={isEnhanced(event)}>
               <td>
-                <a 
-                  href="https://explore.app.runonflux.io/tx/{event.txid}" 
-                  target="_blank" 
+                <a
+                  href="https://explore.app.runonflux.io/tx/{event.txid}"
+                  target="_blank"
                   rel="noopener noreferrer"
                   class="txid-link"
                 >
@@ -264,19 +266,19 @@
                 </a>
               </td>
               <td class="amount">
-                {(event.amount || 0).toLocaleString(undefined, { 
+                {(event.amount || 0).toLocaleString(undefined, {
                   minimumFractionDigits: 2,
-                  maximumFractionDigits: 2 
+                  maximumFractionDigits: 2
                 })} FLUX
               </td>
               <td class="exchange-name">
                 <div class="exchange-cell">
                   {#if getExchangeLogo(getExchangeName(event))}
-                    <img 
-                      src={getExchangeLogo(getExchangeName(event))} 
+                    <img
+                      src={getExchangeLogo(getExchangeName(event))}
                       alt={getExchangeName(event)}
                       class="exchange-logo"
-                      on:error={(e) => e.target.style.display = 'none'}
+                      on:error={(e) => (e.target.style.display = 'none')}
                     />
                   {/if}
                   <span>{getExchangeName(event)}</span>
@@ -287,9 +289,9 @@
                 {#if hierarchy.type === 'multi-hop'}
                   <div class="wallet-hierarchy">
                     {#each hierarchy.chain as intermediary, idx}
-                      <a 
-                        href="https://explore.app.runonflux.io/address/{intermediary}" 
-                        target="_blank" 
+                      <a
+                        href="https://explore.app.runonflux.io/address/{intermediary}"
+                        target="_blank"
                         rel="noopener noreferrer"
                         class="address-link intermediary"
                         title="{intermediary} (Hop {idx + 1})"
@@ -298,9 +300,9 @@
                       </a>
                       <span class="arrow">→</span>
                     {/each}
-                    <a 
-                      href="https://explore.app.runonflux.io/address/{hierarchy.nodeWallet}" 
-                      target="_blank" 
+                    <a
+                      href="https://explore.app.runonflux.io/address/{hierarchy.nodeWallet}"
+                      target="_blank"
                       rel="noopener noreferrer"
                       class="address-link node-wallet"
                       title="{hierarchy.nodeWallet} (Node Wallet)"
@@ -308,23 +310,28 @@
                       {shortenAddress(hierarchy.nodeWallet)}
                     </a>
                   </div>
-                
-                <!-- PHASE 5.1: Historical connection -->
+
+                  <!-- PHASE 5.1: Historical connection -->
                 {:else if hierarchy.type === 'historical'}
                   <div class="wallet-hierarchy">
-                    <a 
-                      href="https://explore.app.runonflux.io/address/{hierarchy.directWallet}" 
-                      target="_blank" 
+                    <a
+                      href="https://explore.app.runonflux.io/address/{hierarchy.directWallet}"
+                      target="_blank"
                       rel="noopener noreferrer"
                       class="address-link"
                       title="{hierarchy.directWallet} (Direct Wallet)"
                     >
                       {shortenAddress(hierarchy.directWallet)}
                     </a>
-                    <span class="arrow historical-arrow" title="{hierarchy.method === 'historical_connection' ? 'Historical connection' : 'Historical coinbase'}">⟿</span>
-                    <a 
-                      href="https://explore.app.runonflux.io/address/{hierarchy.nodeWallet}" 
-                      target="_blank" 
+                    <span
+                      class="arrow historical-arrow"
+                      title={hierarchy.method === 'historical_connection'
+                        ? 'Historical connection'
+                        : 'Historical coinbase'}>⟿</span
+                    >
+                    <a
+                      href="https://explore.app.runonflux.io/address/{hierarchy.nodeWallet}"
+                      target="_blank"
                       rel="noopener noreferrer"
                       class="address-link node-wallet"
                       title="{hierarchy.nodeWallet} (Node Wallet)"
@@ -332,12 +339,12 @@
                       {shortenAddress(hierarchy.nodeWallet)}
                     </a>
                   </div>
-                
-                <!-- Direct wallet (Level 0, no enhancement) -->
+
+                  <!-- Direct wallet (Level 0, no enhancement) -->
                 {:else}
-                  <a 
-                    href="https://explore.app.runonflux.io/address/{hierarchy.wallet}" 
-                    target="_blank" 
+                  <a
+                    href="https://explore.app.runonflux.io/address/{hierarchy.wallet}"
+                    target="_blank"
                     rel="noopener noreferrer"
                     class="address-link"
                     title={hierarchy.wallet}
@@ -349,19 +356,20 @@
               <td>
                 {#if getWalletType(event) === 'node_operator'}
                   <div class="node-operator-cell">
-                    <a 
-                      href="https://fluxnode.app.runonflux.io/#/nodes?wallet={hierarchy.nodeWallet || hierarchy.wallet}"
+                    <a
+                      href="https://fluxnode.app.runonflux.io/#/nodes?wallet={hierarchy.nodeWallet ||
+                        hierarchy.wallet}"
                       target="_blank"
                       rel="noopener noreferrer"
                       class="wallet-type-link node_operator"
                     >
                       Node Operator
                     </a>
-                    
+
                     <!-- PHASE 3+: Level Badge -->
                     {#if badgeInfo}
-                      <span 
-                        class="level-badge level-{badgeInfo.level} {badgeInfo.method}" 
+                      <span
+                        class="level-badge level-{badgeInfo.level} {badgeInfo.method}"
                         title="{badgeInfo.title}: {badgeInfo.description}"
                       >
                         {badgeInfo.label}
@@ -388,7 +396,7 @@
                         </div>
                       </span>
                     {/if}
-                    
+
                     {#if getNodeCount(event) > 0}
                       <span class="node-count-badge" title="Node tier breakdown">
                         {getNodeCount(event)}
@@ -431,9 +439,9 @@
                 {/if}
               </td>
               <td class="block-height">
-                <a 
-                  href="https://explore.app.runonflux.io/block/{event.blockHeight}" 
-                  target="_blank" 
+                <a
+                  href="https://explore.app.runonflux.io/block/{event.blockHeight}"
+                  target="_blank"
                   rel="noopener noreferrer"
                 >
                   {(event.blockHeight || 0).toLocaleString()}
@@ -813,7 +821,8 @@
       min-width: 800px;
     }
 
-    th, td {
+    th,
+    td {
       padding: 0.5rem;
       font-size: 0.75rem;
     }
