@@ -66,19 +66,23 @@ docker run -p 3000:3000 -p 4173:4173 flux-flow-tracker
 
 ### Configuration
 
-All configuration is in `src/lib/config.js`:
+**v2** reads everything from the environment and validates it once at startup with zod. Copy
+[`.env.example`](.env.example) to `.env` for local development, or set real environment
+variables in Docker:
 
-```javascript
-FLUX_CONFIG = {
-  BLOCK_TIME_SECONDS: 30, // Flux block time
-  MAX_BLOCKS_IN_MEMORY: 100000, // ~34 days of blocks
-  BLOCK_FETCH_INTERVAL: 30000, // Fetch new blocks every 30s
-  INITIAL_SYNC_BATCH_SIZE: 10, // Batch size for initial sync
-  BATCH_DELAY: 1000, // Delay between batches (rate limiting)
-  NODE_REFRESH_BLOCKS: 100 // Refresh node operators every 100 blocks
-  // ... more settings
-};
+```bash
+DATABASE_PATH=/app/data/flux-flow.db
+FLUX_INDEXER_URL=http://your-indexer:42067   # optional; omit to use the public FluxNode pool
+SYNC_POLL_SECONDS=30
+ADMIN_TOKEN=$(openssl rand -hex 32)           # required when NODE_ENV=production
 ```
+
+Invalid configuration fails the boot with every problem listed at once, rather than
+surfacing one per restart. `ADMIN_TOKEN` is mandatory in production and at least 32
+characters. See [`src/lib/server/config.ts`](src/lib/server/config.ts) for the full schema.
+
+**v1** (still the entry point until the rewrite lands) reads `src/lib/config.js`, which
+hard-codes `FLUX_INDEXER.baseUrl: 'http://192.168.10.65:42067'`. That is the bug #11 tracks.
 
 ### Verification
 
@@ -139,6 +143,15 @@ fluxflow/
 
 SvelteKit strips `$lib/server` out of the client bundle, which is why configuration and
 credentials belong there rather than in `$lib/shared`.
+
+### Server modules
+
+| Module                    | Responsibility                                               | Issues |
+| ------------------------- | ------------------------------------------------------------ | ------ |
+| `server/config.ts`        | zod-validated environment, resolved once at startup          | #11    |
+| `server/logger.ts`        | pino structured logging with redaction                       | #24    |
+| `server/db/database.ts`   | SQLite connection and pragmas; `DEBUG_SQL` gates SQL logging | #6     |
+| `server/db/migrations.ts` | versioned schema migrations; refuses a legacy v1 database    | #17    |
 
 ## 🔧 How It Works
 
