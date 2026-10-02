@@ -2,16 +2,12 @@
   "exchanges": [
     {
       "name": "Coinex",
-      "addresses": [
-        "t1bLYKTWBMUSAhrU2ezDEzC2BXYbafz5L9e"
-      ],
+      "addresses": ["t1bLYKTWBMUSAhrU2ezDEzC2BXYbafz5L9e"],
       "logo": "/static/logos/coinex.png"
     },
     {
       "name": "GateIO",
-      "addresses": [
-        "t1YvimnGBmVA7xDiPnqwbKsvujmSJz4X5m2"
-      ],
+      "addresses": ["t1YvimnGBmVA7xDiPnqwbKsvujmSJz4X5m2"],
       "logo": "/static/logos/gate.png"
     },
     {
@@ -25,10 +21,7 @@
     },
     {
       "name": "NonKYC",
-      "addresses": [
-        "t1LXVRNWEugRtoWdNgxnozCBGksGtCvvWsy",
-        "t1eELWS8QBkhRfEF2LBZnxKwCQaWvZ8j8hU"
-      ],
+      "addresses": ["t1LXVRNWEugRtoWdNgxnozCBGksGtCvvWsy", "t1eELWS8QBkhRfEF2LBZnxKwCQaWvZ8j8hU"],
       "logo": "/static/logos/nonkyc.png"
     }
   ],

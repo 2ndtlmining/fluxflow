@@ -1,6 +1,6 @@
 /**
  * FLOW QUERIES - Business-specific database queries
- * 
+ *
  * Similar to Fluxtracker's snapshot.js - domain-specific queries
  */
 
@@ -11,8 +11,10 @@ import { getDatabase } from './database.js';
  */
 export function getFlowTransactionsForPeriod(startBlock, endBlock) {
   const db = getDatabase();
-  
-  const transactions = db.prepare(`
+
+  const transactions = db
+    .prepare(
+      `
     SELECT 
       t.txid,
       t.block_height as blockHeight,
@@ -24,8 +26,10 @@ export function getFlowTransactionsForPeriod(startBlock, endBlock) {
     WHERE t.block_height BETWEEN ? AND ?
       AND t.flow_type IS NOT NULL
     ORDER BY t.block_height DESC
-  `).all(startBlock, endBlock);
-  
+  `
+    )
+    .all(startBlock, endBlock);
+
   // Load classifications for each transaction
   const classStmt = db.prepare(`
     SELECT 
@@ -36,26 +40,26 @@ export function getFlowTransactionsForPeriod(startBlock, endBlock) {
     FROM tx_classifications
     WHERE txid = ?
   `);
-  
-  return transactions.map(tx => {
+
+  return transactions.map((tx) => {
     const classifications = classStmt.all(tx.txid);
-    
+
     const from = classifications
-      .filter(c => c.direction === 'from')
-      .map(c => ({
+      .filter((c) => c.direction === 'from')
+      .map((c) => ({
         type: c.classification_type,
         address: c.address,
         ...(c.details ? JSON.parse(c.details) : {})
       }));
-      
+
     const to = classifications
-      .filter(c => c.direction === 'to')
-      .map(c => ({
+      .filter((c) => c.direction === 'to')
+      .map((c) => ({
         type: c.classification_type,
         address: c.address,
         ...(c.details ? JSON.parse(c.details) : {})
       }));
-    
+
     return {
       ...tx,
       value: parseFloat(tx.value),
@@ -70,7 +74,7 @@ export function getFlowTransactionsForPeriod(startBlock, endBlock) {
  */
 export function getBuyingTransactions(startBlock, endBlock, limit = 100) {
   return getFlowTransactionsForPeriod(startBlock, endBlock)
-    .filter(tx => tx.flowType === 'buy')
+    .filter((tx) => tx.flowType === 'buy')
     .slice(0, limit);
 }
 
@@ -79,7 +83,7 @@ export function getBuyingTransactions(startBlock, endBlock, limit = 100) {
  */
 export function getSellingTransactions(startBlock, endBlock, limit = 100) {
   return getFlowTransactionsForPeriod(startBlock, endBlock)
-    .filter(tx => tx.flowType === 'sell')
+    .filter((tx) => tx.flowType === 'sell')
     .slice(0, limit);
 }
 
@@ -88,8 +92,10 @@ export function getSellingTransactions(startBlock, endBlock, limit = 100) {
  */
 export function getFlowSummary(startBlock, endBlock) {
   const db = getDatabase();
-  
-  const summary = db.prepare(`
+
+  const summary = db
+    .prepare(
+      `
     SELECT 
       flow_type,
       COUNT(*) as count,
@@ -98,21 +104,23 @@ export function getFlowSummary(startBlock, endBlock) {
     WHERE block_height BETWEEN ? AND ?
       AND flow_type IS NOT NULL
     GROUP BY flow_type
-  `).all(startBlock, endBlock);
-  
+  `
+    )
+    .all(startBlock, endBlock);
+
   const result = {
     buy: { count: 0, value: 0 },
     sell: { count: 0, value: 0 },
     transfer: { count: 0, value: 0 }
   };
-  
+
   for (const row of summary) {
     result[row.flow_type] = {
       count: row.count,
       value: parseFloat(row.total_value)
     };
   }
-  
+
   return result;
 }
 
@@ -121,8 +129,10 @@ export function getFlowSummary(startBlock, endBlock) {
  */
 export function getTopBuyers(startBlock, endBlock, limit = 10) {
   const db = getDatabase();
-  
-  return db.prepare(`
+
+  return db
+    .prepare(
+      `
     SELECT 
       tc.address,
       tc.classification_type as type,
@@ -137,7 +147,9 @@ export function getTopBuyers(startBlock, endBlock, limit = 10) {
     GROUP BY tc.address
     ORDER BY total_bought DESC
     LIMIT ?
-  `).all(startBlock, endBlock, limit);
+  `
+    )
+    .all(startBlock, endBlock, limit);
 }
 
 /**
@@ -145,8 +157,10 @@ export function getTopBuyers(startBlock, endBlock, limit = 10) {
  */
 export function getTopSellers(startBlock, endBlock, limit = 10) {
   const db = getDatabase();
-  
-  return db.prepare(`
+
+  return db
+    .prepare(
+      `
     SELECT 
       tc.address,
       tc.classification_type as type,
@@ -161,7 +175,9 @@ export function getTopSellers(startBlock, endBlock, limit = 10) {
     GROUP BY tc.address
     ORDER BY total_sold DESC
     LIMIT ?
-  `).all(startBlock, endBlock, limit);
+  `
+    )
+    .all(startBlock, endBlock, limit);
 }
 
 /**
@@ -169,8 +185,10 @@ export function getTopSellers(startBlock, endBlock, limit = 10) {
  */
 export function getExchangeActivity(startBlock, endBlock) {
   const db = getDatabase();
-  
-  return db.prepare(`
+
+  return db
+    .prepare(
+      `
     SELECT 
       tc.address as exchange_address,
       JSON_EXTRACT(tc.details, '$.name') as exchange_name,
@@ -185,5 +203,7 @@ export function getExchangeActivity(startBlock, endBlock) {
       AND t.flow_type IN ('buy', 'sell')
     GROUP BY tc.address
     ORDER BY (total_inflow + total_outflow) DESC
-  `).all(startBlock, endBlock);
+  `
+    )
+    .all(startBlock, endBlock);
 }

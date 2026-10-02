@@ -9,44 +9,44 @@ import { FLUX_CONFIG } from '../config.js';
 class DatabaseService {
   constructor() {
     const dataDir = path.join(process.cwd(), 'data');
-    
+
     if (!fs.existsSync(dataDir)) {
       console.log(`📁 Creating data directory: ${dataDir}`);
       fs.mkdirSync(dataDir, { recursive: true });
     }
-    
+
     this.dbPath = path.join(dataDir, 'flux-flow.db');
     this.db = null;
     this.lastCleanupBlock = 0;
-    
+
     console.log(`📂 DatabaseService: Using database path: ${this.dbPath}`);
     console.log(`📂 Current working directory: ${process.cwd()}`);
-    
+
     this.initializeDatabase();
   }
 
   initializeDatabase() {
     console.log('📊 Initializing database connection...');
-    
+
     try {
       this.db = new Database(this.dbPath, {
         verbose: process.env.NODE_ENV !== 'production' ? console.log : null,
         timeout: 30000
       });
-      
+
       console.log('✅ Database connection established');
-      
+
       this.db.pragma('journal_mode = WAL');
       this.db.pragma('synchronous = NORMAL');
       this.db.pragma('cache_size = 32768');
       this.db.pragma('busy_timeout = 30000');
       this.db.pragma('wal_autocheckpoint = 1000');
       this.db.pragma('locking_mode = NORMAL');
-      
+
       console.log('✅ WAL mode and pragmas configured');
-      
+
       this.createSchema();
-      
+
       console.log('✅ Database initialized successfully');
     } catch (error) {
       console.error('❌ Failed to initialize database:', error.message);
@@ -58,7 +58,7 @@ class DatabaseService {
 
   createSchema() {
     console.log('📋 Creating database schema...');
-    
+
     // Blocks table
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS blocks (
@@ -70,9 +70,9 @@ class DatabaseService {
         created_at INTEGER DEFAULT (strftime('%s', 'now'))
       )
     `);
-    
+
     this.db.exec(`CREATE INDEX IF NOT EXISTS idx_blocks_time ON blocks(time)`);
-    
+
     // Transactions table
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS transactions (
@@ -87,10 +87,10 @@ class DatabaseService {
         FOREIGN KEY (block_height) REFERENCES blocks(height)
       )
     `);
-    
+
     this.db.exec(`CREATE INDEX IF NOT EXISTS idx_tx_block ON transactions(block_height)`);
     this.db.exec(`CREATE INDEX IF NOT EXISTS idx_tx_time ON transactions(block_time)`);
-    
+
     // Flow events table - PHASE 3: Added hop_chain column
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS flow_events (
@@ -126,7 +126,7 @@ class DatabaseService {
         UNIQUE(txid, vout)
       )
     `);
-    
+
     this.db.exec(`CREATE INDEX IF NOT EXISTS idx_flow_block ON flow_events(block_height)`);
     this.db.exec(`CREATE INDEX IF NOT EXISTS idx_flow_time ON flow_events(block_time)`);
     this.db.exec(`CREATE INDEX IF NOT EXISTS idx_flow_type ON flow_events(flow_type)`);
@@ -134,11 +134,13 @@ class DatabaseService {
     this.db.exec(`CREATE INDEX IF NOT EXISTS idx_flow_to_type ON flow_events(to_type)`);
     this.db.exec(`CREATE INDEX IF NOT EXISTS idx_flow_from_addr ON flow_events(from_address)`);
     this.db.exec(`CREATE INDEX IF NOT EXISTS idx_flow_to_addr ON flow_events(to_address)`);
-    
+
     // PHASE 2/3: Indexes for enhancement and multi-hop
-    this.db.exec(`CREATE INDEX IF NOT EXISTS idx_flow_classification_level ON flow_events(classification_level)`);
+    this.db.exec(
+      `CREATE INDEX IF NOT EXISTS idx_flow_classification_level ON flow_events(classification_level)`
+    );
     this.db.exec(`CREATE INDEX IF NOT EXISTS idx_flow_data_source ON flow_events(data_source)`);
-    
+
     // Sync state table
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS sync_state (
@@ -147,7 +149,7 @@ class DatabaseService {
         updated_at INTEGER DEFAULT (strftime('%s', 'now'))
       )
     `);
-    
+
     console.log('✅ Database schema created/verified');
   }
 
@@ -156,7 +158,7 @@ class DatabaseService {
       INSERT OR REPLACE INTO blocks (height, hash, time, tx_count, size)
       VALUES (?, ?, ?, ?, ?)
     `);
-    
+
     stmt.run(
       block.height,
       block.hash,
@@ -174,10 +176,12 @@ class DatabaseService {
         total_input_value, total_output_value
       ) VALUES (?, ?, ?, ?, ?, ?, ?)
     `);
-    
-    const totalInputValue = tx.vin?.reduce((sum, input) => sum + (parseFloat(input.value) || 0), 0) || 0;
-    const totalOutputValue = tx.vout?.reduce((sum, output) => sum + (parseFloat(output.value) || 0), 0) || 0;
-    
+
+    const totalInputValue =
+      tx.vin?.reduce((sum, input) => sum + (parseFloat(input.value) || 0), 0) || 0;
+    const totalOutputValue =
+      tx.vout?.reduce((sum, output) => sum + (parseFloat(output.value) || 0), 0) || 0;
+
     stmt.run(
       tx.txid,
       tx.blockHeight,
@@ -198,7 +202,7 @@ class DatabaseService {
         flow_type, amount
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
-    
+
     stmt.run(
       flowEvent.txid,
       flowEvent.vout,
@@ -217,7 +221,7 @@ class DatabaseService {
 
   saveFlowEventsBatch(flowEvents) {
     if (!flowEvents || flowEvents.length === 0) return;
-    
+
     const insert = this.db.prepare(`
       INSERT OR REPLACE INTO flow_events (
         txid, vout, block_height, block_time,
@@ -226,7 +230,7 @@ class DatabaseService {
         flow_type, amount
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
-    
+
     const batchInsert = this.db.transaction((events) => {
       for (const event of events) {
         insert.run(
@@ -245,7 +249,7 @@ class DatabaseService {
         );
       }
     });
-    
+
     batchInsert(flowEvents);
   }
 
@@ -265,10 +269,10 @@ class DatabaseService {
       WHERE block_height BETWEEN ? AND ?
       ORDER BY block_height DESC, id DESC
     `);
-    
+
     const events = stmt.all(startBlock, endBlock);
-    
-    return events.map(event => ({
+
+    return events.map((event) => ({
       ...event,
       fromDetails: event.fromDetails ? JSON.parse(event.fromDetails) : null,
       toDetails: event.toDetails ? JSON.parse(event.toDetails) : null,
@@ -277,7 +281,9 @@ class DatabaseService {
   }
 
   getFlowEventById(id) {
-    const stmt = this.db.prepare(`
+    const stmt = this.db
+      .prepare(
+        `
       SELECT 
         id, txid, vout, block_height as blockHeight, block_time as blockTime,
         from_address as fromAddress, from_type as fromType, from_details as fromDetails,
@@ -290,10 +296,12 @@ class DatabaseService {
         data_source as dataSource
       FROM flow_events
       WHERE id = ?
-    `).get(id);
-    
+    `
+      )
+      .get(id);
+
     if (!stmt) return null;
-    
+
     return {
       ...stmt,
       fromDetails: stmt.fromDetails ? JSON.parse(stmt.fromDetails) : null,
@@ -308,7 +316,9 @@ class DatabaseService {
     const retryAfterSeconds = (FLUX_CONFIG.ENHANCEMENT.FAILED_RETRY_HOURS || 24) * 3600;
     const cutoff = Math.floor(Date.now() / 1000) - retryAfterSeconds;
 
-    const buys = this.db.prepare(`
+    const buys = this.db
+      .prepare(
+        `
       SELECT
         id, txid, vout,
         block_height, block_time,
@@ -322,9 +332,13 @@ class DatabaseService {
         AND (analysis_timestamp IS NULL OR analysis_timestamp < ?)
       ORDER BY block_height DESC
       LIMIT 1000
-    `).all(cutoff);
+    `
+      )
+      .all(cutoff);
 
-    const sells = this.db.prepare(`
+    const sells = this.db
+      .prepare(
+        `
       SELECT
         id, txid, vout,
         block_height, block_time,
@@ -338,7 +352,9 @@ class DatabaseService {
         AND (analysis_timestamp IS NULL OR analysis_timestamp < ?)
       ORDER BY block_height DESC
       LIMIT 1000
-    `).all(cutoff);
+    `
+      )
+      .all(cutoff);
 
     return {
       buys,
@@ -351,62 +367,62 @@ class DatabaseService {
   updateFlowEventClassification(id, updates) {
     const setParts = [];
     const values = [];
-    
+
     if (updates.classificationLevel !== undefined) {
       setParts.push('classification_level = ?');
       values.push(updates.classificationLevel);
     }
-    
+
     if (updates.intermediaryWallet !== undefined) {
       setParts.push('intermediary_wallet = ?');
       values.push(updates.intermediaryWallet);
     }
-    
+
     // PHASE 3: Add hop_chain support
     if (updates.hopChain !== undefined) {
       setParts.push('hop_chain = ?');
       values.push(updates.hopChain ? JSON.stringify(updates.hopChain) : null);
     }
-    
+
     if (updates.analysisTimestamp !== undefined) {
       setParts.push('analysis_timestamp = ?');
       values.push(updates.analysisTimestamp);
     }
-    
+
     if (updates.dataSource !== undefined) {
       setParts.push('data_source = ?');
       values.push(updates.dataSource);
     }
-    
+
     if (updates.fromType !== undefined) {
       setParts.push('from_type = ?');
       values.push(updates.fromType);
     }
-    
+
     if (updates.fromDetails !== undefined) {
       setParts.push('from_details = ?');
       values.push(updates.fromDetails ? JSON.stringify(updates.fromDetails) : null);
     }
-    
+
     if (updates.toType !== undefined) {
       setParts.push('to_type = ?');
       values.push(updates.toType);
     }
-    
+
     if (updates.toDetails !== undefined) {
       setParts.push('to_details = ?');
       values.push(updates.toDetails ? JSON.stringify(updates.toDetails) : null);
     }
-    
+
     if (setParts.length === 0) {
       throw new Error('No updates provided');
     }
-    
+
     values.push(id);
-    
+
     const sql = `UPDATE flow_events SET ${setParts.join(', ')} WHERE id = ?`;
     const stmt = this.db.prepare(sql);
-    
+
     return stmt.run(...values);
   }
 
@@ -423,18 +439,24 @@ class DatabaseService {
     const blocks = this.db.prepare('SELECT COUNT(*) as count FROM blocks').get().count;
     const transactions = this.db.prepare('SELECT COUNT(*) as count FROM transactions').get().count;
     const flowEvents = this.db.prepare('SELECT COUNT(*) as count FROM flow_events').get().count;
-    
-    const flowStats = this.db.prepare(`
+
+    const flowStats = this.db
+      .prepare(
+        `
       SELECT 
         flow_type,
         COUNT(*) as count,
         SUM(amount) as total_amount
       FROM flow_events
       GROUP BY flow_type
-    `).all();
-    
+    `
+      )
+      .all();
+
     // PHASE 2/3: Enhancement statistics
-    const enhancementStats = this.db.prepare(`
+    const enhancementStats = this.db
+      .prepare(
+        `
       SELECT 
         classification_level,
         data_source,
@@ -442,24 +464,30 @@ class DatabaseService {
       FROM flow_events
       WHERE classification_level > 0
       GROUP BY classification_level, data_source
-    `).all();
-    
-    const result = this.db.prepare(
-      "SELECT page_count * page_size as size FROM pragma_page_count(), pragma_page_size()"
-    ).get();
+    `
+      )
+      .all();
+
+    const result = this.db
+      .prepare('SELECT page_count * page_size as size FROM pragma_page_count(), pragma_page_size()')
+      .get();
     const bytes = result?.size || 0;
-    
+
     let dbSize;
     if (bytes < 1024) dbSize = `${bytes} B`;
     else if (bytes < 1024 * 1024) dbSize = `${(bytes / 1024).toFixed(2)} KB`;
     else if (bytes < 1024 * 1024 * 1024) dbSize = `${(bytes / 1024 / 1024).toFixed(2)} MB`;
     else dbSize = `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`;
-    
-    const blockRange = this.db.prepare(`
+
+    const blockRange = this.db
+      .prepare(
+        `
       SELECT MIN(height) as minHeight, MAX(height) as maxHeight
       FROM blocks
-    `).get();
-    
+    `
+      )
+      .get();
+
     return {
       blocks,
       transactions,
@@ -474,51 +502,49 @@ class DatabaseService {
 
   cleanupOldData(currentBlock, oneYearBlocks) {
     const targetBlock = Math.max(currentBlock - oneYearBlocks, 1);
-    
+
     console.log(`🧹 Cleaning up data older than block ${targetBlock.toLocaleString()}...`);
-    
-    const oldBlockCount = this.db.prepare(
-      'SELECT COUNT(*) as count FROM blocks WHERE height < ?'
-    ).get(targetBlock).count;
-    
+
+    const oldBlockCount = this.db
+      .prepare('SELECT COUNT(*) as count FROM blocks WHERE height < ?')
+      .get(targetBlock).count;
+
     if (oldBlockCount === 0) {
       console.log('✓ No old data to clean');
       return { deleted: 0 };
     }
-    
+
     console.log(`  Found ${oldBlockCount.toLocaleString()} old blocks to remove`);
-    
+
     const deleteOldData = this.db.transaction(() => {
-      const flowDeleted = this.db.prepare(
-        'DELETE FROM flow_events WHERE block_height < ?'
-      ).run(targetBlock);
-      
-      const txDeleted = this.db.prepare(
-        'DELETE FROM transactions WHERE block_height < ?'
-      ).run(targetBlock);
-      
-      const blocksDeleted = this.db.prepare(
-        'DELETE FROM blocks WHERE height < ?'
-      ).run(targetBlock);
-      
+      const flowDeleted = this.db
+        .prepare('DELETE FROM flow_events WHERE block_height < ?')
+        .run(targetBlock);
+
+      const txDeleted = this.db
+        .prepare('DELETE FROM transactions WHERE block_height < ?')
+        .run(targetBlock);
+
+      const blocksDeleted = this.db.prepare('DELETE FROM blocks WHERE height < ?').run(targetBlock);
+
       return {
         blocks: blocksDeleted.changes,
         transactions: txDeleted.changes,
         flowEvents: flowDeleted.changes
       };
     });
-    
+
     const result = deleteOldData();
-    
+
     console.log(`✓ Cleanup complete:`);
     console.log(`  - Blocks: ${result.blocks.toLocaleString()}`);
     console.log(`  - Transactions: ${result.transactions.toLocaleString()}`);
     console.log(`  - Flow Events: ${result.flowEvents.toLocaleString()}`);
-    
+
     console.log('🗜️  Vacuuming database to reclaim space...');
     this.db.exec('VACUUM');
     console.log('✓ Database optimized');
-    
+
     return result;
   }
 
@@ -534,7 +560,9 @@ class DatabaseService {
     const dataSpan = blockRange.maxHeight - blockRange.minHeight;
 
     if (dataSpan > sixMonthBlocks * 1.1) {
-      console.log(`\n⚠️  Database has ${(dataSpan / sixMonthBlocks).toFixed(2)} × 6-months of data (> 1.1 threshold)`);
+      console.log(
+        `\n⚠️  Database has ${(dataSpan / sixMonthBlocks).toFixed(2)} × 6-months of data (> 1.1 threshold)`
+      );
       this.cleanupOldData(currentBlock, sixMonthBlocks);
       this.lastCleanupBlock = currentBlock;
     }
@@ -556,15 +584,15 @@ class DatabaseService {
       INSERT OR REPLACE INTO sync_state (key, value, updated_at)
       VALUES (?, ?, strftime('%s', 'now'))
     `);
-    
+
     stmt.run(key, typeof value === 'string' ? value : JSON.stringify(value));
   }
 
   getSyncState(key) {
     const result = this.db.prepare('SELECT value FROM sync_state WHERE key = ?').get(key);
-    
+
     if (!result) return null;
-    
+
     try {
       return JSON.parse(result.value);
     } catch {

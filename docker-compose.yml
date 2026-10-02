@@ -1,0 +1,75 @@
+# FluxFlow — local production-like stack.
+#
+#   cp .env.example .env    # then edit .env
+#   docker compose up -d
+#   docker compose logs -f
+#
+# The image exposes a single port: the API and the web app are served by one process.
+
+services:
+  fluxflow:
+    build:
+      context: .
+      target: runtime
+    image: ghcr.io/2ndtlmining/fluxflow:latest
+    container_name: fluxflow
+    restart: unless-stopped
+
+    # Only one port needs publishing (#9).
+    ports:
+      - '${PORT:-3000}:3000'
+
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      HOST: 0.0.0.0
+
+      DATABASE_PATH: /app/data/flux-flow.db
+
+      # Leave the indexer URLs unset to use the public FluxNode pool.
+      # FLUX_INDEXER_URL: http://192.168.10.65:42067
+      BLOCKBOOK_URL: https://blockbook.runonflux.io
+
+      RETENTION_DAYS: '180'
+      SYNC_POLL_SECONDS: '30'
+      SYNC_BATCH_SIZE: '250'
+      SYNC_CONCURRENCY: '16'
+
+      LOG_LEVEL: info
+      LOG_PRETTY: '0'
+
+      # Required: admin endpoints are rejected without it.
+      ADMIN_TOKEN: ${ADMIN_TOKEN:?ADMIN_TOKEN must be set in .env}
+
+    volumes:
+      # The SQLite database lives here. Back this up.
+      - fluxflow-data:/app/data
+      # Labels can be edited without rebuilding the image.
+      - ./config:/app/config:ro
+
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'node',
+          '-e',
+          "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+        ]
+      interval: 30s
+      timeout: 5s
+      start_period: 40s
+      retries: 3
+
+    # Ingestion commits in batches; give it time to finish the in-flight transaction
+    # instead of being SIGKILLed mid-write (#14).
+    stop_grace_period: 30s
+
+    # better-sqlite3 needs more than the default 64 MB of locked memory for large
+    # transactions.
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+
+volumes:
+  fluxflow-data:

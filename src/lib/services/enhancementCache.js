@@ -4,12 +4,12 @@
 class EnhancementCache {
   constructor() {
     // Cache stores with TTL
-    this.walletTransactions = new Map();     // Wallet address → transaction list
-    this.coinbaseResults = new Map();        // Wallet + blocks → coinbase check result
-    this.historicalConnections = new Map();  // Wallet + direction → connection result
-    this.nodeOperatorStatus = new Map();     // Wallet → is node operator boolean
-    this.transactionDetails = new Map();     // Txid → full transaction data
-    
+    this.walletTransactions = new Map(); // Wallet address → transaction list
+    this.coinbaseResults = new Map(); // Wallet + blocks → coinbase check result
+    this.historicalConnections = new Map(); // Wallet + direction → connection result
+    this.nodeOperatorStatus = new Map(); // Wallet → is node operator boolean
+    this.transactionDetails = new Map(); // Txid → full transaction data
+
     // Statistics
     this.stats = {
       hits: 0,
@@ -20,14 +20,14 @@ class EnhancementCache {
       startTime: null,
       endTime: null
     };
-    
+
     // TTL values (milliseconds)
     this.ttl = {
-      walletTransactions: 5 * 60 * 1000,      // 5 minutes
-      coinbaseResults: 60 * 60 * 1000,        // 1 hour
-      historicalConnections: 60 * 60 * 1000,  // 1 hour
-      nodeOperatorStatus: 5 * 60 * 1000,      // 5 minutes
-      transactionDetails: 10 * 60 * 1000      // 10 minutes
+      walletTransactions: 5 * 60 * 1000, // 5 minutes
+      coinbaseResults: 60 * 60 * 1000, // 1 hour
+      historicalConnections: 60 * 60 * 1000, // 1 hour
+      nodeOperatorStatus: 5 * 60 * 1000, // 5 minutes
+      transactionDetails: 10 * 60 * 1000 // 10 minutes
     };
   }
 
@@ -49,7 +49,7 @@ class EnhancementCache {
   endSession() {
     this.stats.endTime = Date.now();
     const duration = this.stats.endTime - this.stats.startTime;
-    
+
     return {
       duration,
       hits: this.stats.hits,
@@ -57,9 +57,10 @@ class EnhancementCache {
       sets: this.stats.sets,
       evictions: this.stats.evictions,
       apiCallsSaved: this.stats.apiCallsSaved,
-      hitRate: this.stats.hits + this.stats.misses > 0 
-        ? ((this.stats.hits / (this.stats.hits + this.stats.misses)) * 100).toFixed(1)
-        : '0.0',
+      hitRate:
+        this.stats.hits + this.stats.misses > 0
+          ? ((this.stats.hits / (this.stats.hits + this.stats.misses)) * 100).toFixed(1)
+          : '0.0',
       totalSize: this.getTotalSize()
     };
   }
@@ -74,11 +75,12 @@ class EnhancementCache {
       historicalConnections: this.historicalConnections.size,
       nodeOperatorStatus: this.nodeOperatorStatus.size,
       transactionDetails: this.transactionDetails.size,
-      total: this.walletTransactions.size + 
-             this.coinbaseResults.size + 
-             this.historicalConnections.size + 
-             this.nodeOperatorStatus.size + 
-             this.transactionDetails.size
+      total:
+        this.walletTransactions.size +
+        this.coinbaseResults.size +
+        this.historicalConnections.size +
+        this.nodeOperatorStatus.size +
+        this.transactionDetails.size
     };
   }
 
@@ -102,7 +104,7 @@ class EnhancementCache {
       this.stats.misses++;
       return null;
     }
-    
+
     // Check if expired
     if (Date.now() > item.expiresAt) {
       cache.delete(key);
@@ -110,7 +112,7 @@ class EnhancementCache {
       this.stats.evictions++;
       return null;
     }
-    
+
     this.stats.hits++;
     this.stats.apiCallsSaved++;
     return item.value;
@@ -223,7 +225,7 @@ class EnhancementCache {
     this.historicalConnections.clear();
     this.nodeOperatorStatus.clear();
     this.transactionDetails.clear();
-    
+
     console.log('🗑️  Cache cleared');
   }
 
@@ -259,7 +261,7 @@ class EnhancementCache {
    */
   printStats() {
     const session = this.endSession();
-    
+
     console.log('\n📊 Cache Statistics:');
     console.log(`   Hits: ${session.hits}`);
     console.log(`   Misses: ${session.misses}`);
