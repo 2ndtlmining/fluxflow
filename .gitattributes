@@ -1,0 +1,26 @@
+# Normalise line endings in the repository so builds are identical on Windows, Linux and
+# macOS.
+#
+# Without this, a contributor on Windows checks out CRLF and:
+#   - `prettier --check` fails in CI for reasons unrelated to their change
+#   - `startup.sh` and `docker-entrypoint.sh` gain a trailing \r and fail under /bin/sh,
+#     which surfaces as a container that exits immediately with an opaque error
+* text=auto eol=lf
+
+# Windows-only tooling still needs CRLF.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# Never touched by end-of-line conversion.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.webp binary
+*.woff binary
+*.woff2 binary
+*.db binary
+*.db-shm binary
+*.db-wal binary
