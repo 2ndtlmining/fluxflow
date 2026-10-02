@@ -1,0 +1,261 @@
+/**
+ * Service assembly and lifecycle.
+ *
+ * One process, one port. The Express app serves `/api/*` and delegates everything else to
+ * the SvelteKit handler (#9).
+ */
+
+import express, { type Express } from 'express';
+import { createServer, type Server } from 'node:http';
+import type { Logger } from 'pino';
+import { loadDotEnv, loadConfig, describeConfig, type Config } from './config.js';
+import { createLogger, fatal, serialiseError } from './logger.js';
+import { initDatabase, type Db } from './db/index.js';
+import { loadLabels, type LabelLookup } from './labels.js';
+import { createLimiter } from './http.js';
+import { BlockbookDataSource } from './ingest/datasource/blockbook.js';
+import { FluxIndexerDataSource } from './ingest/datasource/fluxindexer.js';
+import { FailoverDataSource } from './ingest/datasource/circuitbreaker.js';
+import type { DataSource } from './ingest/datasource/types.js';
+import { createApiRouter, errorHandler } from './api/router.js';
+
+/** How long a graceful shutdown may take before the process exits anyway. */
+const SHUTDOWN_DEADLINE_MS = 10_000;
+
+/** Sync is considered stale after this long without a successful cycle. */
+const SYNC_STALE_SECONDS = 10 * 60;
+
+export interface Service {
+  readonly app: Express;
+  readonly config: Config;
+  readonly log: Logger;
+  readonly db: Db;
+  readonly labels: LabelLookup;
+  readonly dataSource: FailoverDataSource;
+  listen(): Promise<Server>;
+  close(): Promise<void>;
+  /** Record a successful sync cycle, which `/api/health` reads to decide if we are stale. */
+  markSyncSuccess(at?: number): void;
+}
+
+export interface CreateServiceOptions {
+  /** Passed to `loadDotEnv`; tests point this at a fixture. */
+  readonly cwd?: string;
+  readonly env?: NodeJS.ProcessEnv;
+  /** Injected for tests so no network call happens at boot. */
+  readonly sources?: DataSource[];
+}
+
+/**
+ * Build the data sources in preference order.
+ *
+ * The public Blockbook instance is always available, so there is always something to fall
+ * back to; a dedicated indexer is added first when configured because it is the fastest.
+ */
+function buildSources(config: Config, limiter: ReturnType<typeof createLimiter>): DataSource[] {
+  const http = {
+    timeoutMs: config.http.timeoutMs,
+    retries: config.http.retries,
+    retryBaseMs: config.http.retryBaseMs
+  };
+
+  const sources: DataSource[] = [];
+
+  if (config.dataSources.fluxIndexerUrl) {
+    sources.push(
+      new FluxIndexerDataSource({
+        baseUrl: config.dataSources.fluxIndexerUrl,
+        limiter,
+        http
+      })
+    );
+  }
+
+  sources.push(new BlockbookDataSource({ baseUrl: config.dataSources.blockbookUrl, http }));
+
+  return sources;
+}
+
+export function createService(options: CreateServiceOptions = {}): Service {
+  const cwd = options.cwd ?? process.cwd();
+
+  loadDotEnv('.env', cwd);
+
+  const config = loadConfig(options.env ?? process.env);
+  const log = createLogger(config, { bindings: { component: 'server' } });
+
+  // Print the effective configuration first, so a deployment that misbehaves can be
+  // diagnosed from the first lines of the log.
+  log.info({ config: describeConfig(config) }, 'starting fluxflow');
+
+  if (!config.enhancementEnabled) {
+    log.info(
+      'no FLUX_INDEXER_URL configured: wallet enrichment is disabled, ' +
+        'classification will use labels and local chain data only'
+    );
+  }
+
+  const database = initDatabase({ config, log });
+  const labels = loadLabels(database.db, config, log.child({ component: 'labels' }));
+  log.info({ labels: labels.stats() }, 'address labels loaded');
+
+  const limiter = createLimiter(config.sync.concurrency);
+  const dataSource = new FailoverDataSource({
+    sources: options.sources ?? buildSources(config, limiter),
+    config,
+    log: log.child({ component: 'datasource' }),
+    limiter
+  });
+
+  // Probing runs unref'd, so it never keeps the process alive on its own.
+  if (config.syncEnabled) dataSource.startProbing(60_000);
+
+  const health = {
+    startedAt: Date.now(),
+    lastSuccessfulSyncAt: null as number | null,
+
+    /** True when sync has not completed within `SYNC_STALE_SECONDS`. */
+    degraded(): { degraded: boolean; reason: string | null } {
+      if (!config.syncEnabled) return { degraded: false, reason: null };
+      if (health.lastSuccessfulSyncAt === null) {
+        return { degraded: true, reason: 'no successful sync yet' };
+      }
+
+      const ageSeconds = (Date.now() - health.lastSuccessfulSyncAt) / 1000;
+      if (ageSeconds > SYNC_STALE_SECONDS) {
+        return {
+          degraded: true,
+          reason: `last successful sync was ${Math.round(ageSeconds)}s ago`
+        };
+      }
+
+      return { degraded: false, reason: null };
+    }
+  };
+
+  const app = express();
+
+  // No CORS by default: the API and the app share an origin, so cross-origin requests are
+  // the only thing CORS would permit. `ORIGIN` opts into a split deployment.
+  if (config.origin) {
+    log.info({ origin: config.origin }, 'allowing a cross-origin API client');
+    app.use((_req, res, next) => {
+      res.setHeader('access-control-allow-origin', config.origin!);
+      res.setHeader('access-control-allow-headers', 'content-type, authorization');
+      res.setHeader('access-control-allow-methods', 'GET, OPTIONS');
+      next();
+    });
+  }
+
+  app.disable('x-powered-by');
+  app.use('/api', express.json({ limit: '64kb' }));
+  app.use('/api', createApiRouter({ config, db: database.db, labels, dataSource, health }));
+  app.use('/api', errorHandler(config, log.child({ component: 'api' })));
+
+  let server: Server | undefined;
+  let closing = false;
+
+  return {
+    app,
+    config,
+    log,
+    db: database.db,
+    labels,
+    dataSource,
+
+    async listen(): Promise<Server> {
+      if (server) return server;
+
+      server = await new Promise<Server>((resolve, reject) => {
+        const created = createServer(app);
+
+        const onError = (error: Error) => {
+          log.error(
+            { ...serialiseError(error), port: config.port, host: config.host },
+            'failed to bind'
+          );
+          reject(error);
+        };
+
+        created.once('error', onError);
+        created.listen(config.port, config.host, () => {
+          created.off('error', onError);
+          log.info(
+            { url: `http://${config.host}:${config.port}` },
+            'listening: API and web app on one port'
+          );
+          resolve(created);
+        });
+      });
+
+      return server;
+    },
+
+    async close(): Promise<void> {
+      if (closing) return;
+      closing = true;
+
+      const deadline = setTimeout(() => {
+        log.error('graceful shutdown timed out, exiting anyway');
+        process.exit(1);
+      }, SHUTDOWN_DEADLINE_MS);
+      deadline.unref();
+
+      log.info('shutting down');
+
+      dataSource.stopProbing();
+
+      if (server) {
+        await new Promise<void>((resolve) => {
+          // close() waits for in-flight requests, which is the point: an interrupted
+          // write is worse than a slightly slower restart.
+          server!.close(() => resolve());
+          server!.closeIdleConnections?.();
+        });
+      }
+
+      await limiter.drain();
+      database.close();
+
+      clearTimeout(deadline);
+      log.info('shutdown complete');
+    },
+
+    /** Exposed so the ingest worker can record progress for `/api/health`. */
+    markSyncSuccess(at = Date.now()): void {
+      health.lastSuccessfulSyncAt = at;
+    }
+  };
+}
+
+/** Process-level signal handling. Safe to call once. */
+export function installSignalHandlers(service: Service): void {
+  let shuttingDown = false;
+
+  const shutdown = (signal: NodeJS.Signals) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+
+    service.log.info({ signal }, 'received shutdown signal');
+
+    service
+      .close()
+      .then(() => process.exit(0))
+      .catch((error: unknown) => {
+        fatal('shutdown failed', error);
+        process.exit(1);
+      });
+  };
+
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
+
+  // A crash must be loud: an unhandled rejection in a background job would otherwise leave
+  // the process serving stale data while looking healthy.
+  process.on('unhandledRejection', (reason) => fatal('unhandled rejection', reason));
+
+  process.on('uncaughtException', (error) => {
+    fatal('uncaught exception', error);
+    shutdown('SIGTERM');
+  });
+}

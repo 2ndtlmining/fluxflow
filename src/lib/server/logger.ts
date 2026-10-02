@@ -98,6 +98,26 @@ export function createChildLogger(parent: Logger, bindings: Record<string, unkno
 }
 
 /**
+ * Emit a fatal line without needing a configured logger.
+ *
+ * Used only by the process entry points, for failures that happen *before* the config is
+ * valid — a config error, or a port that will not bind. Writes straight to stderr so it
+ * cannot be lost in a stdout pipe, and so it is exempt from the `no-console` rule without a
+ * blanket disable.
+ */
+export function fatal(message: string, error?: unknown): void {
+  const line = JSON.stringify({
+    level: 60,
+    time: new Date().toISOString(),
+    service: 'fluxflow',
+    msg: message,
+    ...(error === undefined ? {} : serialiseError(error))
+  });
+
+  process.stderr.write(`${line}\n`);
+}
+
+/**
  * Normalise an unknown thrown value into something loggable.
  *
  * `Error` instances keep their name, message, stack and — recursively — their `cause`,
