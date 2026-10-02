@@ -1,6 +1,5 @@
 <script>
   import { createEventDispatcher } from 'svelte';
-  import { TrendingUp, TrendingDown } from 'lucide-svelte';
 
   export let type = 'buying'; // 'buying' or 'selling'
   export let data = {

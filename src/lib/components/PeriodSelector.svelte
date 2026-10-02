@@ -1,13 +1,13 @@
-<script>
+<script lang="ts">
   import { createEventDispatcher } from 'svelte';
-  import { FLUX_CONFIG } from '$lib/config.js';
+  import { PERIOD_IDS, PERIOD_LABELS, type PeriodId } from '$lib/shared/constants';
 
-  export let selected = '24H';
+  export let selected: PeriodId = '24H';
 
-  const dispatch = createEventDispatcher();
-  const periods = Object.keys(FLUX_CONFIG.PERIODS);
+  const dispatch = createEventDispatcher<{ change: { period: PeriodId } }>();
+  const periods = PERIOD_IDS;
 
-  function selectPeriod(period) {
+  function selectPeriod(period: PeriodId) {
     selected = period;
     dispatch('change', { period });
   }
@@ -18,7 +18,7 @@
   <div class="period-buttons">
     {#each periods as period}
       <button class="btn" class:active={selected === period} on:click={() => selectPeriod(period)}>
-        {FLUX_CONFIG.PERIOD_LABELS[period]}
+        {PERIOD_LABELS[period]}
       </button>
     {/each}
   </div>

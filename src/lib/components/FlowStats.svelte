@@ -1,6 +1,6 @@
 <script>
   import { onMount } from 'svelte';
-  import { getApiUrl } from '$lib/config.js'; // ← ADDED
+  import { getApiUrl } from '$lib/client/api';
   import {
     Activity,
     Database,
@@ -8,8 +8,7 @@
     Receipt,
     Building2,
     Landmark,
-    Server,
-    Infinity
+    Server
   } from 'lucide-svelte';
   import exchangeData from '$lib/data/exchanges.json';
 

@@ -1,6 +1,6 @@
 <script>
   import { onMount, onDestroy } from 'svelte';
-  import { getApiUrl } from '$lib/config.js'; // ← CHANGED: Import getApiUrl
+  import { getApiUrl } from '$lib/client/api';
 
   // CHANGED: Initialize empty, set in onMount
   let API_URL = '';

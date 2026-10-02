@@ -17,16 +17,19 @@ Real-time exchange flow analysis dashboard for the Flux blockchain network. Trac
 ## 📊 What We Track
 
 ### Buying Pressure (From Exchanges)
+
 - Total FLUX moving from exchanges
 - Destinations: Node Operators, Unknown Wallets, Foundation, Exchange-to-Exchange
 - Per-exchange source breakdown
 
-### Selling Pressure (To Exchanges)  
+### Selling Pressure (To Exchanges)
+
 - Total FLUX moving to exchanges
 - Sources: Node Operators, Unknown Wallets, Foundation, Exchange-to-Exchange
 - Per-exchange destination breakdown
 
 ### Classification
+
 - **Exchanges**: Configurable list of exchange addresses (Binance, KuCoin, etc.)
 - **Foundation**: Flux Foundation official addresses
 - **Node Operators**: Dynamic list fetched from Flux API (includes node count and tiers)
@@ -67,48 +70,80 @@ All configuration is in `src/lib/config.js`:
 
 ```javascript
 FLUX_CONFIG = {
-  BLOCK_TIME_SECONDS: 30,          // Flux block time
-  MAX_BLOCKS_IN_MEMORY: 100000,    // ~34 days of blocks
-  BLOCK_FETCH_INTERVAL: 30000,     // Fetch new blocks every 30s
-  INITIAL_SYNC_BATCH_SIZE: 10,     // Batch size for initial sync
-  BATCH_DELAY: 1000,               // Delay between batches (rate limiting)
-  NODE_REFRESH_BLOCKS: 100,        // Refresh node operators every 100 blocks
+  BLOCK_TIME_SECONDS: 30, // Flux block time
+  MAX_BLOCKS_IN_MEMORY: 100000, // ~34 days of blocks
+  BLOCK_FETCH_INTERVAL: 30000, // Fetch new blocks every 30s
+  INITIAL_SYNC_BATCH_SIZE: 10, // Batch size for initial sync
+  BATCH_DELAY: 1000, // Delay between batches (rate limiting)
+  NODE_REFRESH_BLOCKS: 100 // Refresh node operators every 100 blocks
   // ... more settings
-}
+};
 ```
+
+### Verification
+
+Every change is checked in CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)):
+
+```bash
+npm run verify         # format:check + lint + typecheck:server + test
+npm run check          # svelte-check across components, routes and server code
+npm run test:watch     # Vitest in watch mode
+npm run lint:fix       # ESLint --fix
+npm run format         # Prettier --write
+```
+
+CI targets **Node 22 LTS**.
 
 ## 📁 Project Structure
 
+## 📁 Project Structure
+
+> **v2 rework in progress.** FluxFlow is being rebuilt as a single TypeScript service — see
+> [ADR 0001](docs/adr/0001-typescript-rework.md) and the roadmap in
+> [#36](https://github.com/2ndtlmining/fluxflow/issues/36). The legacy JavaScript services
+> under `src/lib/services/` still power `main` and are being replaced module by module.
+
 ```
-flux-flow-tracker/
+fluxflow/
 ├── src/
 │   ├── lib/
-│   │   ├── config.js                    # All configuration
-│   │   ├── services/
-│   │   │   ├── blockService.js          # Block fetching with rate limiting
-│   │   │   ├── classificationService.js # Wallet classification
-│   │   │   └── flowAnalysisService.js   # Buy/sell analysis
-│   │   ├── data/
-│   │   │   └── exchanges.json           # Exchange addresses config
-│   │   └── components/
-│   │       ├── BlockStatus.svelte       # Current block status display
-│   │       ├── PeriodSelector.svelte    # Time period toggle
-│   │       └── FlowCard.svelte          # Buy/sell cards
-│   ├── routes/
-│   │   ├── +layout.svelte               # Main layout
-│   │   └── +page.svelte                 # Dashboard page
-│   ├── app.css                          # Global styles
-│   └── app.html                         # HTML template
-├── server.js                            # Express backend
-├── Dockerfile                           # Docker configuration
-├── docker-entrypoint.sh                 # Container startup script
-├── package.json
-└── README.md
+│   │   ├── shared/                    # Isomorphic code, safe in any bundle
+│   │   │   └── constants.ts           # Periods, labels, block-time helpers
+│   │   ├── client/                    # Browser-only helpers, never imported server-side
+│   │   │   └── api.ts                 # Same-origin /api client
+│   │   ├── components/                # Svelte UI
+│   │   ├── data/exchanges.json        # Exchange + Foundation addresses
+│   │   ├── config.js                  # LEGACY: replaced by $lib/server/config.ts
+│   │   └── services/                  # LEGACY: replaced by $lib/server/{ingest,intel}
+│   ├── routes/                        # SvelteKit routes
+│   ├── server.ts                      # v2 entry: API + SvelteKit handler, one process
+│   ├── app.css
+│   └── app.html
+├── docs/adr/                          # Architecture decision records
+├── .github/workflows/ci.yml
+├── Dockerfile
+├── docker-compose.yml
+├── server.js                          # LEGACY: v1 Express entry, removed in v2
+├── tsconfig.json                      # Editor, svelte-check and component typechecking
+├── tsconfig.server.json               # Emits the Node server into dist/
+└── package.json
 ```
+
+### Where code belongs
+
+| Path          | Runs in          | May import        |
+| ------------- | ---------------- | ----------------- |
+| `$lib/shared` | server + browser | nothing app-bound |
+| `$lib/client` | browser only     | `$lib/shared`     |
+| `$lib/server` | server only      | `$lib/shared`     |
+
+SvelteKit strips `$lib/server` out of the client bundle, which is why configuration and
+credentials belong there rather than in `$lib/shared`.
 
 ## 🔧 How It Works
 
 ### Initial Sync
+
 1. Backend fetches current blockchain height
 2. Loads exchange and foundation addresses from config
 3. Fetches node operator data from Flux API
@@ -118,6 +153,7 @@ flux-flow-tracker/
 7. Starts continuous sync every 30 seconds
 
 ### Continuous Operation
+
 - Every 30 seconds, checks for new blocks
 - Fetches and processes new blocks since last sync
 - Classifies all transactions
@@ -126,6 +162,7 @@ flux-flow-tracker/
 - Frontend auto-refreshes every 5 minutes
 
 ### Transaction Classification
+
 ```javascript
 // For each transaction:
 1. Extract all "from" addresses (inputs)
@@ -144,18 +181,22 @@ flux-flow-tracker/
 ## 📡 API Endpoints
 
 ### Status
+
 - `GET /api/health` - System health
 - `GET /api/blocks/status` - Current block status
 
 ### Flow Analysis
+
 - `GET /api/flow/:period` - Flow analysis for period (24H, 7D, 30D, 90D, 1Y)
 - `GET /api/top/buyers/:period` - Top 5 buyers
 - `GET /api/top/sellers/:period` - Top 5 sellers
 
 ### Classification
+
 - `GET /api/classification/stats` - Classification statistics
 
 ### Admin
+
 - `POST /api/admin/sync` - Trigger manual sync
 
 ## ⚙️ Configuration Files
@@ -193,6 +234,7 @@ The system implements robust rate limiting and gap prevention:
 ## 🎨 Theming
 
 The app uses a terminal-style dark theme inspired by Fluxtracker:
+
 - Flux purple primary color (#8247e5)
 - Cyan accents (#00d4ff)
 - Dark background (#0a0e27)
@@ -201,15 +243,19 @@ The app uses a terminal-style dark theme inspired by Fluxtracker:
 ## 🐛 Troubleshooting
 
 ### Insufficient Data
+
 If you see "Insufficient data" messages, the system is still syncing blocks. Wait for the progress bar to reach 100%.
 
 ### Sync Errors
+
 Check backend logs for API errors. Common issues:
+
 - Blockbook API rate limiting (reduce batch size)
 - Network connectivity issues
 - Invalid block data
 
 ### High Memory Usage
+
 Adjust `MAX_BLOCKS_IN_MEMORY` in config to reduce memory footprint. Each block with ~50 transactions uses approximately 50KB.
 
 ## 📝 TODO / Future Enhancements
@@ -225,6 +271,7 @@ Adjust `MAX_BLOCKS_IN_MEMORY` in config to reduce memory footprint. Each block w
 ## 🙏 Credits
 
 Built on the Flux blockchain ecosystem:
+
 - Blockbook API: https://blockbook.runonflux.io
 - Flux Nodes API: https://explorer.runonflux.io
 - Inspired by: Fluxtracker (https://fluxtracker.app.runonflux.io)

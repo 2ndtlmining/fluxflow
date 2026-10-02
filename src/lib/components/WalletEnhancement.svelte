@@ -1,6 +1,6 @@
 <script>
   import { onMount, onDestroy } from 'svelte';
-  import { getApiUrl } from '$lib/config.js';
+  import { getApiUrl } from '$lib/client/api';
 
   let API_URL = '';
   let isEnhancing = false;

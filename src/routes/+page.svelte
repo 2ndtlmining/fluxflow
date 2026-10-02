@@ -1,7 +1,7 @@
 <script>
   import { onMount } from 'svelte';
-  import { FLUX_CONFIG } from '$lib/config.js';
-  import { getApiUrl } from '$lib/config.js';
+  import { DEFAULT_PERIOD, FRONTEND_REFRESH_INTERVAL } from '$lib/shared/constants';
+  import { getApiUrl } from '$lib/client/api';
   import Header from '$lib/components/Header.svelte';
   import FlowStats from '$lib/components/FlowStats.svelte';
   import PeriodSelector from '$lib/components/PeriodSelector.svelte';
@@ -11,7 +11,7 @@
 
   let API_URL = '';
 
-  let selectedPeriod = FLUX_CONFIG.DEFAULT_PERIOD;
+  let selectedPeriod = DEFAULT_PERIOD;
   let flowData = null;
   let loading = true;
   let error = null;
@@ -75,7 +75,7 @@
     fetchFlowData();
 
     // Auto-refresh every 5 minutes
-    const interval = setInterval(fetchFlowData, FLUX_CONFIG.FRONTEND_REFRESH_INTERVAL);
+    const interval = setInterval(fetchFlowData, FRONTEND_REFRESH_INTERVAL);
 
     return () => clearInterval(interval);
   });

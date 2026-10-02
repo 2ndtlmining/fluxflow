@@ -84,33 +84,6 @@
     });
   }
 
-  function handleChartClick(event, chartType) {
-    if (!chartInstance) return;
-
-    const elements = chartInstance.getElementsAtEventForMode(
-      event,
-      'nearest',
-      { intersect: true },
-      true
-    );
-
-    if (elements.length > 0) {
-      const element = elements[0];
-      const datasetIndex = element.datasetIndex;
-      const category = categories[chartType][datasetIndex];
-
-      const filtered = filterEventsByCategory(chartType, category.filterType);
-
-      if (filtered.length > 0) {
-        dispatch('showDetails', {
-          transactions: filtered,
-          title: `${chartType === 'buying' ? 'Buying' : 'Selling'} Pressure: ${category.label}`,
-          type: chartType
-        });
-      }
-    }
-  }
-
   function createChart() {
     if (!chartCanvas) return;
 
@@ -239,7 +212,7 @@
                   `Transactions: ${dataset.eventCount}`
                 ];
               },
-              footer: function (context) {
+              footer: function () {
                 return 'Click to view details';
               }
             }

@@ -76,7 +76,7 @@ export async function handle({ event, resolve }) {
 }
 
 /** @type {import('@sveltejs/kit').HandleServerError} */
-export function handleError({ error, event }) {
+export function handleError({ error }) {
   console.error('[SvelteKit Error]', error);
 
   return {
