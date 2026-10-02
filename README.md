@@ -146,12 +146,14 @@ credentials belong there rather than in `$lib/shared`.
 
 ### Server modules
 
-| Module                    | Responsibility                                               | Issues |
-| ------------------------- | ------------------------------------------------------------ | ------ |
-| `server/config.ts`        | zod-validated environment, resolved once at startup          | #11    |
-| `server/logger.ts`        | pino structured logging with redaction                       | #24    |
-| `server/db/database.ts`   | SQLite connection and pragmas; `DEBUG_SQL` gates SQL logging | #6     |
-| `server/db/migrations.ts` | versioned schema migrations; refuses a legacy v1 database    | #17    |
+| Module                      | Responsibility                                                                      | Issues   |
+| --------------------------- | ----------------------------------------------------------------------------------- | -------- |
+| `server/config.ts`          | zod-validated environment, resolved once at startup                                 | #11      |
+| `server/logger.ts`          | pino structured logging with redaction                                              | #24      |
+| `server/http.ts`            | the only outbound call site: mandatory timeout, retries, shared concurrency limiter | #10, #5  |
+| `server/db/database.ts`     | SQLite connection and pragmas; `DEBUG_SQL` gates SQL logging                        | #6       |
+| `server/db/migrations.ts`   | versioned schema migrations; refuses a legacy v1 database                           | #17      |
+| `server/ingest/datasource/` | normalised chain shapes, Blockbook + FluxIndexer adapters, circuit breaker          | #12, #15 |
 
 ## 🔧 How It Works
 
