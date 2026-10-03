@@ -70,7 +70,21 @@ export interface SyncOptions {
   readonly labels: LabelLookup;
   readonly dataSource: FailoverDataSource;
   readonly log: Logger;
-  /** Injected in tests; shares the service's limiter by default. */
+  /**
+   * Called after a cycle confirms the data sources are reachable.
+   *
+   * This is how `/api/health` learns that sync is working. Without it the health check keeps
+   * reporting `degraded: no successful sync yet` for the life of the process, however many
+   * blocks land — a container that is ingesting perfectly looks permanently unhealthy, and an
+   * orchestrator will restart it.
+   */
+  readonly onSuccess?: (at: number) => void;
+  /**
+   * Used only by {@link SyncService.drain}, to wait for in-flight requests on shutdown.
+   *
+   * Ingestion work itself is limited by the limiter the `FailoverDataSource` applies to each
+   * source — see {@link SyncService.fetchAll} for why applying a second one deadlocks.
+   */
   readonly limiter?: Limiter;
 }
 
@@ -190,6 +204,7 @@ export class SyncService {
       await this.checkForReorg();
 
       const tip = await this.options.dataSource.withFailover((source) => source.getTip());
+      this.markSuccess(Date.now());
       const stored = this.tip();
       const { batchSize } = this.options.config.sync;
 
@@ -268,7 +283,6 @@ export class SyncService {
       this.counters.lastCycleMs = Date.now() - startedAt;
       this.counters.lastCycleAt = Date.now();
       this.counters.cycles++;
-      this.lastSuccessAt = Date.now();
       this.writer.setState('last_cycle_at', this.counters.lastCycleAt);
     }
   }
@@ -356,12 +370,25 @@ export class SyncService {
       { block: NormalisedBlock; source: string } | { error: string }
     >();
 
+    /*
+     * Concurrency is bounded by the limiter the *data source* applies, not by one applied here.
+     *
+     * `FailoverDataSource` already wraps every source it dispatches with the shared limiter,
+     * so wrapping again here would acquire two slots for one request. Since a limiter holds
+     * its slot while awaiting the work inside it, `concurrency` callers would each take one
+     * slot and then block forever waiting for a second — a self-deadlock that stalls every
+     * sync cycle while the service reports itself perfectly healthy.
+     *
+     * Found by running the image: the pool was probed, 10 nodes were serving, and no block
+     * was ever committed. No unit test caught it because the tests build the failover source
+     * without a limiter, so only one level of wrapping was ever in play.
+     */
     const settled = await Promise.allSettled(
       heights.map((height) =>
-        this.options.dataSource.withFailover(async (source) => {
-          const block = await this.limiter.run(() => source.getBlock(height));
-          return { block, source: source.id };
-        })
+        this.options.dataSource.withFailover(async (source) => ({
+          block: await source.getBlock(height),
+          source: source.id
+        }))
       )
     );
 
@@ -520,9 +547,17 @@ export class SyncService {
     );
   }
 
-  /** Record a cycle that completed without a transport failure, for the staleness check. */
+  /**
+   * Record that the chain was successfully read, for the staleness check.
+   *
+   * Called once the tip has been read, which is the point at which we know the data sources
+   * are reachable. A cycle that later commits nothing is still a *successful* cycle — there
+   * is simply nothing new to fetch — so this must not wait for a commit, or a fully caught-up
+   * service reports itself unhealthy forever.
+   */
   markSuccess(at: number): void {
     this.lastSuccessAt = at;
+    this.options.onSuccess?.(at);
   }
 
   /** Wait for an in-flight cycle. Used on shutdown. */
