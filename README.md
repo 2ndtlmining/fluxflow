@@ -311,6 +311,8 @@ derived from them and can be rebuilt.
 | `node_rewards`   | coinbase-derived, so "was a node operator" is time-accurate                  |
 | `address_labels` | exchange / Foundation / operator labels — mutable, correctable, re-derivable |
 | `flows`          | the derived buy/sell/p2p rows the API reads                                  |
+| `rollup_*`       | hourly and daily totals per direction, counterparty and exchange (triggers)  |
+| `wallet_*`       | daily and 30-day totals per wallet, for leaderboards and profiles (triggers) |
 | `missing_blocks` | heights that failed to fetch, with backoff — retried, never skipped          |
 
 Because labels are separate from facts, correcting an exchange address never rewrites
@@ -341,21 +343,29 @@ For each transfer transaction:
 
 All endpoints are same-origin. There is no CORS layer unless `ORIGIN` is set explicitly.
 
-| Method | Path                        | Notes                                         |
-| ------ | --------------------------- | --------------------------------------------- |
-| GET    | `/api/health`               | O(1); 503 + `degraded` when sync is stale     |
-| GET    | `/api/status`               | sync, database, data-source and label summary |
-| GET    | `/api/blocks/status`        | block range and sync progress                 |
-| GET    | `/api/database/stats`       | row counts and database size                  |
-| GET    | `/api/classification/stats` | label counts                                  |
-| GET    | `/api/unknowns/stats`       | how much is still unlabelled                  |
-| GET    | `/api/flow/:period`         | aggregated totals, no events attached         |
-| GET    | `/api/flow/:period/events`  | keyset-paginated events, filterable           |
-| GET    | `/api/flow/:period/buyers`  | top N addresses receiving from exchanges      |
-| GET    | `/api/flow/:period/sellers` | top N addresses sending to exchanges          |
+| Method | Path                           | Notes                                         |
+| ------ | ------------------------------ | --------------------------------------------- |
+| GET    | `/api/health`                  | O(1); 503 + `degraded` when sync is stale     |
+| GET    | `/api/status`                  | sync, database, data-source and label summary |
+| GET    | `/api/blocks/status`           | block range and sync progress                 |
+| GET    | `/api/database/stats`          | row counts and database size                  |
+| GET    | `/api/classification/stats`    | label counts                                  |
+| GET    | `/api/unknowns/stats`          | how much is still unlabelled                  |
+| GET    | `/api/flow/:period`            | aggregated totals, no events attached         |
+| GET    | `/api/flow/:period/events`     | keyset-paginated events, filterable           |
+| GET    | `/api/flow/:period/buyers`     | top wallets withdrawing from exchanges        |
+| GET    | `/api/flow/:period/sellers`    | top wallets depositing to exchanges           |
+| GET    | `/api/flow/:period/series`     | buying/selling/net per hour (≤7D) or day      |
+| GET    | `/api/wallets/:address`        | wallet profile: totals, exchanges, history    |
+| GET    | `/api/wallets/:address/events` | a wallet's flows, keyset-paginated            |
+| GET    | `/api/search?q=`               | address prefix, label name or txid            |
 
 `period` is one of `24H`, `7D`, `30D`, `90D`, `6M`. Windows are resolved from block **time**
 rather than a block count, so "Today" means today even if block times drift.
+
+Every response carries an `ETag` tied to the stored data's version: repeat requests between
+syncs are served from memory, or answered `304`. Full request and response shapes are in
+[`docs/api.md`](docs/api.md).
 
 `/api/flow/:period` returns aggregates only. Events are served a page at a time by
 `/events`, because shipping a whole period to the browser took 28 seconds and then crashed
