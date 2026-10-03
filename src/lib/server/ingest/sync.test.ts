@@ -771,5 +771,66 @@ describe('SyncService', () => {
       expect(hashAt(22)).toBe('fork-22');
       expect(count('blocks')).toBe(30);
     });
+
+    it('does not report success when the source tip is behind what is stored', async () => {
+      const onSuccess = vi.fn();
+      const source = chainSource({ tip: 10, fetched: [] });
+      sync = buildSync(db, source, { SYNC_BATCH_SIZE: '1000' }, silentLogger(), { onSuccess });
+
+      await sync.runOnce();
+      expect(onSuccess).toHaveBeenCalledTimes(1);
+
+      // A stuck or lagging source answers with an old tip. There is nothing to fetch, but
+      // that is not "caught up": ingestion has stalled and health must go stale.
+      source.chain.tip = 5;
+      await sync.runOnce();
+
+      expect(onSuccess).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not roll back on a single disagreeing hash answer', async () => {
+      const chain: FakeChain = { tip: 30, fetched: [] };
+      const source = hashingSource(chain);
+      sync = buildSync(db, source, { SYNC_BATCH_SIZE: '1000', REORG_CHECK_DEPTH: '5' });
+
+      await sync.runOnce();
+
+      // One node in a pool lies (or glitches) once. Acting on that alone would let any single
+      // remote answer delete stored history.
+      let lied = false;
+      chain.forkedHash = (height) => {
+        if (height === 28 && !lied) {
+          lied = true;
+          return 'liar';
+        }
+        return null;
+      };
+      await sync.runOnce();
+
+      expect(sync.stats.reorgedHeights).toBe(0);
+      expect(count('blocks')).toBe(30);
+    });
+
+    it('repairs due gaps even while forward passes keep failing', async () => {
+      const chain: FakeChain = { tip: 20, fetched: [], failingOnce: new Set([5]) };
+      const source = chainSource(chain);
+      sync = buildSync(db, source, { SYNC_BATCH_SIZE: '1000', REORG_CHECK_DEPTH: '0' });
+
+      await sync.runOnce();
+      expect(count('missing_blocks')).toBe(1);
+
+      // Every new tip block fails, so every cycle's forward pass has a failure. Deferring
+      // repair on any failure meant height 5 was never retried.
+      const original = source.getBlock;
+      source.getBlock = async (height: number) => {
+        if (height > 20) throw new Error(`tip block ${height} unavailable`);
+        return original(height);
+      };
+      db.exec(`UPDATE missing_blocks SET next_retry_at = 0`);
+      chain.tip = 21;
+      await sync.runOnce();
+
+      expect(storedHeights()).toContain(5);
+    });
   });
 });
