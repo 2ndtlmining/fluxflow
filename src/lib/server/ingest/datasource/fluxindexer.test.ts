@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from 'vitest';
 import { createLimiter, type HttpRequestOptions } from '../../http.js';
 import { FluxIndexerDataSource } from './fluxindexer';
 import { checkConservation } from './types';
+import { FailoverDataSource } from './circuitbreaker';
+import { createTestConfig, silentLogger } from '../../testkit.js';
 
 /**
  * A trimmed but structurally faithful FluxIndexer block response.
@@ -370,7 +372,7 @@ describe('FluxIndexerDataSource', () => {
       const dataSource = new FluxIndexerDataSource({
         baseUrl: 'http://indexer.local:42067',
         http: http({ fetchImpl: countingFetch as unknown as typeof fetch }),
-        limiter: createLimiter(4)
+        enrichConcurrency: 4
       });
 
       const block = await dataSource.getBlock(987_654);
@@ -378,6 +380,26 @@ describe('FluxIndexerDataSource', () => {
       expect(block.transactions).toHaveLength(count);
       expect(peak).toBeLessThanOrEqual(4);
       expect(fetchImpl).toBeDefined();
+    });
+
+    it('does not deadlock inside a failover source that holds the shared limiter', async () => {
+      // FailoverDataSource runs getBlock inside a slot of the shared limiter. Enriching
+      // through that same limiter needs a second slot per block, so with every slot held
+      // by an outer getBlock nothing can ever proceed.
+      const { fetchImpl } = stubFetch();
+      const failover = new FailoverDataSource({
+        sources: [source(fetchImpl)],
+        config: createTestConfig(),
+        log: silentLogger(),
+        limiter: createLimiter(1)
+      });
+
+      const block = await Promise.race([
+        failover.withFailover((s) => s.getBlock(987_654)),
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error('deadlock')), 2_000))
+      ]);
+
+      expect(block.transactions).toHaveLength(2);
     });
   });
 

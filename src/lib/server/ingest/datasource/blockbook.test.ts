@@ -115,6 +115,21 @@ describe('BlockbookDataSource', () => {
     });
   });
 
+  describe('getBlockHash', () => {
+    it('reads the hash from block-index without downloading the block', async () => {
+      const { fetchImpl, calls } = stubFetch([{ body: { blockHash: '000000abc' } }]);
+
+      await expect(source(fetchImpl).getBlockHash(1_234_567)).resolves.toBe('000000abc');
+      expect(calls).toEqual(['https://blockbook.example/api/v2/block-index/1234567']);
+    });
+
+    it('fails loudly when the hash is missing', async () => {
+      const { fetchImpl } = stubFetch([{ body: {} }]);
+
+      await expect(source(fetchImpl).getBlockHash(1)).rejects.toThrow(/no blockHash/);
+    });
+  });
+
   describe('getBlock', () => {
     it('requests one URL per block', async () => {
       const { fetchImpl, calls } = stubFetch([{ body: BLOCK_FIXTURE }]);

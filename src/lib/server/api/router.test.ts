@@ -47,7 +47,10 @@ describe('api router', () => {
 
     const app = express();
     app.use('/api', express.json());
-    app.use('/api', createApiRouter({ config, db, labels, dataSource, health }));
+    app.use(
+      '/api',
+      createApiRouter({ config, db, labels, dataSource, log: silentLogger(), health })
+    );
     app.use('/api', errorHandler(config, silentLogger()));
 
     server = await startTestServer(app);

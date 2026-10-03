@@ -72,21 +72,28 @@ const initialSchema: Migration = {
     db.exec(`CREATE INDEX idx_tx_deltas_address ON tx_deltas(address, height);`);
 
     /*
-     * Coinbase-derived node rewards, aggregated per address per day.
+     * Coinbase-derived node rewards, one row per address per block.
      *
      * A reward proves the address was mining at that moment, which gives time-accurate
      * "was a node operator" answers without replaying history through an indexer (#18).
+     *
+     * Keyed by height rather than by day so that (a) a reorg can roll it back, (b) retention
+     * can prune it, and (c) re-syncing a block overwrites its row instead of adding to it.
+     * An additive daily aggregate would be none of those three, and would double-count every
+     * repair. `day` is carried alongside purely for querying.
      */
     db.exec(`
       CREATE TABLE node_rewards (
         address      TEXT    NOT NULL,
+        height       INTEGER NOT NULL,
         day          INTEGER NOT NULL,
         reward_count INTEGER NOT NULL DEFAULT 0,
         sat          INTEGER NOT NULL DEFAULT 0,
-        PRIMARY KEY (address, day)
+        PRIMARY KEY (address, height)
       ) WITHOUT ROWID;
     `);
     db.exec(`CREATE INDEX idx_node_rewards_day ON node_rewards(day);`);
+    db.exec(`CREATE INDEX idx_node_rewards_height ON node_rewards(height);`);
 
     // ── Mutable labels, deliberately separate from the facts above ────────────
     db.exec(`

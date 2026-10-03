@@ -7,9 +7,17 @@
  * `hooks.server.js` sat at the repo root where SvelteKit never compiled it.
  */
 
-import { Router, type Request, type Response } from 'express';
+import { timingSafeEqual } from 'node:crypto';
+import {
+  Router,
+  type NextFunction,
+  type Request,
+  type RequestHandler,
+  type Response
+} from 'express';
 import type { Logger } from 'pino';
 import type { Config } from '../config.js';
+import type { SyncService } from '../ingest/sync.js';
 import type { LabelLookup } from '../labels.js';
 import type { FailoverDataSource } from '../ingest/datasource/circuitbreaker.js';
 import type { Db } from '../db/database.js';
@@ -29,6 +37,9 @@ export interface ApiDependencies {
   readonly db: Db;
   readonly labels: LabelLookup;
   readonly dataSource: FailoverDataSource;
+  readonly log: Logger;
+  /** Absent when ingestion is switched off; the admin endpoints are then not registered. */
+  readonly sync?: SyncService;
   /** Read by `/api/health`; kept O(1) so the Docker healthcheck is never the bottleneck. */
   readonly health: {
     startedAt: number;
@@ -67,7 +78,7 @@ function parsePeriod(req: Request, res: Response): PeriodId | null {
 }
 
 export function createApiRouter(deps: ApiDependencies): Router {
-  const { config, db, labels, dataSource, health } = deps;
+  const { config, db, labels, dataSource, health, sync, log } = deps;
   const router = Router();
 
   // ── Health ────────────────────────────────────────────────────────────────
@@ -104,6 +115,7 @@ export function createApiRouter(deps: ApiDependencies): Router {
         degraded,
         ...(reason ? { reason } : {})
       },
+      ...(sync ? { ingest: sync.stats } : {}),
       database: {
         blocks: database.blocks,
         flows: database.flows,
@@ -186,6 +198,36 @@ export function createApiRouter(deps: ApiDependencies): Router {
       totalFlowEvents: summariseDatabase(db).flows
     });
   });
+
+  // ── Admin ─────────────────────────────────────────────────────────────────
+  /*
+   * Every mutating endpoint requires ADMIN_TOKEN.
+   *
+   * v1's `POST /api/enhance-wallets` and `/api/enhancement/background/trigger` were open to
+   * anyone who could reach the port. A trigger starts a job that makes thousands of
+   * outbound requests, so an unauthenticated endpoint is both a denial-of-service lever
+   * and a way to point the service at someone else's infrastructure (#21).
+   */
+  const admin = requireAdmin(config);
+
+  if (sync) {
+    const apiLog = log.child({ component: 'admin' });
+
+    router.post('/admin/sync', admin, (_req: Request, res: Response) => {
+      void sync.runOnce().then(
+        () => res.json({ success: true, stats: sync.stats }),
+        (error: unknown) => {
+          apiLog.error({ ...serialiseError(error) }, 'manual sync failed');
+          res.status(500).json({ error: 'Sync failed', message: 'see server logs' });
+        }
+      );
+    });
+
+    router.post('/admin/retention', admin, (_req: Request, res: Response) => {
+      sync.pruneNow();
+      res.json({ success: true, prunedBlocks: sync.stats.prunedBlocks });
+    });
+  }
 
   // ── Flow analysis ─────────────────────────────────────────────────────────
   router.get('/flow/:period', (req: Request, res: Response) => {
@@ -316,6 +358,43 @@ export function createApiRouter(deps: ApiDependencies): Router {
   });
 
   return router;
+}
+
+/**
+ * Require a valid `ADMIN_TOKEN`.
+ *
+ * Compared in constant time so the endpoint cannot be used as an oracle to discover the
+ * token byte by byte. When no token is configured the endpoint is refused outright rather
+ * than left open — an unset secret must fail closed.
+ */
+export function requireAdmin(config: Config): RequestHandler {
+  return (req: Request, res: Response, next: NextFunction) => {
+    if (!config.adminToken) {
+      res.status(503).json({
+        error: 'admin_disabled',
+        message: 'ADMIN_TOKEN is not configured, so admin endpoints are disabled'
+      });
+      return;
+    }
+
+    const header = req.get('authorization') ?? '';
+    const presented = header.startsWith('Bearer ') ? header.slice(7).trim() : '';
+
+    if (!safeEqual(presented, config.adminToken)) {
+      // Never say which part was wrong.
+      res.status(401).json({ error: 'unauthorized', message: 'Provide a valid admin token' });
+      return;
+    }
+
+    next();
+  };
+}
+
+function safeEqual(a: string, b: string): boolean {
+  // timingSafeEqual requires equal lengths; a length mismatch is reported without
+  // comparing, so the response time does not leak the token's length.
+  if (a.length !== b.length) return false;
+  return timingSafeEqual(Buffer.from(a), Buffer.from(b));
 }
 
 /**

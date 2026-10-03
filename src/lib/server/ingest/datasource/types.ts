@@ -140,6 +140,15 @@ export interface DataSource {
   getBlock(height: number): Promise<NormalisedBlock>;
 
   /**
+   * The block hash at a height, without its transactions.
+   *
+   * Optional. Reorg checks only need the hash, and downloading whole blocks to compare
+   * hashes costs `REORG_CHECK_DEPTH` full block fetches per cycle — on a rate-limited
+   * source, that alone is enough to trip it. Callers fall back to `getBlock` when absent.
+   */
+  getBlockHash?(height: number): Promise<string>;
+
+  /**
    * Cheap liveness probe used by the circuit breaker to decide whether to try a source
    * again. Must not throw; return `false` rather than raising.
    */
