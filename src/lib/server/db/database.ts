@@ -32,6 +32,9 @@ function applyPragmas(db: Db, config: Config): void {
   // Bound WAL growth so a long backfill cannot fill the disk between checkpoints.
   db.pragma('wal_autocheckpoint = 2000');
   db.pragma('foreign_keys = ON');
+  // Without this, the row an `INSERT OR REPLACE` deletes skips DELETE triggers, and the
+  // rollups maintained by trigger (migration 2) would count the old row and the new one.
+  db.pragma('recursive_triggers = ON');
   db.pragma('temp_store = MEMORY');
 }
 

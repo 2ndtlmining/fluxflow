@@ -10,6 +10,7 @@
 
 import type { Db } from '../db/database.js';
 import { SATS_PER_FLUX } from '../ingest/datasource/types.js';
+import { DATA_VERSION_KEY, ROLLUP_LEVELS } from '../db/migrations.js';
 
 export interface PeriodWindow {
   readonly fromHeight: number;
@@ -63,55 +64,110 @@ export interface FlowSummary {
 /**
  * Totals for one direction (buying or selling) inside a window.
  *
- * Grouping happens in SQL. The alternative — loading every row and looping in JS — is what
- * made `/api/flow/6M` take 28 seconds and then crash in `JSON.stringify` (#2).
+ * Read from three pieces, so the cost is O(days in the period), not O(events) (#2, #4):
+ *
+ *   raw `flows`        the partial first hour, from the window's start to the next hour
+ *   `rollup_hourly`    the rest of that first day
+ *   `rollup_daily`     every day after it, through the newest block
+ *
+ * The end needs no special case: nothing after the newest block exists yet, so the last
+ * day's bucket holds exactly the data up to it. A 6-month summary reads ~180 daily buckets
+ * per combination instead of grouping millions of flows.
+ *
+ * Rollups outlive the raw retention window. When a period reaches back before the oldest
+ * raw block, the partial first hour cannot be read exactly, so that boundary is rounded to
+ * the nearest hour — at most 30 minutes out on a period of months.
  */
 export function summariseFlow(
   db: Db,
   window: PeriodWindow,
   flowType: 'buying' | 'selling'
 ): FlowSummary {
+  const HOUR = ROLLUP_LEVELS.rollup_hourly;
+  const DAY = ROLLUP_LEVELS.rollup_daily;
+  const hoursPerDay = DAY / HOUR;
+
+  const firstHour = Math.floor(window.fromTime / HOUR);
+  const firstDay = Math.floor(window.fromTime / DAY);
+  const lastDay = Math.floor(window.toTime / DAY);
+
+  const rawFrom =
+    db.prepare<[], { time: number | null }>(`SELECT MIN(time) AS time FROM blocks`).get()?.time ??
+    0;
+
+  // Exact when raw data covers the window's start; otherwise round to the nearest hour.
+  const exactEdge = window.fromTime >= rawFrom;
+  const hourlyFrom = exactEdge || window.fromTime % HOUR >= HOUR / 2 ? firstHour + 1 : firstHour;
+  const rawTo = exactEdge ? (firstHour + 1) * HOUR : window.fromTime; // empty when inexact
+  const hourlyTo = (firstDay + 1) * hoursPerDay - 1;
+
   const counterpartyKind = flowType === 'buying' ? 'to_kind' : 'from_kind';
 
   const rows = db
-    .prepare<[string, number, number], { kind: string; totalSat: number; count: number }>(
-      `SELECT ${counterpartyKind} AS kind, SUM(sat) AS totalSat, COUNT(*) AS count
-       FROM flows
-       WHERE flow_type = ? AND height BETWEEN ? AND ?
-       GROUP BY ${counterpartyKind}`
+    .prepare<
+      [string, number, number, string, number, number, string, number, number],
+      { kind: string; exchange: string; totalSat: number; count: number }
+    >(
+      `SELECT kind, exchange, SUM(sat) AS totalSat, SUM(count) AS count
+       FROM (
+         SELECT counterparty_kind AS kind, exchange, sat, count
+         FROM rollup_daily
+         WHERE flow_type = ? AND bucket BETWEEN ? AND ?
+         UNION ALL
+         SELECT counterparty_kind AS kind, exchange, sat, count
+         FROM rollup_hourly
+         WHERE flow_type = ? AND bucket BETWEEN ? AND ?
+         UNION ALL
+         SELECT ${counterpartyKind} AS kind, COALESCE(exchange, '') AS exchange, sat, 1 AS count
+         FROM flows
+         WHERE flow_type = ? AND time >= ? AND time < ?
+       )
+       GROUP BY kind, exchange`
     )
-    .all(flowType, window.fromHeight, window.toHeight);
+    .all(
+      flowType,
+      firstDay + 1,
+      lastDay,
+      flowType,
+      hourlyFrom,
+      hourlyTo,
+      flowType,
+      window.fromTime,
+      rawTo
+    );
 
   const byKind: Record<string, number> = {};
+  const exchanges = new Map<string, { totalSat: number; count: number }>();
   let totalSat = 0;
   let count = 0;
 
   for (const row of rows) {
-    byKind[row.kind] = row.totalSat / SATS_PER_FLUX;
+    byKind[row.kind] = (byKind[row.kind] ?? 0) + row.totalSat;
     totalSat += row.totalSat;
     count += row.count;
-  }
 
-  const exchanges = db
-    .prepare<[string, number, number], { name: string; totalSat: number; count: number }>(
-      `SELECT exchange AS name, SUM(sat) AS totalSat, COUNT(*) AS count
-       FROM flows
-       WHERE flow_type = ? AND height BETWEEN ? AND ? AND exchange IS NOT NULL
-       GROUP BY exchange
-       ORDER BY totalSat DESC
-       LIMIT 25`
-    )
-    .all(flowType, window.fromHeight, window.toHeight);
+    if (row.exchange !== '') {
+      const entry = exchanges.get(row.exchange) ?? { totalSat: 0, count: 0 };
+      entry.totalSat += row.totalSat;
+      entry.count += row.count;
+      exchanges.set(row.exchange, entry);
+    }
+  }
 
   return {
     totalSat: totalSat / SATS_PER_FLUX,
     count,
-    byKind,
-    byExchange: exchanges.map((row) => ({
-      name: row.name,
-      totalSat: row.totalSat / SATS_PER_FLUX,
-      count: row.count
-    }))
+    byKind: Object.fromEntries(
+      Object.entries(byKind).map(([kind, sat]) => [kind, sat / SATS_PER_FLUX])
+    ),
+    byExchange: [...exchanges.entries()]
+      .sort((a, b) => b[1].totalSat - a[1].totalSat)
+      .slice(0, 25)
+      .map(([name, entry]) => ({
+        name,
+        totalSat: entry.totalSat / SATS_PER_FLUX,
+        count: entry.count
+      }))
   };
 }
 
@@ -357,4 +413,18 @@ export function summariseUnknowns(
   const unknownSells = sells?.count ?? 0;
 
   return { unknownBuys, unknownSells, totalUnknowns: unknownBuys + unknownSells };
+}
+
+/**
+ * The stored data's version: bumped by trigger whenever a block is written or removed.
+ *
+ * A primary-key lookup, so every request can afford it. Anything derived from the chain is
+ * unchanged while this is, which is what the response cache and ETags key on (#3, #4).
+ */
+export function dataVersion(db: Db): number {
+  const row = db
+    .prepare<[string], { value: string }>(`SELECT value FROM sync_state WHERE key = ?`)
+    .get(DATA_VERSION_KEY);
+
+  return row ? Number(row.value) : 0;
 }

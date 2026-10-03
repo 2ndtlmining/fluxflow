@@ -26,11 +26,11 @@ import { PERIODS, PERIOD_LABELS, isPeriodId, type PeriodId } from '../../shared/
 import {
   listFlowEvents,
   resolvePeriod,
-  summariseDatabase,
   summariseFlow,
   summariseUnknowns,
   topCounterparties
 } from './queries.js';
+import { ResponseCache } from './cache.js';
 
 export interface ApiDependencies {
   readonly config: Config;
@@ -63,6 +63,18 @@ const PERIOD_SECONDS: Record<PeriodId, number> = {
  * The set is closed, so anything else is a 400 rather than a chance to build a query from
  * user input (#21).
  */
+/**
+ * How long a leaderboard may be reused across sync cycles.
+ *
+ * Top buyers and sellers group raw flows by address — ~100 ms for 30 days and several
+ * hundred for 6 months on a full database, enough to block the event loop on every cycle.
+ * Over a long period the ranking barely moves in a few minutes, so it is recomputed at most
+ * every 10 minutes; short periods stay live. Per-wallet rollups (#28) will remove the need.
+ */
+function leaderboardStaleness(period: PeriodId): { maxStaleMs: number } {
+  return { maxStaleMs: PERIOD_SECONDS[period] > 7 * 86_400 ? 10 * 60_000 : 0 };
+}
+
 function parsePeriod(req: Request, res: Response): PeriodId | null {
   const raw = req.params.period;
 
@@ -80,6 +92,8 @@ function parsePeriod(req: Request, res: Response): PeriodId | null {
 export function createApiRouter(deps: ApiDependencies): Router {
   const { config, db, labels, dataSource, health, sync, log } = deps;
   const router = Router();
+  // Counts and flow answers change only when a sync cycle commits (#3, #4).
+  const cache = new ResponseCache(db);
 
   // ── Health ────────────────────────────────────────────────────────────────
   /**
@@ -104,10 +118,12 @@ export function createApiRouter(deps: ApiDependencies): Router {
 
   // ── Status ────────────────────────────────────────────────────────────────
   router.get('/status', (_req: Request, res: Response) => {
-    const database = summariseDatabase(db);
+    const database = cache.databaseSummary();
     const { degraded, reason } = health.degraded();
 
     res.json({
+      version: config.version,
+      uptimeSeconds: Math.round((Date.now() - health.startedAt) / 1000),
       sync: {
         enabled: config.syncEnabled,
         latestHeight: database.maxHeight,
@@ -140,7 +156,7 @@ export function createApiRouter(deps: ApiDependencies): Router {
 
   /** Kept for the existing dashboard components, which poll this every 5 s. */
   router.get('/blocks/status', (_req: Request, res: Response) => {
-    const database = summariseDatabase(db);
+    const database = cache.databaseSummary();
     const { degraded } = health.degraded();
 
     res.json({
@@ -157,7 +173,7 @@ export function createApiRouter(deps: ApiDependencies): Router {
   });
 
   router.get('/database/stats', (_req: Request, res: Response) => {
-    const database = summariseDatabase(db);
+    const database = cache.databaseSummary();
     const sixMonthBlocks = PERIODS['6M'];
 
     res.json({
@@ -205,7 +221,7 @@ export function createApiRouter(deps: ApiDependencies): Router {
     res.json({
       ...unknowns,
       enhancementStats: [],
-      totalFlowEvents: summariseDatabase(db).flows
+      totalFlowEvents: cache.databaseSummary().flows
     });
   });
 
@@ -244,12 +260,16 @@ export function createApiRouter(deps: ApiDependencies): Router {
     const period = parsePeriod(req, res);
     if (!period) return;
 
-    const database = summariseDatabase(db);
+    cache.send(req, res, () => flowSummary(period));
+  });
+
+  function flowSummary(period: PeriodId): unknown {
+    const database = cache.databaseSummary();
     const requiredBlocks = PERIODS[period];
     const progress = syncProgress(database.blocks, requiredBlocks);
 
     if (database.blocks === 0) {
-      res.json({
+      return {
         period,
         ready: false,
         partial: false,
@@ -257,8 +277,7 @@ export function createApiRouter(deps: ApiDependencies): Router {
         progress: 0,
         blocksNeeded: requiredBlocks,
         blocksSynced: 0
-      });
-      return;
+      };
     }
 
     const fromTime = Math.floor(database.maxTime - PERIOD_SECONDS[period]);
@@ -268,7 +287,7 @@ export function createApiRouter(deps: ApiDependencies): Router {
 
     const complete = database.blocks >= requiredBlocks;
 
-    res.json({
+    return {
       period,
       label: PERIOD_LABELS[period],
       ready: complete,
@@ -288,8 +307,8 @@ export function createApiRouter(deps: ApiDependencies): Router {
       selling: toDirection('selling', selling),
       p2p: { total: 0, count: 0 },
       netFlow: buying.totalSat - selling.totalSat
-    });
-  });
+    };
+  }
 
   /**
    * Keyset-paginated events.
@@ -301,7 +320,7 @@ export function createApiRouter(deps: ApiDependencies): Router {
     const period = parsePeriod(req, res);
     if (!period) return;
 
-    const database = summariseDatabase(db);
+    const database = cache.databaseSummary();
     const window = resolvePeriod(db, Math.floor(database.maxTime - PERIOD_SECONDS[period]));
 
     const cursor = parseCursor(req.query.cursor);
@@ -311,19 +330,17 @@ export function createApiRouter(deps: ApiDependencies): Router {
       return;
     }
 
-    const page = listFlowEvents(db, window, {
-      ...(typeof req.query.type === 'string' ? { flowType: req.query.type } : {}),
-      ...(typeof req.query.kind === 'string' ? { kind: req.query.kind } : {}),
-      ...(typeof req.query.exchange === 'string' ? { exchange: req.query.exchange } : {}),
-      ...(req.query.minAmount ? { minSat: Number(req.query.minAmount) } : {}),
-      limit: Number(req.query.limit) || 50,
-      ...(cursor ? { cursor } : {})
-    });
+    cache.send(req, res, () => {
+      const page = listFlowEvents(db, window, {
+        ...(typeof req.query.type === 'string' ? { flowType: req.query.type } : {}),
+        ...(typeof req.query.kind === 'string' ? { kind: req.query.kind } : {}),
+        ...(typeof req.query.exchange === 'string' ? { exchange: req.query.exchange } : {}),
+        ...(req.query.minAmount ? { minSat: Number(req.query.minAmount) } : {}),
+        limit: Number(req.query.limit) || 50,
+        ...(cursor ? { cursor } : {})
+      });
 
-    res.json({
-      period,
-      events: page.events,
-      nextCursor: page.nextCursor
+      return { period, events: page.events, nextCursor: page.nextCursor };
     });
   });
 
@@ -331,20 +348,34 @@ export function createApiRouter(deps: ApiDependencies): Router {
     const period = parsePeriod(req, res);
     if (!period) return;
 
-    const database = summariseDatabase(db);
+    const database = cache.databaseSummary();
     const window = resolvePeriod(db, Math.floor(database.maxTime - PERIOD_SECONDS[period]));
 
-    res.json({ buyers: topCounterparties(db, window, 'buying', Number(req.query.limit) || 10) });
+    cache.send(
+      req,
+      res,
+      () => ({
+        buyers: topCounterparties(db, window, 'buying', Number(req.query.limit) || 10)
+      }),
+      leaderboardStaleness(period)
+    );
   });
 
   router.get('/flow/:period/sellers', (req: Request, res: Response) => {
     const period = parsePeriod(req, res);
     if (!period) return;
 
-    const database = summariseDatabase(db);
+    const database = cache.databaseSummary();
     const window = resolvePeriod(db, Math.floor(database.maxTime - PERIOD_SECONDS[period]));
 
-    res.json({ sellers: topCounterparties(db, window, 'selling', Number(req.query.limit) || 10) });
+    cache.send(
+      req,
+      res,
+      () => ({
+        sellers: topCounterparties(db, window, 'selling', Number(req.query.limit) || 10)
+      }),
+      leaderboardStaleness(period)
+    );
   });
 
   // ── Compatibility shims ───────────────────────────────────────────────────
