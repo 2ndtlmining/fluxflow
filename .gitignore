@@ -46,3 +46,6 @@ coverage/
 # Claude
 
 .claude
+
+# Alert rules can carry webhook secrets; ship only the example.
+config/alerts.json

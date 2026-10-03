@@ -3,8 +3,9 @@ name: CI
 on:
   push:
     branches: [main]
+  # Every PR, whatever its base: stacked PRs target feature branches, and a filter on
+  # `main` left them with no checks at all (#23).
   pull_request:
-    branches: [main]
 
 # Cancel superseded runs on the same ref.
 concurrency:
@@ -46,3 +47,29 @@ jobs:
 
       - name: Build
         run: npm run build
+
+      - name: Server build
+        run: npm run build:server
+
+  docker:
+    name: Docker image builds
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: verify
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      # Build only: proves the Dockerfile and the multi-stage install still work. Publishing
+      # an image is a release step, not a CI one.
+      - name: Build runtime image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: runtime
+          push: false
+          build-args: GIT_SHA=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
