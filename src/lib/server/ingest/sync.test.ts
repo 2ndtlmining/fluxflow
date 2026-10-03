@@ -5,6 +5,7 @@ import { FailoverDataSource } from './datasource/circuitbreaker.js';
 import type { DataSource, NormalisedBlock } from './datasource/types.js';
 import { SyncService, retentionBlocks } from './sync.js';
 import type { LabelLookup } from '../labels.js';
+import { createLimiter, type Limiter } from '../http.js';
 
 const SATS = 100_000_000;
 const NOW = 1_756_000_000;
@@ -43,6 +44,17 @@ interface FakeChain {
   failingOnce?: Set<number>;
   /** Every height fetched, in order, so tests can assert what was and was not re-fetched. */
   fetched: number[];
+  /** Simulate a fork: the chain's hash at a height, when it differs from `hash-<height>`. */
+  forkedHash?: (height: number) => string | null;
+}
+
+/** The chain's block at a height, honouring a simulated fork. */
+function chainBlock(chain: FakeChain, height: number): NormalisedBlock {
+  const block = transferBlock(height);
+  const hash = chain.forkedHash?.(height) ?? block.hash;
+  const prevHash = chain.forkedHash?.(height - 1) ?? block.prevHash;
+
+  return { ...block, hash, prevHash };
 }
 
 /**
@@ -72,7 +84,7 @@ function chainSource(chain: FakeChain): DataSource & { chain: FakeChain } {
         throw new Error(`transient failure for ${height}`);
       }
 
-      return transferBlock(height);
+      return chainBlock(chain, height);
     },
 
     async isHealthy() {
@@ -85,16 +97,42 @@ function buildSync(
   db: Db,
   source: DataSource,
   env: Record<string, string> = {},
-  log: Logger = silentLogger()
+  log: Logger = silentLogger(),
+  extra: { limiter?: Limiter; onSuccess?: (at: number) => void } = {}
 ): SyncService {
   const config = createTestConfig(env);
   const dataSource = new FailoverDataSource({
     sources: [source],
     config,
-    log: silentLogger()
+    log: silentLogger(),
+    ...(extra.limiter ? { limiter: extra.limiter } : {})
   });
 
-  return new SyncService({ config, db, labels: LABELS, dataSource, log });
+  return new SyncService({ config, db, labels: LABELS, dataSource, log, ...extra });
+}
+
+/** Reject if `promise` has not settled within `ms`: how a deadlock shows up in a test. */
+function within<T>(promise: Promise<T>, ms = 2_000): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error(`did not settle within ${ms}ms`)), ms)
+    )
+  ]);
+}
+
+/** A chain that also answers the cheap hash lookup, counting how often each is used. */
+function hashingSource(chain: FakeChain): DataSource & { chain: FakeChain; hashCalls: number[] } {
+  const base = chainSource(chain);
+  const hashCalls: number[] = [];
+
+  return Object.assign(base, {
+    hashCalls,
+    async getBlockHash(height: number) {
+      hashCalls.push(height);
+      return chainBlock(chain, height).hash;
+    }
+  });
 }
 
 describe('retentionBlocks', () => {
@@ -552,6 +590,186 @@ describe('SyncService', () => {
           .prepare<[], { key: string }>(`SELECT key FROM sync_state WHERE key = 'last_cycle_at'`)
           .get()!.key
       ).toBe('last_cycle_at');
+    });
+  });
+
+  describe('review fixes (#42)', () => {
+    it('does not deadlock when the data source shares the sync limiter', async () => {
+      // index.ts hands the same limiter to FailoverDataSource and SyncService. Acquiring it
+      // twice per request deadlocks once every slot is held by an outer acquisition.
+      const limiter = createLimiter(2);
+      const source = chainSource({ tip: 10, fetched: [] });
+      sync = buildSync(db, source, { SYNC_BATCH_SIZE: '1000' }, silentLogger(), { limiter });
+
+      await within(sync.runOnce());
+
+      expect(count('blocks')).toBe(10);
+    });
+
+    it('reports success to onSuccess once blocks are committed', async () => {
+      const onSuccess = vi.fn();
+      const source = chainSource({ tip: 10, fetched: [] });
+      sync = buildSync(db, source, { SYNC_BATCH_SIZE: '1000' }, silentLogger(), { onSuccess });
+
+      await sync.runOnce();
+
+      expect(onSuccess).toHaveBeenCalledTimes(1);
+      expect(sync.stats.lastSuccessAt).toBeGreaterThan(0);
+    });
+
+    it('reports success when caught up, with nothing new to fetch', async () => {
+      const onSuccess = vi.fn();
+      const source = chainSource({ tip: 10, fetched: [] });
+      sync = buildSync(db, source, { SYNC_BATCH_SIZE: '1000' }, silentLogger(), { onSuccess });
+
+      await sync.runOnce();
+      await sync.runOnce();
+
+      expect(onSuccess).toHaveBeenCalledTimes(2);
+    });
+
+    it('does not report success when the tip is readable but no block can be fetched', async () => {
+      const onSuccess = vi.fn();
+      const source = chainSource({ tip: 10, fetched: [] });
+      source.getBlock = async () => {
+        throw new Error('no block for you');
+      };
+      sync = buildSync(db, source, { SYNC_BATCH_SIZE: '1000' }, silentLogger(), { onSuccess });
+
+      await sync.runOnce();
+
+      // Reading the tip proves the source answers, not that sync works. A service that
+      // commits nothing must go stale and fail its healthcheck.
+      expect(onSuccess).not.toHaveBeenCalled();
+      expect(sync.stats.lastSuccessAt).toBeNull();
+    });
+
+    it('does not count a cycle that threw as a success', async () => {
+      const source = chainSource({ tip: 10, fetched: [] });
+      source.getTip = async () => {
+        throw new Error('HTTP 429');
+      };
+      sync = buildSync(db, source, { SYNC_BATCH_SIZE: '1000' });
+
+      await sync.runOnce();
+
+      expect(sync.stats.lastSuccessAt).toBeNull();
+    });
+
+    it('reports a positive block rate across cycles of different sizes', async () => {
+      const source = chainSource({ tip: 100, fetched: [] });
+      sync = buildSync(db, source, { SYNC_BATCH_SIZE: '1000', REORG_CHECK_DEPTH: '0' });
+
+      await sync.runOnce();
+      source.chain.tip = 105;
+      await sync.runOnce();
+
+      // Samples were block counts treated as timestamps, so [100, 5] gave a negative span
+      // and a rate of 0 while the service was syncing.
+      expect(sync.stats.blocksPerMinute).toBeGreaterThan(0);
+      expect(Number.isFinite(sync.stats.blocksPerMinute)).toBe(true);
+    });
+
+    it('repairs due gaps on a cycle that also follows the tip', async () => {
+      const chain = { tip: 20, fetched: [] as number[], failingOnce: new Set([5]) };
+      const source = chainSource(chain);
+      sync = buildSync(db, source, { SYNC_BATCH_SIZE: '1000', REORG_CHECK_DEPTH: '0' });
+
+      await sync.runOnce();
+      expect(count('missing_blocks')).toBe(1);
+
+      // With 30-second blocks, almost every cycle has one new block. Returning early on
+      // those starved repair forever.
+      db.exec(`UPDATE missing_blocks SET next_retry_at = 0`);
+      chain.tip = 21;
+      await sync.runOnce();
+
+      expect(sync.tip()).toBe(21);
+      expect(count('missing_blocks')).toBe(0);
+    });
+
+    it('prunes on a cycle that also follows the tip', async () => {
+      const source = chainSource({ tip: 10_000, fetched: [] });
+      sync = buildSync(db, source, {
+        RETENTION_DAYS: '1',
+        SYNC_BATCH_SIZE: '5000',
+        REORG_CHECK_DEPTH: '0'
+      });
+
+      const seed = db.transaction(() => {
+        const insert = db.prepare(
+          `INSERT OR REPLACE INTO blocks (height, hash, time, tx_count, source) VALUES (?, ?, 0, 0, 'test')`
+        );
+        for (let height = 100; height < 200; height++) insert.run(height, `hash-${height}`);
+        insert.run(9_999, 'hash-9999');
+      });
+      seed();
+
+      // One new block, so this is a tip-following cycle.
+      await sync.runOnce();
+
+      expect(sync.tip()).toBe(10_000);
+      expect(Math.min(...storedHeights())).toBeGreaterThanOrEqual(10_000 - 2_880);
+    });
+
+    it('does not commit a block that has an incomplete transfer', async () => {
+      const source = chainSource({ tip: 5, fetched: [] });
+      const original = source.getBlock;
+      source.getBlock = async (height: number) => {
+        const block = await original(height);
+        if (height !== 3) return block;
+        return {
+          ...block,
+          transactions: [
+            { txid: 'tx-3', kind: 'transfer', inputs: [], outputs: [], complete: false }
+          ]
+        };
+      };
+      sync = buildSync(db, source, { SYNC_BATCH_SIZE: '1000' });
+
+      await sync.runOnce();
+
+      // Committing it marks the height done with a buy or sell missing, permanently.
+      expect(storedHeights()).not.toContain(3);
+      expect(db.prepare<[], { height: number }>(`SELECT height FROM missing_blocks`).all()).toEqual(
+        [{ height: 3 }]
+      );
+    });
+
+    it('verifies hashes with the cheap lookup when the source has one', async () => {
+      const source = hashingSource({ tip: 100, fetched: [] });
+      sync = buildSync(db, source, { SYNC_BATCH_SIZE: '1000', REORG_CHECK_DEPTH: '5' });
+
+      await sync.runOnce();
+      const fetchedAfterFirst = source.chain.fetched.length;
+      await sync.runOnce();
+
+      // Ten full block downloads per cycle just to compare hashes is what pushed a
+      // rate-limited source into 429s.
+      expect(source.chain.fetched.length - fetchedAfterFirst).toBe(0);
+      expect(source.hashCalls.length).toBeGreaterThanOrEqual(5);
+    });
+
+    it('rolls back to the real fork point when a reorg is deeper than the check window', async () => {
+      const chain: FakeChain = { tip: 30, fetched: [] };
+      const source = hashingSource(chain);
+      sync = buildSync(db, source, { SYNC_BATCH_SIZE: '1000', REORG_CHECK_DEPTH: '5' });
+
+      await sync.runOnce();
+
+      // Every block from 20 up is replaced; the window only covers 26..30.
+      chain.forkedHash = (height) => (height >= 20 ? `fork-${height}` : null);
+      await sync.runOnce();
+
+      const hashAt = (height: number) =>
+        db
+          .prepare<[number], { hash: string }>(`SELECT hash FROM blocks WHERE height = ?`)
+          .get(height)?.hash;
+
+      expect(hashAt(19)).toBe('hash-19');
+      expect(hashAt(20)).toBe('fork-20');
+      expect(hashAt(22)).toBe('fork-22');
+      expect(count('blocks')).toBe(30);
     });
   });
 });

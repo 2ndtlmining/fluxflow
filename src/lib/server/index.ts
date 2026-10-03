@@ -62,7 +62,7 @@ export interface CreateServiceOptions {
  * The public Blockbook instance is always available, so there is always something to fall
  * back to; a dedicated indexer is added first when configured because it is the fastest.
  */
-function buildSources(config: Config, limiter: ReturnType<typeof createLimiter>): DataSource[] {
+function buildSources(config: Config): DataSource[] {
   const http = {
     timeoutMs: config.http.timeoutMs,
     retries: config.http.retries,
@@ -75,7 +75,7 @@ function buildSources(config: Config, limiter: ReturnType<typeof createLimiter>)
     sources.push(
       new FluxIndexerDataSource({
         baseUrl: config.dataSources.fluxIndexerUrl,
-        limiter,
+        enrichConcurrency: config.sync.concurrency,
         http
       })
     );
@@ -111,7 +111,7 @@ export function createService(options: CreateServiceOptions = {}): Service {
 
   const limiter = createLimiter(config.sync.concurrency);
   const dataSource = new FailoverDataSource({
-    sources: options.sources ?? buildSources(config, limiter),
+    sources: options.sources ?? buildSources(config),
     config,
     log: log.child({ component: 'datasource' }),
     limiter
@@ -120,19 +120,15 @@ export function createService(options: CreateServiceOptions = {}): Service {
   // Probing runs unref'd, so it never keeps the process alive on its own.
   if (config.syncEnabled) dataSource.startProbing(60_000);
 
-  const sync = config.syncEnabled
-    ? new SyncService({
-        config,
-        db: database.db,
-        labels,
-        dataSource,
-        log: log.child({ component: 'ingest' }),
-        limiter
-      })
-    : null;
-
-  if (sync && options.autoStartSync !== false) sync.start();
-
+  /*
+   * Declared before the sync service so the service can report into it.
+   *
+   * Previously nothing connected the two: `lastSuccessfulSyncAt` was only ever set by
+   * `markSyncSuccess`, which no production code path calls. A service that had ingested
+   * hundreds of blocks still reported `degraded: no successful sync yet` and answered
+   * `/api/health` with 503 for the life of the process — so a Docker healthcheck would
+   * restart a container that was working perfectly.
+   */
   const health = {
     startedAt: Date.now(),
     lastSuccessfulSyncAt: null as number | null,
@@ -155,6 +151,22 @@ export function createService(options: CreateServiceOptions = {}): Service {
       return { degraded: false, reason: null };
     }
   };
+
+  const sync = config.syncEnabled
+    ? new SyncService({
+        config,
+        db: database.db,
+        labels,
+        dataSource,
+        log: log.child({ component: 'ingest' }),
+        limiter,
+        onSuccess: (at) => {
+          health.lastSuccessfulSyncAt = at;
+        }
+      })
+    : null;
+
+  if (sync && options.autoStartSync !== false) sync.start();
 
   const app = express();
 

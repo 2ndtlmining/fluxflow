@@ -405,6 +405,9 @@ function wrapWithLimiter(source: DataSource, limiter: Limiter): DataSource {
     description: source.description,
     getTip: () => limiter.run(() => source.getTip()),
     getBlock: (height) => limiter.run(() => source.getBlock(height)),
+    ...(source.getBlockHash
+      ? { getBlockHash: (height: number) => limiter.run(() => source.getBlockHash!(height)) }
+      : {}),
     isHealthy: () => source.isHealthy()
   };
 }

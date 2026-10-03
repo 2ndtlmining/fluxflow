@@ -29,6 +29,28 @@ import { BlockWriter, logWarnings } from './writer.js';
 const BLOCKS_PER_DAY = 2_880;
 
 /**
+ * Maintenance runs on a clock, not only on idle cycles.
+ *
+ * With 30-second blocks and a 30-second poll, almost every cycle has one new block. Running
+ * repair and prune only when a cycle found nothing new starved both: due gaps waited far
+ * past their backoff and retention lagged indefinitely.
+ */
+const REPAIR_INTERVAL_MS = 60_000;
+const PRUNE_INTERVAL_MS = 60 * 60_000;
+
+/** Throughput is averaged over this window, so the rate reflects current work. */
+const THROUGHPUT_WINDOW_MS = 10 * 60_000;
+
+/**
+ * How far below the reorg window to look for the fork point.
+ *
+ * The window shows where a fork *became visible*, not where it began. FLUX reorgs are a
+ * few blocks; this bound only stops a source that disagrees with everything from walking
+ * the whole database.
+ */
+const MAX_FORK_SEARCH = 500;
+
+/**
  * Blocks covered by a retention window.
  *
  * Expressed as a helper because getting it wrong in either direction either deletes live
@@ -70,7 +92,21 @@ export interface SyncOptions {
   readonly labels: LabelLookup;
   readonly dataSource: FailoverDataSource;
   readonly log: Logger;
-  /** Injected in tests; shares the service's limiter by default. */
+  /**
+   * Called when a cycle shows ingestion is working: blocks were committed, or the stored
+   * tip already matches the chain.
+   *
+   * This is how `/api/health` learns that sync works. Reading the tip alone is not enough —
+   * a source can answer `getTip` while every block request fails, and a service that
+   * commits nothing must go stale rather than report itself healthy.
+   */
+  readonly onSuccess?: (at: number) => void;
+  /**
+   * Used only by {@link SyncService.drain}, to wait for in-flight requests on shutdown.
+   *
+   * Ingestion itself is limited by the limiter the `FailoverDataSource` applies to each
+   * source — see {@link SyncService.fetchAll} for why applying a second one deadlocks.
+   */
   readonly limiter?: Limiter;
 }
 
@@ -81,6 +117,8 @@ export class SyncService {
   private inFlight: Promise<void> | undefined;
   private stopped = true;
   private lastSuccessAt: number | null = null;
+  private lastRepairAt = 0;
+  private lastPruneAt = 0;
   private counters = {
     cycles: 0,
     synced: 0,
@@ -91,7 +129,8 @@ export class SyncService {
     prunedBlocks: 0,
     lastCycleMs: 0,
     lastCycleAt: null as number | null,
-    recentBlocks: [] as number[]
+    /** Committed batches: when the fetch started and how many blocks landed. */
+    throughput: [] as { startedAt: number; blocks: number }[]
   };
 
   constructor(private readonly options: SyncOptions) {
@@ -100,8 +139,13 @@ export class SyncService {
   }
 
   get stats(): SyncStats {
-    const recent = this.counters.recentBlocks;
-    const span = recent.length > 1 ? (recent[recent.length - 1]! - recent[0]!) / 60_000 : 0;
+    const now = Date.now();
+    const recent = this.counters.throughput.filter(
+      (sample) => sample.startedAt >= now - THROUGHPUT_WINDOW_MS
+    );
+    const blocks = recent.reduce((sum, sample) => sum + sample.blocks, 0);
+    // Floored at one second so a single fast batch reads as a rate, not as infinity.
+    const minutes = recent.length > 0 ? Math.max((now - recent[0]!.startedAt) / 60_000, 1 / 60) : 0;
 
     return {
       cycles: this.counters.cycles,
@@ -114,7 +158,7 @@ export class SyncService {
       lastCycleMs: this.counters.lastCycleMs,
       lastCycleAt: this.counters.lastCycleAt,
       lastSuccessAt: this.lastSuccessAt,
-      blocksPerMinute: span > 0 ? Number((recent.length / span).toFixed(1)) : 0,
+      blocksPerMinute: minutes > 0 ? Number((blocks / minutes).toFixed(1)) : 0,
       tip: this.tip(),
       running: !this.stopped
     };
@@ -221,16 +265,12 @@ export class SyncService {
         );
       }
 
-      const result = await this.syncRange(
-        range(start, end),
-        stored === null ? 'backfill' : 'forward'
-      );
+      const heights = range(start, end);
+      const result = await this.syncRange(heights, stored === null ? 'backfill' : 'forward');
 
-      if (result.synced > 0) {
-        this.recordThroughput(result.synced, startedAt);
-        // Anything else can wait until the tip is current.
-        return;
-      }
+      // Healthy means data is landing, or there was nothing new to land. Reading the tip
+      // alone proves only that the source answers.
+      if (heights.length === 0 || result.synced > 0) this.markSuccess(Date.now());
 
       /*
        * Stop here if this pass had failures.
@@ -248,10 +288,20 @@ export class SyncService {
         return;
       }
 
-      await this.repairGaps();
-      await this.backfill();
+      const now = Date.now();
 
-      if (this.counters.cycles % 12 === 0) this.prune();
+      if (now - this.lastRepairAt >= REPAIR_INTERVAL_MS) {
+        this.lastRepairAt = now;
+        await this.repairGaps(floor);
+      }
+
+      // History can wait; the tip cannot. Backfill only once tip-following has caught up.
+      if (end >= tip) await this.backfill(tip);
+
+      if (now - this.lastPruneAt >= PRUNE_INTERVAL_MS) {
+        this.lastPruneAt = now;
+        this.prune();
+      }
     } catch (error) {
       if (error instanceof HttpError) {
         log.warn(
@@ -268,7 +318,6 @@ export class SyncService {
       this.counters.lastCycleMs = Date.now() - startedAt;
       this.counters.lastCycleAt = Date.now();
       this.counters.cycles++;
-      this.lastSuccessAt = Date.now();
       this.writer.setState('last_cycle_at', this.counters.lastCycleAt);
     }
   }
@@ -285,6 +334,7 @@ export class SyncService {
   ): Promise<{ synced: number; failed: number }> {
     if (heights.length === 0) return { synced: 0, failed: 0 };
 
+    const startedAt = Date.now();
     const fetched = await this.fetchAll(heights);
     const derived: DerivedBlock[] = [];
     const failures: { height: number; error: string; attempts?: number }[] = [];
@@ -299,12 +349,24 @@ export class SyncService {
 
       const block = deriveBlock(result.block, result.source, this.options.labels);
       logWarnings(this.options.log, block.warnings, height);
+
+      // A transfer the source could not detail. Committing the block would mark the height
+      // done with that buy or sell missing for good, so it is retried instead (#14).
+      if (block.incomplete) {
+        failures.push({ height, error: 'block has transfers the source could not detail' });
+        continue;
+      }
+
       derived.push(block);
     }
+
+    let committed = 0;
 
     if (derived.length > 0) {
       try {
         const written = this.writer.writeBatch(derived);
+        committed = derived.length;
+        this.recordThroughput(committed, startedAt);
         this.options.log.info(
           {
             phase,
@@ -331,9 +393,9 @@ export class SyncService {
 
     // Counted per phase: "heights recovered after a failure" and "heights added to extend
     // history" are different numbers and conflating them hides whether repair works.
-    if (phase === 'forward') this.counters.synced += derived.length;
-    else if (phase === 'repair') this.counters.repaired += derived.length;
-    else this.counters.backfilled += derived.length;
+    if (phase === 'forward') this.counters.synced += committed;
+    else if (phase === 'repair') this.counters.repaired += committed;
+    else this.counters.backfilled += committed;
 
     this.counters.failed += failures.length;
 
@@ -344,7 +406,7 @@ export class SyncService {
       );
     }
 
-    return { synced: derived.length, failed: failures.length };
+    return { synced: committed, failed: failures.length };
   }
 
   /** Fetch heights concurrently, never rejecting: failures come back as values. */
@@ -356,12 +418,20 @@ export class SyncService {
       { block: NormalisedBlock; source: string } | { error: string }
     >();
 
+    /*
+     * Concurrency is bounded by the limiter the *data source* applies, not by one applied here.
+     *
+     * `FailoverDataSource` already wraps every source it dispatches with the shared limiter,
+     * so wrapping again here would acquire two slots for one request. A limiter holds its
+     * slot while awaiting the work inside it, so `concurrency` callers would each take one
+     * slot and then wait forever for a second — a self-deadlock that hangs every cycle.
+     */
     const settled = await Promise.allSettled(
       heights.map((height) =>
-        this.options.dataSource.withFailover(async (source) => {
-          const block = await this.limiter.run(() => source.getBlock(height));
-          return { block, source: source.id };
-        })
+        this.options.dataSource.withFailover(async (source) => ({
+          block: await source.getBlock(height),
+          source: source.id
+        }))
       )
     );
 
@@ -387,17 +457,19 @@ export class SyncService {
    * so the hole was never filled and the readme's "gap prevention" was never implemented.
    * Nothing here discards a height; it is retried with backoff until it succeeds.
    */
-  private async repairGaps(): Promise<void> {
+  private async repairGaps(floor: number): Promise<void> {
     const now = Math.floor(Date.now() / 1000);
 
+    // Never below the retention floor: a repaired height there would be written only for
+    // the next prune to delete it again.
     const pending = this.options.db
-      .prepare<[number, number], { height: number; attempts: number }>(
+      .prepare<[number, number, number], { height: number; attempts: number }>(
         `SELECT height, attempts FROM missing_blocks
-         WHERE next_retry_at <= ?
+         WHERE next_retry_at <= ? AND height >= ?
          ORDER BY next_retry_at ASC
          LIMIT ?`
       )
-      .all(now, this.options.config.sync.batchSize);
+      .all(now, floor, this.options.config.sync.batchSize);
 
     if (pending.length === 0) return;
 
@@ -418,12 +490,11 @@ export class SyncService {
    * once at startup and never moved it, so a long-running service kept trying to fetch a
    * range below its own retention floor forever.
    */
-  private async backfill(): Promise<void> {
+  private async backfill(tip: number): Promise<void> {
     const { config } = this.options;
 
     if (config.sync.retentionDays <= 0) return;
 
-    const tip = await this.options.dataSource.withFailover((source) => source.getTip());
     const floor = Math.max(1, tip - retentionBlocks(config.sync.retentionDays));
     const base = this.base();
 
@@ -463,18 +534,20 @@ export class SyncService {
     let mismatch: number | null = null;
 
     for (const row of stored) {
-      const live = await this.options.dataSource
-        .withFailover((source) => source.getBlock(row.height))
-        .catch(() => null);
+      const live = await this.liveHash(row.height);
 
-      if (!live) continue; // Cannot verify; do not roll back on a fetch failure.
-      if (live.hash !== row.hash) {
+      if (live === null) continue; // Cannot verify; do not roll back on a fetch failure.
+      if (live !== row.hash) {
         mismatch = row.height;
         break;
       }
     }
 
     if (mismatch === null) return;
+
+    // The bottom of the window already differs, so the fork may be deeper than the window.
+    // Rolling back only the window would leave the stale blocks below it stored for good.
+    if (mismatch === stored[0]!.height) mismatch = await this.findForkPoint(mismatch);
 
     this.options.log.error(
       { from: mismatch, tip },
@@ -483,6 +556,47 @@ export class SyncService {
 
     this.writer.rollbackFrom(mismatch);
     this.counters.reorgedHeights += tip - mismatch + 1;
+  }
+
+  /**
+   * Walk down from a mismatching height to the first height the chain agrees with.
+   *
+   * Stops, keeping the deepest confirmed mismatch, when a height cannot be verified or
+   * nothing is stored below: rolling back further on a guess would destroy good data.
+   */
+  private async findForkPoint(from: number): Promise<number> {
+    let fork = from;
+    const lowest = Math.max(1, from - MAX_FORK_SEARCH);
+
+    for (let height = from - 1; height >= lowest; height--) {
+      const stored = this.options.db
+        .prepare<[number], { hash: string }>(`SELECT hash FROM blocks WHERE height = ?`)
+        .get(height);
+      if (!stored) break;
+
+      const live = await this.liveHash(height);
+      if (live === null || live === stored.hash) break;
+
+      fork = height;
+    }
+
+    return fork;
+  }
+
+  /**
+   * The chain's hash at a height, or null when it cannot be read.
+   *
+   * Uses the source's cheap hash lookup when it has one; otherwise a full block download,
+   * which costs a rate-limited source far more for the same answer.
+   */
+  private liveHash(height: number): Promise<string | null> {
+    return this.options.dataSource
+      .withFailover((source) =>
+        source.getBlockHash
+          ? source.getBlockHash(height)
+          : source.getBlock(height).then((block) => block.hash)
+      )
+      .catch(() => null);
   }
 
   /** Prune on demand, e.g. from `POST /api/admin/retention`. */
@@ -508,11 +622,12 @@ export class SyncService {
 
   private recordThroughput(blocks: number, startedAt: number): void {
     const elapsedMinutes = Math.max((Date.now() - startedAt) / 60_000, 1 / 60);
-    const recent = this.counters.recentBlocks;
+    const samples = this.counters.throughput;
 
-    recent.push(blocks);
-    // Keep two hours of samples so the rate stays meaningful after an idle period.
-    while (recent.length > 240) recent.shift();
+    samples.push({ startedAt, blocks });
+    while (samples.length > 0 && samples[0]!.startedAt < Date.now() - THROUGHPUT_WINDOW_MS) {
+      samples.shift();
+    }
 
     this.options.log.debug(
       { blocks, blocksPerMinute: Number((blocks / elapsedMinutes).toFixed(1)) },
@@ -520,9 +635,10 @@ export class SyncService {
     );
   }
 
-  /** Record a cycle that completed without a transport failure, for the staleness check. */
+  /** Record that ingestion is working, for the staleness check behind `/api/health`. */
   markSuccess(at: number): void {
     this.lastSuccessAt = at;
+    this.options.onSuccess?.(at);
   }
 
   /** Wait for an in-flight cycle. Used on shutdown. */

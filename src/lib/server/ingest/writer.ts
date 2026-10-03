@@ -17,6 +17,16 @@ import type { Logger } from 'pino';
 import type { Db } from '../db/database.js';
 import type { DerivedBlock } from './derive.js';
 
+/**
+ * Below this many pruned blocks, a database not yet on incremental auto-vacuum keeps its
+ * free pages for reuse rather than running a full VACUUM. A week of blocks; the steady-state
+ * prune is a few hundred, and rewriting a multi-GB file for that blocks the event loop.
+ */
+const FULL_VACUUM_MIN_BLOCKS = 7 * 2_880;
+
+/** `PRAGMA auto_vacuum` reports 2 for INCREMENTAL. */
+const AUTO_VACUUM_INCREMENTAL = 2;
+
 const SQL = {
   upsertBlock: `
     INSERT INTO blocks (height, hash, prev_hash, time, tx_count, source)
@@ -111,7 +121,7 @@ const SQL = {
   deleteFrom: (table: 'blocks' | 'tx_deltas' | 'flows' | 'node_rewards') =>
     `DELETE FROM ${table} WHERE height >= ?`,
 
-  deleteBefore: (table: 'blocks' | 'tx_deltas' | 'flows' | 'node_rewards') =>
+  deleteBefore: (table: 'blocks' | 'tx_deltas' | 'flows' | 'node_rewards' | 'missing_blocks') =>
     `DELETE FROM ${table} WHERE height < ?`
 };
 
@@ -147,7 +157,10 @@ export class BlockWriter {
     clearMissing: Stmt;
     setState: Stmt;
     deleteFrom: Record<'blocks' | 'tx_deltas' | 'flows' | 'node_rewards', Stmt>;
-    deleteBefore: Record<'blocks' | 'tx_deltas' | 'flows' | 'node_rewards', Stmt>;
+    deleteBefore: Record<
+      'blocks' | 'tx_deltas' | 'flows' | 'node_rewards' | 'missing_blocks',
+      Stmt
+    >;
     commitBatch: (blocks: DerivedBlock[]) => void;
     commitMissing: (
       failures: { height: number; error: string; attempts: number; retryAt: number }[]
@@ -177,7 +190,8 @@ export class BlockWriter {
         blocks: prepare(SQL.deleteBefore('blocks')),
         tx_deltas: prepare(SQL.deleteBefore('tx_deltas')),
         flows: prepare(SQL.deleteBefore('flows')),
-        node_rewards: prepare(SQL.deleteBefore('node_rewards'))
+        node_rewards: prepare(SQL.deleteBefore('node_rewards')),
+        missing_blocks: prepare(SQL.deleteBefore('missing_blocks'))
       },
       commitBatch: db.transaction((blocks: DerivedBlock[]) => {
         for (const block of blocks) {
@@ -325,21 +339,50 @@ export class BlockWriter {
    *
    * @param floor the oldest height to **keep**; everything below it is deleted.
    */
-  pruneBefore(floor: number): { blocks: number; deltas: number; flows: number } {
+  pruneBefore(floor: number): {
+    blocks: number;
+    deltas: number;
+    flows: number;
+    nodeRewards: number;
+    missing: number;
+  } {
     const run = this.db.transaction(() => ({
       deltas: this.statements.deleteBefore.tx_deltas.run(floor).changes,
       flows: this.statements.deleteBefore.flows.run(floor).changes,
+      // Rewards are keyed by height precisely so they can be pruned with their block.
+      nodeRewards: this.statements.deleteBefore.node_rewards.run(floor).changes,
+      // A missing height below the floor is no longer wanted. Left in place it would be
+      // retried forever, re-written on success, and pruned again on the next pass.
+      missing: this.statements.deleteBefore.missing_blocks.run(floor).changes,
       blocks: this.statements.deleteBefore.blocks.run(floor).changes
     }));
 
     const result = run();
 
-    // Reclaim pages once, at the end of a maintenance pass. VACUUM cannot run inside a
-    // transaction and cannot run while WAL is being written.
-    this.db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
-    this.db.exec('VACUUM');
+    if (result.blocks > 0) this.reclaim(result.blocks);
 
     return result;
+  }
+
+  /**
+   * Hand freed pages back to the OS without rewriting the database.
+   *
+   * On incremental auto-vacuum (every database created by this version) that costs time in
+   * proportion to the pages freed, not to the size of the file. An older file is only
+   * VACUUMed after a large prune, which also switches it to incremental mode for good;
+   * after a small one its free pages are simply reused by the next inserts.
+   */
+  private reclaim(prunedBlocks: number): void {
+    if (this.db.pragma('auto_vacuum', { simple: true }) === AUTO_VACUUM_INCREMENTAL) {
+      this.db.pragma('incremental_vacuum');
+      return;
+    }
+
+    if (prunedBlocks < FULL_VACUUM_MIN_BLOCKS) return;
+
+    // VACUUM cannot run inside a transaction and cannot run while WAL is being written.
+    this.db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+    this.db.exec('VACUUM');
   }
 }
 

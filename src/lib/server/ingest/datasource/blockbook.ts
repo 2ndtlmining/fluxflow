@@ -95,6 +95,20 @@ export class BlockbookDataSource implements DataSource {
     return height;
   }
 
+  /** `/block-index/:height` answers with just the hash: one tiny request, no tx pages. */
+  async getBlockHash(height: number): Promise<string> {
+    const index = await httpJson<{ blockHash?: string }>(
+      this.url(`/block-index/${height}`),
+      this.options.http
+    );
+
+    if (typeof index.blockHash !== 'string' || index.blockHash === '') {
+      throw new Error(`Blockbook block-index has no blockHash: ${JSON.stringify(index)}`);
+    }
+
+    return index.blockHash;
+  }
+
   async getBlock(height: number): Promise<NormalisedBlock> {
     const block = await httpJson<BlockbookBlock>(this.url(`/block/${height}`), this.options.http);
 

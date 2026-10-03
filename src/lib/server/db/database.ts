@@ -16,6 +16,11 @@ export type Db = Database.Database;
 
 /** Pragmas applied to every connection, in order. */
 function applyPragmas(db: Db, config: Config): void {
+  // Incremental auto-vacuum, so retention can hand freed pages back to the OS a few at a
+  // time instead of with a full VACUUM that rewrites the whole file while blocking the
+  // event loop. Takes effect only on a database with no tables yet; an existing file
+  // switches over on its next full VACUUM (see `BlockWriter.pruneBefore`).
+  db.pragma('auto_vacuum = INCREMENTAL');
   // WAL: one writer, many concurrent readers.
   db.pragma('journal_mode = WAL');
   // NORMAL is the right trade-off under WAL: durable across process crashes, only at

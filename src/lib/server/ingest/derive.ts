@@ -62,6 +62,12 @@ export interface DerivedBlock {
   readonly nodeRewards: NodeRewardRow[];
   /** Non-fatal problems worth logging: conservation violations, incomplete transfers. */
   readonly warnings: string[];
+  /**
+   * True when a transfer could not be detailed. Such a block must not be committed: its
+   * block row would mark the height done with a buy or sell missing for good (#14), so the
+   * pipeline records the height as missing and retries it instead.
+   */
+  readonly incomplete: boolean;
 }
 
 /**
@@ -79,11 +85,14 @@ export function deriveBlock(
   const flows: FlowRow[] = [];
   const rewardTotals = new Map<string, { day: number; count: number; sat: number }>();
   const warnings: string[] = [];
+  let incomplete = false;
+
   for (const tx of block.transactions) {
     if (!tx.complete) {
       // The indexer declined to detail this transfer. Recording nothing here and flagging
       // the block means the pipeline retries it rather than writing a half block.
       warnings.push(`tx ${tx.txid || '(unknown)'}: incomplete, skipped`);
+      incomplete = true;
       continue;
     }
 
@@ -129,7 +138,8 @@ export function deriveBlock(
       rewardCount: totals.count,
       sat: totals.sat
     })),
-    warnings
+    warnings,
+    incomplete
   };
 }
 
@@ -214,13 +224,22 @@ function pickFunder(
   return [...(sufficient.length > 0 ? sufficient : pool)].sort((a, b) => a.sat - b.sat)[0] ?? null;
 }
 
-/** The exchange name for a flow: the source when buying, the destination when selling. */
+/**
+ * The exchange name for a flow: the source when buying, the destination when selling.
+ *
+ * Only an *exchange* label counts. A named node operator or Foundation wallet is not an
+ * exchange, and putting its name in this column credited a sale to Kucoin as a sale to
+ * "Girder Works" — and dropped it from Kucoin's totals.
+ */
 function exchangeName(
   from: { address: string },
   to: { address: string },
   resolve: Resolver
 ): string | null {
-  return resolve.nameOf(from.address) ?? resolve.nameOf(to.address) ?? null;
+  const exchangeOf = (address: string): string | null =>
+    resolve.kindOf(address) === 'exchange' ? resolve.nameOf(address) : null;
+
+  return exchangeOf(from.address) ?? exchangeOf(to.address);
 }
 
 export function classifyFlow(fromKind: AddressKind, toKind: AddressKind): FlowRow['flowType'] {

@@ -53,6 +53,17 @@ describe('openDatabase', () => {
     fileDb.close();
   });
 
+  it('uses incremental auto-vacuum, so retention never needs a full VACUUM', () => {
+    const fileDb = openDatabase({
+      config: testConfig({ DATABASE_PATH: tempPath() }),
+      log: { debug: () => {}, info: () => {}, error: () => {} } as never
+    });
+
+    // 2 = INCREMENTAL. It only takes effect if set before the first table is created.
+    expect(fileDb.pragma('auto_vacuum', { simple: true })).toBe(2);
+    fileDb.close();
+  });
+
   it('honours SQLITE_BUSY_TIMEOUT_MS', () => {
     const slow = openDatabase({
       config: testConfig({ SQLITE_BUSY_TIMEOUT_MS: '5000' }),

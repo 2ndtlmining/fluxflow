@@ -208,6 +208,43 @@ describe('deriveFlows', () => {
   });
 });
 
+describe('exchange attribution', () => {
+  const NAMED: Resolver = {
+    kindOf: (address) =>
+      (({ t1kucoin: 'exchange', t1girder: 'node_operator', t1foundation1: 'foundation' })[
+        address
+      ] as never) ?? 'unknown',
+    nameOf: (address) =>
+      ({ t1kucoin: 'Kucoin', t1girder: 'Girder Works', t1foundation1: 'Flux Foundation' })[
+        address
+      ] ?? null
+  };
+
+  it('credits a sale to the exchange, not to a named sender of another kind', () => {
+    const [flow] = deriveFlows(
+      transfer('tx1', [input('t1girder', 10 * SATS)], [output('t1kucoin', 10 * SATS - 1_000)]),
+      1,
+      NOW,
+      NAMED
+    );
+
+    expect(flow!.flowType).toBe('selling');
+    expect(flow!.exchange).toBe('Kucoin');
+  });
+
+  it('carries no exchange for a foundation transfer to a stranger', () => {
+    const [flow] = deriveFlows(
+      transfer('tx1', [input('t1foundation1', 10 * SATS)], [output('t1someone', 10 * SATS)]),
+      1,
+      NOW,
+      NAMED
+    );
+
+    expect(flow!.flowType).toBe('p2p');
+    expect(flow!.exchange).toBeNull();
+  });
+});
+
 describe('deriveBlock', () => {
   it('records the block header with its source', () => {
     const derived = deriveBlock(
@@ -313,6 +350,20 @@ describe('deriveBlock', () => {
     expect(derived.flows).toHaveLength(0);
     expect(derived.warnings).toHaveLength(1);
     expect(derived.warnings[0]).toMatch(/incomplete/);
+  });
+
+  it('marks a block with an incomplete transfer as incomplete, so it is not committed', () => {
+    const incomplete: NormalisedTx = {
+      txid: 'tx1',
+      kind: 'transfer',
+      inputs: [],
+      outputs: [],
+      complete: false
+    };
+
+    // Committing it would mark the height done with a transfer missing for good (#14).
+    expect(deriveBlock(block([incomplete]), 'flux-indexer', KEEP).incomplete).toBe(true);
+    expect(deriveBlock(block([]), 'flux-indexer', KEEP).incomplete).toBe(false);
   });
 
   it('warns when a transaction does not conserve value', () => {
