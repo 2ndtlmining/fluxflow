@@ -94,3 +94,53 @@ const FLOW_LABELS: Record<FlowType, string> = {
 export function flowLabel(flowType: string): string {
   return FLOW_LABELS[flowType as FlowType] ?? flowType;
 }
+
+const SOURCE_TEXT: Record<string, string> = {
+  node_list: 'Runs nodes on the current FluxNode list',
+  rewards: 'Has received FluxNode rewards',
+  forwarding: 'Regularly receives funds forwarded from node-reward wallets',
+  cluster: 'Spends together with a labelled wallet (shared inputs)',
+  config: "Listed in FluxFlow's address labels",
+  manual: 'Labelled by hand',
+  deposit: 'Forwards everything it receives to one exchange (a deposit address)'
+};
+
+/** Plain-language reason for a label, from its source. */
+export function sourceText(source: string | null | undefined): string {
+  if (!source) return 'No label on record';
+  return SOURCE_TEXT[source] ?? `Labelled from ${source.replace(/_/g, ' ')}`;
+}
+
+const EVIDENCE_TEXT: Record<string, (value: unknown) => string | null> = {
+  nodes: (v) => `${formatCount(Number(v))} nodes`,
+  tiers: (v) =>
+    v && typeof v === 'object'
+      ? Object.entries(v as Record<string, number>)
+          .map(([tier, n]) => `${n} ${tier.charAt(0)}${tier.slice(1).toLowerCase()}`)
+          .join(', ')
+      : null,
+  rewards: (v) => `${formatCount(Number(v))} rewards received`,
+  lastRewardHeight: (v) => `last reward at block ${formatCount(Number(v))}`,
+  forwards: (v) => `${formatCount(Number(v))} forwards`,
+  sharedInputs: (v) => `${formatCount(Number(v))} shared-input transactions`
+};
+
+/**
+ * Evidence objects differ by source; show the parts people can read and skip internals
+ * such as `method`, which `sourceText` already explains.
+ */
+export function evidenceText(evidence: Record<string, unknown> | null | undefined): string[] {
+  if (!evidence) return [];
+  const out: string[] = [];
+  for (const [key, value] of Object.entries(evidence)) {
+    if (key === 'method' || value === null || value === undefined) continue;
+    const describe = EVIDENCE_TEXT[key];
+    const text = describe
+      ? describe(value)
+      : typeof value === 'number' || typeof value === 'string'
+        ? `${key.replace(/([A-Z])/g, ' $1').toLowerCase()}: ${value}`
+        : null;
+    if (text) out.push(text);
+  }
+  return out;
+}

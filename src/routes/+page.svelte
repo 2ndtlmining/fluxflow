@@ -18,17 +18,36 @@
   import {
     boardPath,
     fetchBoard,
+    fetchFoundation,
+    fetchHops,
     fetchSeries,
     fetchSummary,
+    foundationPath,
+    hopsPath,
     seriesPath,
     summaryPath
   } from '$lib/client/endpoints';
   import { kindLabel } from '$lib/client/format';
   import { live } from '$lib/client/live.svelte';
-  import type { FlowSummary, Leaderboard as Board, Series } from '$lib/client/types';
-  import { readState, writeState, type BoardKind, type TxFilters } from '$lib/client/urlState';
+  import type {
+    ExchangeHop,
+    FlowSummary,
+    Foundation,
+    HopsResponse,
+    Leaderboard as Board,
+    Series
+  } from '$lib/client/types';
+  import {
+    readState,
+    writeState,
+    type BoardKind,
+    type Certainty,
+    type DashboardState
+  } from '$lib/client/urlState';
   import type { PeriodId } from '$lib/shared/constants';
   import Diverging from '$lib/ui/Diverging.svelte';
+  import FoundationPanel from '$lib/ui/FoundationPanel.svelte';
+  import Hops from '$lib/ui/Hops.svelte';
   import Leaderboard from '$lib/ui/Leaderboard.svelte';
   import NetBalance from '$lib/ui/NetBalance.svelte';
   import PeriodTabs from '$lib/ui/PeriodTabs.svelte';
@@ -43,6 +62,8 @@
   let sellers = $state<Board | undefined>();
   let buyers = $state<Board | undefined>();
   let series = $state<Series | undefined>();
+  let hops = $state<HopsResponse | undefined>();
+  let foundation = $state<Foundation | undefined>();
   let error = $state<string | null>(null);
 
   const stale = $derived(summary !== undefined && summary.period !== view.period);
@@ -52,13 +73,21 @@
    * headline figures down with it. Only the summary's failure is reported, since everything
    * else on the page is read in its light.
    */
-  async function load(period: PeriodId, who: BoardKind, signal: AbortSignal): Promise<void> {
-    const [nextSummary, nextSellers, nextBuyers, nextSeries] = await Promise.allSettled([
-      fetchSummary(period, signal),
-      fetchBoard(period, 'sellers', who, signal),
-      fetchBoard(period, 'buyers', who, signal),
-      fetchSeries(period, signal)
-    ]);
+  async function load(
+    period: PeriodId,
+    who: BoardKind,
+    sure: Certainty,
+    signal: AbortSignal
+  ): Promise<void> {
+    const [nextSummary, nextSellers, nextBuyers, nextSeries, nextHops, nextFoundation] =
+      await Promise.allSettled([
+        fetchSummary(period, signal),
+        fetchBoard(period, 'sellers', who, sure, signal),
+        fetchBoard(period, 'buyers', who, sure, signal),
+        fetchSeries(period, signal),
+        fetchHops(period, signal),
+        fetchFoundation(period, signal)
+      ]);
     if (signal.aborted) return;
 
     if (nextSummary.status === 'fulfilled') {
@@ -70,24 +99,29 @@
     if (nextSellers.status === 'fulfilled') sellers = nextSellers.value;
     if (nextBuyers.status === 'fulfilled') buyers = nextBuyers.value;
     series = nextSeries.status === 'fulfilled' ? nextSeries.value : undefined;
+    // A server without the intelligence endpoints simply shows no hops or Foundation panel.
+    hops = nextHops.status === 'fulfilled' ? nextHops.value : undefined;
+    foundation = nextFoundation.status === 'fulfilled' ? nextFoundation.value : undefined;
   }
 
   $effect(() => live.start());
 
   $effect(() => {
-    const { period, who } = view;
+    const { period, who, sure } = view;
     void live.version;
     const controller = new AbortController();
 
     // Show what we already know for this view at once; keep the old figures otherwise.
     untrack(() => {
       summary = peek<FlowSummary>(summaryPath(period)) ?? summary;
-      sellers = peek<Board>(boardPath(period, 'sellers', who)) ?? sellers;
-      buyers = peek<Board>(boardPath(period, 'buyers', who)) ?? buyers;
+      sellers = peek<Board>(boardPath(period, 'sellers', who, sure)) ?? sellers;
+      buyers = peek<Board>(boardPath(period, 'buyers', who, sure)) ?? buyers;
       series = peek<Series>(seriesPath(period)) ?? series;
+      hops = peek<HopsResponse>(hopsPath(period)) ?? hops;
+      foundation = peek<Foundation>(foundationPath(period)) ?? foundation;
     });
 
-    void load(period, who, controller.signal);
+    void load(period, who, sure, controller.signal);
     return () => controller.abort();
   });
 
@@ -96,22 +130,52 @@
     return query ? `/?${query}` : '/';
   }
 
-  function navigate(patch: { who?: BoardKind; filters?: TxFilters }): void {
+  function navigate(patch: Partial<Omit<DashboardState, 'period'>>): void {
     const query = writeState({ ...view, ...patch });
     void goto(query ? `/?${query}` : '/', { keepFocus: true, noScroll: true, replaceState: true });
   }
+
+  /** Hop wallets, for marking them in the leaderboards. */
+  const hopByWallet = $derived(
+    new Map<string, ExchangeHop>(
+      (hops?.period === view.period ? hops.hops : []).map((hop) => [hop.address, hop])
+    )
+  );
+
+  /**
+   * The hop list is complete when it has as many entries as the summary counts; only then can
+   * the per-exchange rows be adjusted to match the adjusted headline.
+   */
+  const hopsComplete = $derived(
+    hops !== undefined && hops.hops.length === (summary?.exchangeHops?.count ?? -1)
+  );
+  const excludeHops = $derived(view.noHops && summary?.adjusted !== undefined);
 
   const exchangeRows = $derived.by((): DivergingRow[] => {
     const names = new Set([
       ...Object.keys(summary?.buying?.byExchange ?? {}),
       ...Object.keys(summary?.selling?.byExchange ?? {})
     ]);
+    const lessBuy = new Map<string, number>();
+    const lessSell = new Map<string, number>();
+    if (excludeHops && hopsComplete && hops) {
+      for (const hop of hops.hops) {
+        lessBuy.set(hop.fromExchange, (lessBuy.get(hop.fromExchange) ?? 0) + hop.withdrawn);
+        lessSell.set(hop.toExchange, (lessSell.get(hop.toExchange) ?? 0) + hop.amount);
+      }
+    }
     return [...names]
       .map((name) => ({
         key: name,
         label: name,
-        buy: summary?.buying?.byExchange[name]?.total ?? 0,
-        sell: summary?.selling?.byExchange[name]?.total ?? 0
+        buy: Math.max(
+          0,
+          (summary?.buying?.byExchange[name]?.total ?? 0) - (lessBuy.get(name) ?? 0)
+        ),
+        sell: Math.max(
+          0,
+          (summary?.selling?.byExchange[name]?.total ?? 0) - (lessSell.get(name) ?? 0)
+        )
       }))
       .sort((a, b) => b.buy + b.sell - (a.buy + a.sell));
   });
@@ -146,7 +210,18 @@
     {/if}
   </div>
 
-  <NetBalance {summary} period={summary?.period ?? view.period} />
+  <NetBalance {summary} period={summary?.period ?? view.period} noHops={view.noHops} />
+
+  {#if summary?.adjusted && (summary.exchangeHops?.count ?? 0) > 0}
+    <label class="toggle">
+      <input
+        type="checkbox"
+        checked={view.noHops}
+        onchange={(event) => navigate({ noHops: event.currentTarget.checked })}
+      />
+      <span>Exclude exchange-to-exchange hops</span>
+    </label>
+  {/if}
 
   <section class="block" aria-label="Leaderboards">
     <div class="board-filter">
@@ -162,12 +237,34 @@
           <option value="foundation">Flux Foundation</option>
         </select>
       </label>
+      {#if view.who === 'node_operator' || view.who === 'foundation'}
+        <label>
+          <span>How sure</span>
+          <select
+            value={view.sure}
+            onchange={(event) => navigate({ sure: event.currentTarget.value as Certainty })}
+          >
+            <option value="">All labels</option>
+            <option value="likely">Likely or confirmed</option>
+            <option value="confirmed">Confirmed only</option>
+          </select>
+        </label>
+      {/if}
     </div>
     <div class="boards" class:dim={boardsStale}>
-      <Leaderboard side="selling" rows={sellers?.sellers} total={sellers?.total} />
-      <Leaderboard side="buying" rows={buyers?.buyers} total={buyers?.total} />
+      <Leaderboard
+        side="selling"
+        rows={sellers?.sellers}
+        total={sellers?.total}
+        hops={hopByWallet}
+      />
+      <Leaderboard side="buying" rows={buyers?.buyers} total={buyers?.total} hops={hopByWallet} />
     </div>
   </section>
+
+  {#if foundation && foundation.wallets.length > 0}
+    <FoundationPanel data={foundation} period={view.period} />
+  {/if}
 
   <Watchlist />
 
@@ -176,8 +273,8 @@
       <header>
         <h2 id="by-exchange">By exchange</h2>
         <p class="muted">
-          <span class="sell">Deposits</span> to the left, <span class="buy">withdrawals</span> to the
-          right, net on the end.
+          <span class="sell">Deposits</span> to the left, <span class="buy">withdrawals</span> to
+          the right, net on the end{#if excludeHops && hopsComplete}, with exchange hops left out{/if}.
         </p>
       </header>
       <Diverging rows={exchangeRows} caption="Deposits and withdrawals by exchange" />
@@ -192,6 +289,10 @@
       </header>
       <Diverging rows={kindRows} caption="Deposits and withdrawals by kind of wallet" />
     </section>
+  {/if}
+
+  {#if hops && hops.period === view.period && hops.hops.length > 0}
+    <Hops data={hops} />
   {/if}
 
   {#if series && series.points.length > 0}
@@ -242,6 +343,28 @@
     display: grid;
     grid-template-columns: 1fr 1fr;
     gap: 2.5rem;
+  }
+
+  .board-filter {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+  }
+
+  .toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    width: fit-content;
+    margin-top: -1.5rem;
+    font-size: var(--step--1);
+    cursor: pointer;
+  }
+
+  .toggle input {
+    width: 1.1rem;
+    height: 1.1rem;
+    accent-color: var(--brand);
   }
 
   .board-filter label {

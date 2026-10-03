@@ -41,6 +41,10 @@ export interface FlowSummary {
   /** Totals by counterparty kind, keyed `unknown`, `node_operator`, `foundation`. */
   readonly byType?: { buying: Record<string, number>; selling: Record<string, number> };
   /** The equally long window before this one, for comparisons. */
+  /** Exchange-to-exchange hops in the period, counted once each way in the totals (#20). */
+  readonly exchangeHops?: { count: number; buyingExcluded: number; sellingExcluded: number };
+  /** The headline totals with those hops left out. */
+  readonly adjusted?: { buying: number; selling: number; netFlow: number };
   readonly previousPeriod?: {
     readonly from: number;
     readonly to: number;
@@ -83,6 +87,89 @@ export interface Counterparty {
   /** The same wallet and direction over the window before this one. */
   readonly previousTotal: number;
   readonly change: number;
+  /** How sure the label behind `kind` is (#19); null for an unlabelled wallet. */
+  readonly confidence: number | null;
+  readonly level: ConfidenceLevel | null;
+  /** Where the label came from, e.g. `node_list`, `forwarding`, `config`. */
+  readonly labelSource: string | null;
+}
+
+/** Confidence bands (#19): confirmed ≥ 0.95, likely ≥ 0.7, possible ≥ 0.45. */
+export type ConfidenceLevel = 'confirmed' | 'likely' | 'possible' | 'candidate';
+
+export interface WalletLabel {
+  readonly kind: string;
+  readonly name: string | null;
+  readonly subLabel?: string | null;
+  readonly source: string;
+  readonly confidence: number;
+  readonly level?: ConfidenceLevel;
+  /** Whether this label is the one that classifies the wallet's flows. */
+  readonly applied?: boolean;
+  readonly validFrom?: number | null;
+  readonly validTo?: number | null;
+  readonly evidence?: Record<string, unknown> | null;
+}
+
+/** A withdrawal re-deposited to another exchange by the same wallet soon after (#20). */
+export interface ExchangeHop {
+  readonly address: string;
+  readonly fromExchange: string;
+  readonly toExchange: string;
+  /** FLUX withdrawn from `fromExchange`. */
+  readonly withdrawn: number;
+  /** FLUX deposited to `toExchange`. */
+  readonly amount: number;
+  readonly blocksApart: number;
+  readonly buyTxid: string;
+  readonly sellTxid: string;
+  readonly sellHeight: number;
+  readonly sellTime: number;
+}
+
+export interface HopsResponse {
+  readonly period: PeriodId;
+  readonly summary: { count: number; buyingExcluded: number; sellingExcluded: number };
+  readonly hops: ExchangeHop[];
+}
+
+export interface FoundationWallet {
+  readonly address: string;
+  readonly name: string | null;
+  readonly subLabel: string | null;
+  /** Null when the server has no node with an address index to ask. */
+  readonly balance: number | null;
+  readonly inflow: number;
+  readonly outflow: number;
+  readonly net: number;
+}
+
+export interface FoundationMovement {
+  readonly txid: string;
+  readonly height: number;
+  readonly time: number;
+  /** Signed: negative left the Foundation, positive arrived. */
+  readonly amount: number;
+  readonly counterparty: string;
+  readonly counterpartyName: string | null;
+  readonly counterpartyKind: AddressKind;
+  readonly wallets: string[];
+}
+
+export interface Foundation {
+  readonly period: PeriodId;
+  readonly wallets: FoundationWallet[];
+  readonly totals: {
+    readonly balance: number | null;
+    readonly inflow: number;
+    readonly outflow: number;
+    readonly net: number;
+    readonly internalTransfers: number;
+    readonly internalVolume: number;
+  };
+  readonly series: { time: number; net: number; balance: number | null }[];
+  readonly recent: FoundationMovement[];
+  readonly balancesAsOf: number | null;
 }
 
 export interface Leaderboard {
@@ -112,7 +199,12 @@ export interface WalletProfile {
   readonly address: string;
   readonly kind: AddressKind;
   readonly name: string | null;
-  readonly labels: { kind: string; name: string | null; source: string; confidence: number }[];
+  /** The label that classifies this wallet's flows, if any. */
+  readonly label?: WalletLabel | null;
+  /** Every label on record, applied or not. */
+  readonly labels: WalletLabel[];
+  readonly cluster?: { clusterId: string; size: number; sample: string[] } | null;
+  readonly candidates?: WalletLabel[];
   readonly totals: {
     readonly bought: number;
     readonly sold: number;

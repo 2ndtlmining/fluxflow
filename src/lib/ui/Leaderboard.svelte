@@ -13,7 +13,8 @@
     shortAddress,
     timeAgo
   } from '$lib/client/format';
-  import type { Counterparty } from '$lib/client/types';
+  import type { Counterparty, ExchangeHop } from '$lib/client/types';
+  import ConfidenceBadge from './ConfidenceBadge.svelte';
 
   interface Props {
     side: 'selling' | 'buying';
@@ -21,9 +22,11 @@
     /** The direction's total for the period, for the "share" figure. */
     total?: number;
     error?: string | null;
+    /** Wallets that moved FLUX from one exchange to another in this period (#20). */
+    hops?: ReadonlyMap<string, ExchangeHop>;
   }
 
-  let { side, rows, total = 0, error = null }: Props = $props();
+  let { side, rows, total = 0, error = null, hops }: Props = $props();
 
   const title = $derived(side === 'selling' ? "Who's selling" : "Who's buying");
   const explain = $derived(
@@ -37,9 +40,9 @@
 
   function exchangesText(row: Counterparty): string {
     if (row.exchanges.length === 0) return '';
-    if (row.exchanges.length === 1) return `, via ${row.exchanges[0]!.name}`;
+    if (row.exchanges.length === 1) return `via ${row.exchanges[0]!.name}`;
     // Amounts per exchange only when the server sent them.
-    return `, ${row.exchanges
+    return `${row.exchanges
       .map((entry) =>
         Number.isFinite(entry.total) ? `${entry.name} ${formatFlux(entry.total)}` : entry.name
       )
@@ -81,10 +84,31 @@
               {row.name ?? shortAddress(row.address)}
             </a>
             <span class="meta muted">
-              {kindLabel(row.kind)}{exchangesText(row)}{#if row.lastSeen}, last {timeAgo(
-                  row.lastSeen,
-                  now
-                )}{/if}
+              <span class="kind"
+                >{kindLabel(row.kind)}<ConfidenceBadge
+                  level={row.level}
+                  source={row.labelSource}
+                  confidence={row.confidence}
+                /></span
+              >
+              {#if hops?.has(row.address)}
+                {@const hop = hops.get(row.address)!}
+                <span
+                  class="hop"
+                  title="Withdrew {formatFlux(
+                    hop.withdrawn
+                  )} from {hop.fromExchange} and deposited {formatFlux(
+                    hop.amount
+                  )} to {hop.toExchange} {hop.blocksApart} blocks later"
+                  >hop {hop.fromExchange} to {hop.toExchange}</span
+                >
+              {/if}
+              <span class="rest"
+                >{exchangesText(row)}{#if row.lastSeen}, last {timeAgo(
+                    row.lastSeen,
+                    now
+                  )}{/if}</span
+              >
             </span>
           </span>
           <span
@@ -169,10 +193,41 @@
     white-space: nowrap;
   }
 
+  /* Only the trailing details truncate; the kind and its badge must stay whole, and the
+     badge's popover must not be clipped by an overflow box. */
   .meta {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 0 0.4rem;
+    min-width: 0;
     font-size: var(--step--1);
+  }
+
+  .kind {
+    white-space: nowrap;
+  }
+
+  .rest {
+    min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* Shrinks with an ellipsis rather than pushing into the amount column on a phone; the
+     full route is in its title. */
+  .hop {
+    flex: 0 1 auto;
+    min-width: 0;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    padding: 0 0.4rem;
+    border-radius: 999px;
+    background: var(--surface-2);
+    color: var(--text);
+    font-size: 0.7rem;
     white-space: nowrap;
   }
 

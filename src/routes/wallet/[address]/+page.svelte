@@ -10,6 +10,8 @@
   import { ApiError, isAbort } from '$lib/client/api';
   import { fetchWallet, fetchWalletEvents, isAddress } from '$lib/client/endpoints';
   import {
+    evidenceText,
+    sourceText,
     formatCount,
     formatFlux,
     formatFluxFull,
@@ -24,6 +26,7 @@
   import Diverging from '$lib/ui/Diverging.svelte';
   import EventRows from '$lib/ui/EventRows.svelte';
   import SeriesChart from '$lib/ui/SeriesChart.svelte';
+  import ConfidenceBadge from '$lib/ui/ConfidenceBadge.svelte';
 
   const address = $derived(page.params.address ?? '');
   const valid = $derived(isAddress(address));
@@ -197,7 +200,14 @@
       <dl class="facts">
         <div>
           <dt>Kind</dt>
-          <dd class="small-dd">{kindLabel(profile.kind)}</dd>
+          <dd class="small-dd">
+            {kindLabel(profile.kind)}<ConfidenceBadge
+              level={profile.label?.level ?? null}
+              source={profile.label?.source ?? null}
+              confidence={profile.label?.confidence ?? null}
+              evidence={profile.labels.find((l) => l.applied)?.evidence ?? null}
+            />
+          </dd>
         </div>
         <div>
           <dt>Deposited to exchanges</dt>
@@ -240,19 +250,61 @@
         </p>
       {/if}
 
-      {#if profile.labels.length > 0}
+      {#if profile.labels.length > 0 || (profile.candidates?.length ?? 0) > 0 || profile.cluster}
         <section aria-labelledby="labels-heading" class="block">
           <h2 id="labels-heading">Why it's labelled this way</h2>
           <ul class="labels">
             {#each profile.labels as label (`${label.kind}:${label.source}`)}
-              <li>
-                {kindLabel(label.kind)}{label.name ? `: ${label.name}` : ''}
+              <li class:applied={label.applied}>
+                <span class="label-head">
+                  {kindLabel(label.kind)}{label.name ? `: ${label.name}` : ''}{label.subLabel
+                    ? ` (${label.subLabel})`
+                    : ''}
+                  {#if label.level}<span class="level {label.level}">{label.level}</span>{/if}
+                  {#if label.applied}<span class="muted">used for this wallet's flows</span>{/if}
+                </span>
+                <span class="muted">{sourceText(label.source)}.</span>
+                {#if evidenceText(label.evidence).length > 0}
+                  <span class="muted small">{evidenceText(label.evidence).join(', ')}.</span>
+                {/if}
+                {#if label.validFrom || label.validTo}
+                  <span class="muted small">
+                    {label.validFrom ? `From ${formatTime(label.validFrom)}` : 'Until'}
+                    {label.validTo
+                      ? `${label.validFrom ? ' to' : ''} ${formatTime(label.validTo)}`
+                      : ''}
+                  </span>
+                {/if}
+              </li>
+            {/each}
+            {#each profile.candidates ?? [] as label (`candidate:${label.kind}:${label.source}`)}
+              <li class="candidate">
+                <span class="label-head">
+                  Possibly {kindLabel(label.kind).toLowerCase()}{label.name
+                    ? `: ${label.name}`
+                    : ''}
+                  <span class="level candidate">not applied</span>
+                </span>
                 <span class="muted">
-                  from {label.source}, {Math.round(label.confidence * 100)}% confidence
+                  {sourceText(label.source)}; {Math.round(label.confidence * 100)}% confidence is
+                  below the bar for counting it.
                 </span>
               </li>
             {/each}
           </ul>
+          {#if profile.cluster}
+            <p class="muted small">
+              Spends together with {formatCount(profile.cluster.size - 1)} other
+              {profile.cluster.size - 1 === 1 ? 'wallet' : 'wallets'}, which usually means one
+              owner:
+              {#each profile.cluster.sample
+                .filter((a) => a !== address)
+                .slice(0, 5) as other, i (other)}{i > 0 ? ', ' : ' '}<a
+                  class="mono"
+                  href="/wallet/{other}">{other.slice(0, 8)}…</a
+                >{/each}.
+            </p>
+          {/if}
         </section>
       {/if}
 
@@ -422,7 +474,49 @@
 
   .labels {
     margin: 0;
-    padding-left: 1.1rem;
+    padding: 0;
+    list-style: none;
+  }
+
+  .labels li {
+    display: grid;
+    gap: 0.1rem;
+    padding: 0.5rem 0 0.5rem 0.75rem;
+    border-left: 3px solid var(--line);
+  }
+
+  .labels li.applied {
+    border-left-color: var(--brand);
+  }
+
+  .label-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 0.25rem 0.5rem;
+    font-weight: 500;
+  }
+
+  .level {
+    padding: 0 0.4rem;
+    border: 1px solid currentColor;
+    border-radius: 999px;
+    font-size: 0.7rem;
+    font-weight: 500;
+  }
+
+  .level.confirmed {
+    color: var(--good);
+  }
+
+  .level.likely {
+    color: var(--brand);
+  }
+
+  .level.possible,
+  .level.candidate {
+    color: var(--text-muted);
+    border-style: dashed;
   }
 
   .small {

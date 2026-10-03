@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { isAddress, isTxid, normaliseBoard } from './endpoints';
+import { boardPath, isAddress, isTxid, normaliseBoard } from './endpoints';
+import { evidenceText, sourceText } from './format';
 import { compareEvents, MergedPager, type PageFetcher } from './pager';
 import type { FlowEvent, FlowType } from './types';
 import {
@@ -12,10 +13,20 @@ import {
 } from './urlState';
 
 describe('URL state (#26, #27, #28)', () => {
+  const DEFAULTS = {
+    period: '24H' as const,
+    who: '' as const,
+    sure: '' as const,
+    noHops: false,
+    filters: EMPTY_FILTERS
+  };
+
   it('round-trips the period, the leaderboard filter and every transaction filter', () => {
     const state = {
       period: '30D' as const,
       who: 'node_operator' as const,
+      sure: 'likely' as const,
+      noHops: true,
       filters: {
         type: 'selling' as const,
         kind: 'node_operator' as const,
@@ -27,17 +38,30 @@ describe('URL state (#26, #27, #28)', () => {
   });
 
   it('keeps defaults out of the URL, with exchange flows as the default view', () => {
-    expect(writeState({ period: '24H', who: '', filters: EMPTY_FILTERS })).toBe('');
+    expect(writeState(DEFAULTS)).toBe('');
     expect(readState(new URLSearchParams('')).filters.type).toBe('exchange');
-    expect(writeState({ period: '24H', who: '', filters: { ...EMPTY_FILTERS, type: 'all' } })).toBe(
+    expect(writeState({ ...DEFAULTS, filters: { ...EMPTY_FILTERS, type: 'all' } })).toBe(
       'type=all'
     );
   });
 
   it('opens a malformed link on safe defaults instead of failing', () => {
     const state = readState(new URLSearchParams('period=1Y&type=hack&kind=x&who=exchange&min=-5'));
-    expect(state).toEqual({ period: '24H', who: '', filters: EMPTY_FILTERS });
+    expect(state).toEqual(DEFAULTS);
     expect(readState(new URLSearchParams('period=7d')).period).toBe('7D');
+  });
+
+  it('keeps the hops toggle and a confidence filter, but only for a labelled kind', () => {
+    const parsed = readState(
+      new URLSearchParams('who=node_operator&minConfidence=confirmed&hops=exclude')
+    );
+    expect(parsed).toMatchObject({ who: 'node_operator', sure: 'confirmed', noHops: true });
+    expect(writeState(parsed)).toBe('who=node_operator&minConfidence=confirmed&hops=exclude');
+
+    // A confidence filter on unlabelled wallets would always be empty, so it is dropped.
+    expect(readState(new URLSearchParams('who=unknown&minConfidence=likely')).sure).toBe('');
+    expect(readState(new URLSearchParams('minConfidence=likely')).sure).toBe('');
+    expect(readState(new URLSearchParams('who=foundation&minConfidence=0.9')).sure).toBe('');
   });
 
   it('asks for both directions for exchange flows, and no filter for all transfers', () => {
@@ -191,12 +215,43 @@ describe('leaderboard normalisation', () => {
       exchanges: [{ name: 'Coinex', total: 5, count: 1 }],
       lastSeen: 100,
       previousTotal: 2,
-      change: 3
+      change: 3,
+      confidence: 0.98,
+      level: 'confirmed' as const,
+      labelSource: 'config'
     };
     const board = normaliseBoard(
       { period: '24H', flowType: 'buying', total: 5, buyers: [row] },
       'buyers'
     );
     expect(board.buyers).toEqual([row]);
+  });
+});
+
+describe('labels and confidence (#19)', () => {
+  it('asks the leaderboard API for the chosen confidence', () => {
+    expect(boardPath('7D', 'sellers', 'node_operator', 'likely')).toBe(
+      '/flow/7D/sellers?limit=10&kind=node_operator&minConfidence=likely'
+    );
+    expect(boardPath('7D', 'buyers', '')).toBe('/flow/7D/buyers?limit=10');
+  });
+
+  it('explains a label source in plain words, with a fallback for new ones', () => {
+    expect(sourceText('node_list')).toBe('Runs nodes on the current FluxNode list');
+    expect(sourceText('some_new_method')).toBe('Labelled from some new method');
+    expect(sourceText(null)).toBe('No label on record');
+  });
+
+  it('turns evidence into readable lines and skips internals', () => {
+    expect(
+      evidenceText({
+        method: 'node_list',
+        nodes: 8,
+        tiers: { NIMBUS: 8 },
+        rewards: 104,
+        lastRewardHeight: 3004249
+      })
+    ).toEqual(['8 nodes', '8 Nimbus', '104 rewards received', 'last reward at block 3,004,249']);
+    expect(evidenceText(null)).toEqual([]);
   });
 });

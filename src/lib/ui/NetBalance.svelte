@@ -11,9 +11,11 @@
   interface Props {
     summary: FlowSummary | undefined;
     period: PeriodId;
+    /** Show the totals with exchange-to-exchange hops left out (#20). */
+    noHops?: boolean;
   }
 
-  let { summary, period }: Props = $props();
+  let { summary, period, noHops = false }: Props = $props();
 
   const PHRASE: Record<PeriodId, string> = {
     '24H': 'in the last 24 hours',
@@ -23,8 +25,12 @@
     '6M': 'in the last 6 months'
   };
 
-  const bought = $derived(summary?.buying?.total ?? 0);
-  const sold = $derived(summary?.selling?.total ?? 0);
+  // Hops count once as a withdrawal and once as a deposit, so leaving them out lowers both
+  // sides by about the same amount and makes the remaining pressure easier to read.
+  const adjusted = $derived(noHops ? summary?.adjusted : undefined);
+  const hops = $derived(summary?.exchangeHops);
+  const bought = $derived(adjusted?.buying ?? summary?.buying?.total ?? 0);
+  const sold = $derived(adjusted?.selling ?? summary?.selling?.total ?? 0);
   const net = $derived(bought - sold);
   const scale = $derived(Math.max(bought, sold, 1));
   const empty = $derived(summary !== undefined && bought === 0 && sold === 0);
@@ -86,14 +92,32 @@
         <p>
           <span class="sell amount">{formatFlux(sold)}</span>
           deposited to exchanges
-          <span class="muted">in {formatCount(summary.selling?.count ?? 0)} transfers</span>
+          {#if !adjusted}
+            <span class="muted">in {formatCount(summary.selling?.count ?? 0)} transfers</span>
+          {/if}
         </p>
         <p class="end">
           <span class="buy amount">{formatFlux(bought)}</span>
           withdrawn from exchanges
-          <span class="muted">in {formatCount(summary.buying?.count ?? 0)} transfers</span>
+          {#if !adjusted}
+            <span class="muted">in {formatCount(summary.buying?.count ?? 0)} transfers</span>
+          {/if}
         </p>
       </div>
+    {/if}
+
+    {#if hops && hops.count > 0}
+      <p class="hops-note muted">
+        {#if adjusted}
+          Excluding {formatCount(hops.count)} exchange-to-exchange
+          {hops.count === 1 ? 'hop' : 'hops'}: {formatFlux(hops.sellingExcluded)} FLUX that only moved
+          between exchanges.
+        {:else}
+          Includes {formatCount(hops.count)} exchange-to-exchange
+          {hops.count === 1 ? 'hop' : 'hops'} ({formatFlux(hops.sellingExcluded)} FLUX), counted once
+          each way.
+        {/if}
+      </p>
     {/if}
 
     {#if previous && (previous.buying.total > 0 || previous.selling.total > 0)}
@@ -199,7 +223,8 @@
     display: block;
   }
 
-  .previous {
+  .previous,
+  .hops-note {
     font-size: var(--step--1);
   }
 

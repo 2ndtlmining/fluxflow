@@ -10,6 +10,8 @@ import { apiFetch, cachedFetch } from './api';
 import type {
   Counterparty,
   EventsPage,
+  Foundation,
+  HopsResponse,
   FlowSummary,
   FlowType,
   Leaderboard,
@@ -17,17 +19,37 @@ import type {
   Series,
   WalletProfile
 } from './types';
-import type { BoardKind } from './urlState';
+import type { BoardKind, Certainty } from './urlState';
 
 export function summaryPath(period: PeriodId): string {
   return `/flow/${period}`;
 }
 
-export function boardPath(period: PeriodId, side: 'buyers' | 'sellers', who: BoardKind): string {
+export function boardPath(
+  period: PeriodId,
+  side: 'buyers' | 'sellers',
+  who: BoardKind,
+  sure: Certainty = ''
+): string {
   const params = new URLSearchParams({ limit: '10' });
   if (who) params.set('kind', who);
+  if (sure) params.set('minConfidence', sure);
   return `/flow/${period}/${side}?${params.toString()}`;
 }
+
+export function hopsPath(period: PeriodId): string {
+  return `/flow/${period}/hops`;
+}
+
+export function foundationPath(period: PeriodId): string {
+  return `/foundation?period=${period}`;
+}
+
+export const fetchHops = (period: PeriodId, signal?: AbortSignal) =>
+  cachedFetch<HopsResponse>(hopsPath(period), signal);
+
+export const fetchFoundation = (period: PeriodId, signal?: AbortSignal) =>
+  cachedFetch<Foundation>(foundationPath(period), signal);
 
 export function seriesPath(period: PeriodId): string {
   return `/flow/${period}/series`;
@@ -40,9 +62,10 @@ export const fetchBoard = async (
   period: PeriodId,
   side: 'buyers' | 'sellers',
   who: BoardKind,
+  sure: Certainty,
   signal?: AbortSignal
 ): Promise<Leaderboard> =>
-  normaliseBoard(await cachedFetch<Leaderboard>(boardPath(period, side, who), signal), side);
+  normaliseBoard(await cachedFetch<Leaderboard>(boardPath(period, side, who, sure), signal), side);
 
 /**
  * Fill in leaderboard fields an older server does not send (#28 added rank, share,
@@ -71,7 +94,10 @@ export function normaliseBoard(board: Leaderboard, side: 'buyers' | 'sellers'): 
     ),
     lastSeen: row.lastSeen ?? null,
     previousTotal: row.previousTotal ?? Number.NaN,
-    change: row.change ?? Number.NaN
+    change: row.change ?? Number.NaN,
+    confidence: row.confidence ?? null,
+    level: row.level ?? null,
+    labelSource: row.labelSource ?? null
   }));
 
   return { ...board, total, [side]: normalised };
