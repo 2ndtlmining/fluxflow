@@ -185,8 +185,144 @@ const initialSchema: Migration = {
   }
 };
 
+/**
+ * Rollup levels: hourly for the edges of a period, daily for everything between.
+ *
+ * Hourly alone was not enough: 6 months is ~4,300 hours × every (direction, counterparty,
+ * exchange) combination, and grouping ~100k rows per direction took ~100 ms. Whole days
+ * cut that to ~180 buckets.
+ */
+export const ROLLUP_LEVELS = {
+  rollup_hourly: 3_600,
+  rollup_daily: 86_400
+} as const;
+
+export type RollupTable = keyof typeof ROLLUP_LEVELS;
+
+/**
+ * The `sync_state` key that, while present, stops deletes from `flows` reaching the rollups.
+ * Set inside the retention transaction only: pruning raw data must not erase history from
+ * the totals, so rollups outlive the raw window (a 1Y total on 180 days of raw data).
+ */
+export const ROLLUP_RETAIN_KEY = 'rollup_retain';
+
+/** Bumped by trigger on every block written or removed; the API's cache key (#4). */
+export const DATA_VERSION_KEY = 'data_version';
+
+/** The counterparty side of a flow: who bought from, or sold to, the exchange. */
+const counterparty = (row: 'NEW' | 'OLD') =>
+  `CASE ${row}.flow_type WHEN 'buying' THEN ${row}.to_kind ELSE ${row}.from_kind END`;
+
+const addToRollups = (row: 'NEW' | 'OLD') =>
+  Object.entries(ROLLUP_LEVELS)
+    .map(
+      ([table, seconds]) => `
+  INSERT INTO ${table} (bucket, flow_type, counterparty_kind, exchange, sat, count)
+  VALUES (${row}.time / ${seconds}, ${row}.flow_type, ${counterparty(row)},
+          COALESCE(${row}.exchange, ''), ${row}.sat, 1)
+  ON CONFLICT (flow_type, bucket, counterparty_kind, exchange)
+  DO UPDATE SET sat = sat + excluded.sat, count = count + 1;`
+    )
+    .join('');
+
+const subtractFromRollups = (row: 'NEW' | 'OLD') =>
+  Object.entries(ROLLUP_LEVELS)
+    .map(([table, seconds]) => {
+      const key = `flow_type = ${row}.flow_type
+      AND bucket = ${row}.time / ${seconds}
+      AND counterparty_kind = ${counterparty(row)}
+      AND exchange = COALESCE(${row}.exchange, '')`;
+
+      return `
+  UPDATE ${table} SET sat = sat - ${row}.sat, count = count - 1 WHERE ${key};
+  DELETE FROM ${table} WHERE ${key} AND count <= 0;`;
+    })
+    .join('');
+
+/**
+ * Migration 2 — pre-aggregated rollups and a data version for caching (#2, #3, #4).
+ *
+ * The rollups are maintained by **triggers on `flows`**, not by the writer. Every path that
+ * changes a flow — a new batch, an upsert after a label correction, a reorg rollback — goes
+ * through them inside its own transaction, so the totals cannot drift from the raw rows no
+ * matter which code made the change. Retention is the one deliberate exception (see
+ * {@link ROLLUP_RETAIN_KEY}).
+ */
+const rollups: Migration = {
+  version: 2,
+  name: 'rollups_and_data_version',
+  up: (db) => {
+    // Key order matters: every read filters one direction over a bucket range, so leading
+    // with flow_type makes that one contiguous range instead of interleaving both.
+    for (const table of Object.keys(ROLLUP_LEVELS)) {
+      db.exec(`
+        CREATE TABLE ${table} (
+          bucket            INTEGER NOT NULL,
+          flow_type         TEXT    NOT NULL,
+          counterparty_kind TEXT    NOT NULL,
+          exchange          TEXT    NOT NULL DEFAULT '',
+          sat               INTEGER NOT NULL,
+          count             INTEGER NOT NULL,
+          PRIMARY KEY (flow_type, bucket, counterparty_kind, exchange)
+        ) WITHOUT ROWID;
+      `);
+    }
+
+    // The partial first hour of a period is read from raw flows by time.
+    db.exec(`CREATE INDEX idx_flows_type_time ON flows(flow_type, time);`);
+
+    // The events list pages newest-first over every type. With no index on height alone,
+    // SQLite sorted the whole period to return 50 rows (518 ms on 6 months); this index,
+    // which carries the (txid, vout) key, is already in the page's order.
+    db.exec(`CREATE INDEX idx_flows_height ON flows(height);`);
+
+    db.exec(`
+      CREATE TRIGGER flows_rollup_insert AFTER INSERT ON flows BEGIN
+        ${addToRollups('NEW')}
+      END;
+
+      CREATE TRIGGER flows_rollup_update AFTER UPDATE ON flows BEGIN
+        ${subtractFromRollups('OLD')}
+        ${addToRollups('NEW')}
+      END;
+
+      CREATE TRIGGER flows_rollup_delete AFTER DELETE ON flows
+      WHEN NOT EXISTS (SELECT 1 FROM sync_state WHERE key = '${ROLLUP_RETAIN_KEY}')
+      BEGIN
+        ${subtractFromRollups('OLD')}
+      END;
+    `);
+
+    // Any change to the stored chain changes what the API would answer.
+    const bump = `
+      INSERT INTO sync_state (key, value) VALUES ('${DATA_VERSION_KEY}', '1')
+      ON CONFLICT (key) DO UPDATE SET value = CAST(value AS INTEGER) + 1;`;
+
+    db.exec(`
+      CREATE TRIGGER blocks_version_insert AFTER INSERT ON blocks BEGIN ${bump} END;
+      CREATE TRIGGER blocks_version_update AFTER UPDATE ON blocks BEGIN ${bump} END;
+      CREATE TRIGGER blocks_version_delete AFTER DELETE ON blocks BEGIN ${bump} END;
+      CREATE TRIGGER flows_version_update AFTER UPDATE ON flows BEGIN ${bump} END;
+    `);
+
+    // Existing flows, so an upgraded database answers from rollups straight away.
+    for (const [table, seconds] of Object.entries(ROLLUP_LEVELS)) {
+      db.exec(`
+        INSERT INTO ${table} (bucket, flow_type, counterparty_kind, exchange, sat, count)
+        SELECT time / ${seconds}, flow_type,
+               CASE flow_type WHEN 'buying' THEN to_kind ELSE from_kind END,
+               COALESCE(exchange, ''), SUM(sat), COUNT(*)
+        FROM flows
+        GROUP BY 1, 2, 3, 4;
+      `);
+    }
+
+    db.exec(`INSERT OR IGNORE INTO sync_state (key, value) VALUES ('${DATA_VERSION_KEY}', '1');`);
+  }
+};
+
 /** Every migration, in ascending version order. Append only — never edit a shipped one. */
-export const MIGRATIONS: readonly Migration[] = [initialSchema];
+export const MIGRATIONS: readonly Migration[] = [initialSchema, rollups];
 
 /** The version a fresh database ends up at. */
 export const LATEST_SCHEMA_VERSION = MIGRATIONS.reduce(

@@ -2,124 +2,86 @@
   import { onMount, onDestroy } from 'svelte';
   import { getApiUrl } from '$lib/client/api';
 
-  // CHANGED: Initialize empty, set in onMount
+  /*
+   * One request every 30 s, paused while the tab is hidden (#3).
+   *
+   * This used to poll /api/health, /api/database/stats and /api/blocks/status every 5 s per
+   * tab, and showed the *browser's* OS and CPU count as if they were the server's, with an
+   * "uptime" that was really time since the last sync (#25). Everything below now comes
+   * from the server's cached /api/status snapshot.
+   */
+  const POLL_MS = 30_000;
+
   let API_URL = '';
-
-  // System stats
-  let uptime = '0 days, 0:00';
-  let os = 'Loading...';
-  let cpuCores = 0;
-  let dbSize = '0KB';
-
-  // Block sync stats
+  let version = '';
+  let uptime = '-';
   let blockCount = 0;
+  let latestHeight = 0;
   let lastSync = null;
+  let dbSize = '-';
+  let source = '-';
 
-  // Status indicators
   let apiStatus = 'checking';
-  let dbStatus = 'checking';
+  let syncStatus = 'checking';
 
-  let interval;
+  let timer;
 
-  onMount(async () => {
-    // CHANGED: Set API_URL here (client-side only)
+  onMount(() => {
     API_URL = getApiUrl();
-    console.log('✅ Header using API URL:', API_URL);
-
-    await fetchSystemStats();
-
-    // Update every 5 seconds
-    interval = setInterval(fetchSystemStats, 5000);
+    refresh();
+    timer = setInterval(() => {
+      if (!document.hidden) refresh();
+    }, POLL_MS);
+    document.addEventListener('visibilitychange', onVisible);
   });
 
   onDestroy(() => {
-    if (interval) clearInterval(interval);
+    if (timer) clearInterval(timer);
+    if (typeof document !== 'undefined') {
+      document.removeEventListener('visibilitychange', onVisible);
+    }
   });
 
-  async function fetchSystemStats() {
+  function onVisible() {
+    if (!document.hidden) refresh();
+  }
+
+  async function refresh() {
     try {
-      // Get browser/system info first (always works)
-      if (typeof window !== 'undefined') {
-        os = getOSInfo();
-        cpuCores = navigator.hardwareConcurrency || 4;
-      }
+      const response = await fetch(`${API_URL}/api/status`);
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const status = await response.json();
 
-      // Fetch health status
-      const healthResponse = await fetch(`${API_URL}/api/health`);
-      const health = await healthResponse.json();
-
-      if (health.status === 'ok') {
-        apiStatus = 'online';
-
-        // Calculate uptime from last sync
-        if (health.sync && health.sync.lastSync) {
-          const lastSyncTime = new Date(health.sync.lastSync);
-          const now = new Date();
-          const uptimeMs = now - lastSyncTime;
-          const uptimeSeconds = Math.floor(uptimeMs / 1000);
-          const days = Math.floor(uptimeSeconds / 86400);
-          const hours = Math.floor((uptimeSeconds % 86400) / 3600);
-          const minutes = Math.floor((uptimeSeconds % 3600) / 60);
-          uptime = `${days} days, ${hours}:${minutes.toString().padStart(2, '0')}`;
-        }
-
-        blockCount = health.database?.blocks || 0;
-      }
-
-      // Fetch database stats
-      try {
-        const dbResponse = await fetch(`${API_URL}/api/database/stats`);
-        const dbStats = await dbResponse.json();
-
-        if (dbStats) {
-          dbStatus = 'online';
-          dbSize = dbStats.size || '0KB';
-
-          // Get last sync date from block range
-          if (dbStats.blockRange?.maxHeight) {
-            // Block height is not a timestamp, so we'll use current date
-            lastSync = new Date().toISOString().split('T')[0];
-          }
-        }
-      } catch (e) {
-        console.error('Error fetching database stats:', e);
-        dbStatus = 'offline';
-        dbSize = '0KB';
-      }
-
-      // Fetch block sync status
-      try {
-        const blockResponse = await fetch(`${API_URL}/api/blocks/status`);
-        const blockStatus = await blockResponse.json();
-
-        if (blockStatus) {
-          blockCount = blockStatus.blockCount || 0;
-          if (blockStatus.lastSync) {
-            lastSync = new Date(blockStatus.lastSync).toISOString().split('T')[0];
-          }
-        }
-      } catch (e) {
-        console.error('Error fetching block status:', e);
-      }
-    } catch (error) {
-      console.error('Error fetching system stats:', error);
+      apiStatus = 'online';
+      syncStatus = status.sync?.degraded ? 'degraded' : 'online';
+      version = status.version ?? '';
+      uptime = formatDuration(status.uptimeSeconds ?? 0);
+      blockCount = status.database?.blocks ?? 0;
+      latestHeight = status.sync?.latestHeight ?? 0;
+      lastSync = status.sync?.lastSuccessfulSyncAt ?? null;
+      dbSize = formatBytes(status.database?.sizeBytes ?? 0);
+      source = status.dataSources?.active ?? '-';
+    } catch {
       apiStatus = 'offline';
-      dbStatus = 'offline';
-
-      // Still show browser stats even if API is down
-      if (typeof window !== 'undefined') {
-        os = getOSInfo();
-        cpuCores = navigator.hardwareConcurrency || 4;
-      }
+      syncStatus = 'offline';
     }
   }
 
-  function getOSInfo() {
-    const userAgent = navigator.userAgent.toLowerCase();
-    if (userAgent.includes('linux')) return 'Linux';
-    if (userAgent.includes('mac')) return 'macOS';
-    if (userAgent.includes('win')) return 'Windows';
-    return 'Unknown';
+  function formatDuration(seconds) {
+    const days = Math.floor(seconds / 86_400);
+    const hours = Math.floor((seconds % 86_400) / 3_600);
+    const minutes = Math.floor((seconds % 3_600) / 60);
+    return `${days}d ${hours}:${String(minutes).padStart(2, '0')}`;
+  }
+
+  function formatBytes(bytes) {
+    if (bytes >= 1e9) return `${(bytes / 1e9).toFixed(1)} GB`;
+    if (bytes >= 1e6) return `${(bytes / 1e6).toFixed(1)} MB`;
+    return `${Math.round(bytes / 1e3)} KB`;
+  }
+
+  function formatTime(ms) {
+    return ms ? new Date(ms).toLocaleTimeString() : 'N/A';
   }
 
   function getStatusColor(status) {
@@ -137,7 +99,7 @@
         FLUX<br />FLOW
       </h1>
       <div class="build-info">
-        Build: <span class="text-cyan">v.01</span>
+        Build: <span class="text-cyan">{version || '-'}</span>
       </div>
     </div>
 
@@ -154,7 +116,7 @@
         </span>
         <span class="stat-separator">|</span>
         <span class="system-stat">
-          last sync: <span class="system-stat-value">{lastSync || 'N/A'}</span>
+          last sync: <span class="system-stat-value">{formatTime(lastSync)}</span>
         </span>
         <span class="status-indicators">
           <span class="status-item">
@@ -162,22 +124,22 @@
             <span class="status-dot {getStatusColor(apiStatus)}"></span>
           </span>
           <span class="status-item">
-            <span class="status-label">DB:</span>
-            <span class="status-dot {getStatusColor(dbStatus)}"></span>
+            <span class="status-label">Sync:</span>
+            <span class="status-dot {getStatusColor(syncStatus)}"></span>
           </span>
         </span>
       </div>
 
-      <!-- Bottom line: OS, CPU, DB -->
+      <!-- Bottom line: data source, chain height, DB -->
       <div class="stats-line">
         <span class="system-stat">
-          <span class="system-stat-label">OS:</span>
-          <span class="system-stat-value">{os}</span>
+          <span class="system-stat-label">Source:</span>
+          <span class="system-stat-value">{source}</span>
         </span>
         <span class="stat-separator">|</span>
         <span class="system-stat">
-          <span class="system-stat-label">CPU:</span>
-          <span class="system-stat-value">{cpuCores} cores</span>
+          <span class="system-stat-label">Height:</span>
+          <span class="system-stat-value">{latestHeight.toLocaleString()}</span>
         </span>
         <span class="stat-separator">|</span>
         <span class="system-stat">

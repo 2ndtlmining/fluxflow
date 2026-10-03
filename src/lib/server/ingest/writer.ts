@@ -16,6 +16,7 @@
 import type { Logger } from 'pino';
 import type { Db } from '../db/database.js';
 import type { DerivedBlock } from './derive.js';
+import { ROLLUP_RETAIN_KEY } from '../db/migrations.js';
 
 /**
  * Below this many pruned blocks, a database not yet on incremental auto-vacuum keeps its
@@ -346,16 +347,28 @@ export class BlockWriter {
     nodeRewards: number;
     missing: number;
   } {
-    const run = this.db.transaction(() => ({
-      deltas: this.statements.deleteBefore.tx_deltas.run(floor).changes,
-      flows: this.statements.deleteBefore.flows.run(floor).changes,
-      // Rewards are keyed by height precisely so they can be pruned with their block.
-      nodeRewards: this.statements.deleteBefore.node_rewards.run(floor).changes,
-      // A missing height below the floor is no longer wanted. Left in place it would be
-      // retried forever, re-written on success, and pruned again on the next pass.
-      missing: this.statements.deleteBefore.missing_blocks.run(floor).changes,
-      blocks: this.statements.deleteBefore.blocks.run(floor).changes
-    }));
+    const run = this.db.transaction(() => {
+      // Rollups outlive raw data: while this key exists the flows delete trigger leaves
+      // them alone. Set and cleared inside the same transaction, so a crash cannot leave
+      // it behind and silently stop a later rollback from correcting the totals.
+      this.db
+        .prepare(`INSERT OR REPLACE INTO sync_state (key, value) VALUES (?, '1')`)
+        .run(ROLLUP_RETAIN_KEY);
+
+      const result = {
+        deltas: this.statements.deleteBefore.tx_deltas.run(floor).changes,
+        flows: this.statements.deleteBefore.flows.run(floor).changes,
+        // Rewards are keyed by height precisely so they can be pruned with their block.
+        nodeRewards: this.statements.deleteBefore.node_rewards.run(floor).changes,
+        // A missing height below the floor is no longer wanted. Left in place it would be
+        // retried forever, re-written on success, and pruned again on the next pass.
+        missing: this.statements.deleteBefore.missing_blocks.run(floor).changes,
+        blocks: this.statements.deleteBefore.blocks.run(floor).changes
+      };
+
+      this.db.prepare(`DELETE FROM sync_state WHERE key = ?`).run(ROLLUP_RETAIN_KEY);
+      return result;
+    });
 
     const result = run();
 
