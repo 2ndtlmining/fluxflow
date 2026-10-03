@@ -239,6 +239,29 @@ export class SyncService {
     return run;
   }
 
+  /**
+   * Run `work` when no cycle is in flight, and keep cycles out until it finishes.
+   *
+   * For the intelligence pass: re-deriving flows after a label change writes the same rows a
+   * sync batch writes, so the two must never interleave — a batch derived with the old labels
+   * and committed after the relabel would undo it.
+   */
+  async exclusive<T>(work: () => T | Promise<T>): Promise<T> {
+    while (this.inFlight) await this.inFlight.catch(() => {});
+
+    const run = Promise.resolve().then(work);
+    const guard: Promise<void> = run.then(
+      () => {},
+      () => {}
+    );
+    this.inFlight = guard;
+    void guard.finally(() => {
+      if (this.inFlight === guard) this.inFlight = undefined;
+    });
+
+    return run;
+  }
+
   private async cycle(): Promise<void> {
     const startedAt = Date.now();
     const { log } = this.options;

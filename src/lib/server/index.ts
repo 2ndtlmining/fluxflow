@@ -20,6 +20,7 @@ import { OwnNodeDataSource } from './ingest/datasource/ownnode.js';
 import { FailoverDataSource } from './ingest/datasource/circuitbreaker.js';
 import type { DataSource } from './ingest/datasource/types.js';
 import { SyncService } from './ingest/sync.js';
+import { IntelService } from './intel/service.js';
 import { createApiRouter, errorHandler } from './api/router.js';
 
 /** How long a graceful shutdown may take before the process exits anyway. */
@@ -37,6 +38,8 @@ export interface Service {
   readonly dataSource: FailoverDataSource;
   /** Absent when `SYNC_ENABLED=0`. */
   readonly sync: SyncService | null;
+  /** Address intelligence; absent when `INTEL_ENABLED=0`. */
+  readonly intel: IntelService | null;
   listen(): Promise<Server>;
   close(): Promise<void>;
   /** Record a successful sync cycle, which `/api/health` reads to decide if we are stale. */
@@ -56,6 +59,8 @@ export interface CreateServiceOptions {
    * then drive `service.sync.runOnce()` themselves, rather than racing a real poll.
    */
   readonly autoStartSync?: boolean;
+  /** Tests switch the intelligence timers off; jobs can still be run by hand. */
+  readonly autoStartIntel?: boolean;
 }
 
 /**
@@ -211,6 +216,25 @@ export function createService(options: CreateServiceOptions = {}): Service {
 
   if (sync && options.autoStartSync !== false) sync.start();
 
+  // Labels, node operators, clustering and hops (#18-#20, #31). Re-derives flows inside the
+  // sync loop's exclusive section, so a relabel and a sync batch never interleave.
+  const intel = config.intel.enabled
+    ? new IntelService({
+        config,
+        db: database.db,
+        labels,
+        log: log.child({ component: 'intel' }),
+        sync,
+        http: {
+          timeoutMs: config.http.timeoutMs,
+          retries: config.http.retries,
+          retryBaseMs: config.http.retryBaseMs
+        }
+      })
+    : null;
+
+  if (intel && options.autoStartIntel !== false) intel.start();
+
   const app = express();
 
   // No CORS by default: the API and the app share an origin, so cross-origin requests are
@@ -236,7 +260,8 @@ export function createService(options: CreateServiceOptions = {}): Service {
       dataSource,
       log: log.child({ component: 'api' }),
       health,
-      ...(sync ? { sync } : {})
+      ...(sync ? { sync } : {}),
+      ...(intel ? { intel } : {})
     })
   );
   app.use('/api', errorHandler(config, log.child({ component: 'api' })));
@@ -252,6 +277,7 @@ export function createService(options: CreateServiceOptions = {}): Service {
     labels,
     dataSource,
     sync,
+    intel,
 
     async listen(): Promise<Server> {
       if (server) return server;
@@ -297,6 +323,7 @@ export function createService(options: CreateServiceOptions = {}): Service {
 
       // Stop the loop before closing the database, otherwise an in-flight cycle would try
       // to commit against a closed handle.
+      intel?.stop();
       await sync?.stop();
 
       if (server) {

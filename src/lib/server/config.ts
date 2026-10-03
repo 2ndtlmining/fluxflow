@@ -191,6 +191,12 @@ const rawConfigSchema = z
     // ── Classification ────────────────────────────────────────────────────────
     LABELS_PATH: nonEmpty(z.string()).default('./config/labels.json'),
     NODE_REFRESH_SECONDS: z.coerce.number().int().min(60).max(86_400).default(600),
+    /** Address intelligence: node operators, clustering, exchange hops (#18-#20). */
+    INTEL_ENABLED: boolFlag.default(true),
+    /** How often clustering and candidate detection run. */
+    INTEL_CLUSTER_SECONDS: z.coerce.number().int().min(60).max(86_400).default(1_800),
+    /** A withdrawal re-deposited within this many blocks is an exchange hop (240 ≈ 2 h). */
+    INTEL_HOP_MAX_BLOCKS: z.coerce.number().int().min(1).max(20_000).default(240),
 
     // ── Outbound HTTP ─────────────────────────────────────────────────────────
     HTTP_TIMEOUT_MS: z.coerce.number().int().positive().default(15_000),
@@ -304,6 +310,11 @@ export interface Config {
 
   readonly labelsPath: string;
   readonly nodeRefreshSeconds: number;
+  readonly intel: {
+    readonly enabled: boolean;
+    readonly clusterSeconds: number;
+    readonly hopMaxBlocks: number;
+  };
 
   readonly http: {
     readonly timeoutMs: number;
@@ -371,6 +382,11 @@ function toConfig(raw: RawConfig): Config {
 
     labelsPath: raw.LABELS_PATH,
     nodeRefreshSeconds: raw.NODE_REFRESH_SECONDS,
+    intel: {
+      enabled: raw.INTEL_ENABLED,
+      clusterSeconds: raw.INTEL_CLUSTER_SECONDS,
+      hopMaxBlocks: raw.INTEL_HOP_MAX_BLOCKS
+    },
 
     http: {
       timeoutMs: raw.HTTP_TIMEOUT_MS,

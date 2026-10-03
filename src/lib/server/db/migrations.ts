@@ -478,8 +478,107 @@ const walletRollups: Migration = {
   }
 };
 
+/**
+ * Migration 4 — address intelligence (#18, #19, #20, #31).
+ *
+ * - `label_candidates`: labels proposed by clustering and sweep detection. Never applied to
+ *   flows until a human accepts one, which turns it into an `address_labels` row with
+ *   `source = 'accepted'` (#20).
+ * - `address_clusters`: common-input-ownership clusters, rebuilt on every clustering pass.
+ * - `exchange_hops`: a withdrawal from one exchange matched to a deposit into another (or
+ *   the same) by the same wallet shortly after. Kept so headline buy/sell can be shown with
+ *   and without them; history, like the rollups, so retention does not erase it.
+ * - `relabel_queue`: addresses whose effective label changed. Their flows are re-derived in
+ *   bounded batches so totals follow the label, not the label at sync time (#18).
+ *
+ * Seeds the queue with every labelled address, so the new derivation rules (Foundation
+ * internal transfers produce no flow; funder choice is order-independent) apply to flows
+ * already stored.
+ */
+const intelligence: Migration = {
+  version: 4,
+  name: 'address_intelligence',
+  up: (db) => {
+    db.exec(`
+      CREATE TABLE label_candidates (
+        address    TEXT    NOT NULL,
+        kind       TEXT    NOT NULL,
+        name       TEXT    NOT NULL DEFAULT '',
+        method     TEXT    NOT NULL,
+        confidence REAL    NOT NULL,
+        evidence   TEXT,
+        status     TEXT    NOT NULL DEFAULT 'pending',
+        created_at INTEGER NOT NULL DEFAULT (${now}),
+        decided_at INTEGER,
+        PRIMARY KEY (address, kind, name),
+        CHECK (status IN ('pending', 'accepted', 'rejected')),
+        CHECK (confidence >= 0 AND confidence <= 1)
+      ) WITHOUT ROWID;
+      CREATE INDEX idx_candidates_status ON label_candidates(status, confidence DESC);
+
+      CREATE TABLE address_clusters (
+        address    TEXT    PRIMARY KEY,
+        cluster_id TEXT    NOT NULL,
+        size       INTEGER NOT NULL
+      ) WITHOUT ROWID;
+      CREATE INDEX idx_clusters_id ON address_clusters(cluster_id);
+
+      CREATE TABLE exchange_hops (
+        buy_txid      TEXT    NOT NULL,
+        buy_vout      INTEGER NOT NULL,
+        sell_txid     TEXT    NOT NULL,
+        sell_vout     INTEGER NOT NULL,
+        address       TEXT    NOT NULL,
+        from_exchange TEXT    NOT NULL,
+        to_exchange   TEXT    NOT NULL,
+        buy_sat       INTEGER NOT NULL,
+        sell_sat      INTEGER NOT NULL,
+        buy_height    INTEGER NOT NULL,
+        sell_height   INTEGER NOT NULL,
+        buy_time      INTEGER NOT NULL,
+        sell_time     INTEGER NOT NULL,
+        PRIMARY KEY (buy_txid, buy_vout)
+      ) WITHOUT ROWID;
+      CREATE UNIQUE INDEX idx_hops_sell ON exchange_hops(sell_txid, sell_vout);
+      CREATE INDEX idx_hops_buy_time ON exchange_hops(buy_time);
+      CREATE INDEX idx_hops_sell_time ON exchange_hops(sell_time);
+      CREATE INDEX idx_hops_height ON exchange_hops(sell_height);
+
+      CREATE TABLE relabel_queue (
+        address   TEXT    PRIMARY KEY,
+        reason    TEXT,
+        queued_at INTEGER NOT NULL DEFAULT (${now})
+      ) WITHOUT ROWID;
+    `);
+
+    // A hop whose leg is removed (reorg rollback, relabel re-derivation) no longer exists.
+    // Retention keeps them, like the rollups: they are history, not raw data.
+    db.exec(`
+      CREATE TRIGGER flows_hop_cleanup AFTER DELETE ON flows
+      WHEN NOT EXISTS (SELECT 1 FROM sync_state WHERE key = '${ROLLUP_RETAIN_KEY}')
+      BEGIN
+        DELETE FROM exchange_hops WHERE buy_txid = OLD.txid AND buy_vout = OLD.vout;
+        DELETE FROM exchange_hops WHERE sell_txid = OLD.txid AND sell_vout = OLD.vout;
+      END;
+    `);
+
+    // No extra index for re-derivation: a wallet's transfers are found through
+    // tx_deltas(address, height), and one transaction's flows through the (txid, vout) key.
+
+    db.exec(`
+      INSERT OR IGNORE INTO relabel_queue (address, reason)
+      SELECT DISTINCT address, 'migration 4' FROM address_labels;
+    `);
+  }
+};
+
 /** Every migration, in ascending version order. Append only — never edit a shipped one. */
-export const MIGRATIONS: readonly Migration[] = [initialSchema, rollups, walletRollups];
+export const MIGRATIONS: readonly Migration[] = [
+  initialSchema,
+  rollups,
+  walletRollups,
+  intelligence
+];
 
 /** The version a fresh database ends up at. */
 export const LATEST_SCHEMA_VERSION = MIGRATIONS.reduce(
