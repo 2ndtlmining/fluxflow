@@ -69,6 +69,8 @@ function range(from: number, to: number): number[] {
   return heights;
 }
 
+export type SyncPhase = 'forward' | 'repair' | 'backfill';
+
 export interface SyncStats {
   readonly cycles: number;
   readonly synced: number;
@@ -100,6 +102,12 @@ export interface SyncOptions {
    * commits nothing must go stale rather than report itself healthy.
    */
   readonly onSuccess?: (at: number) => void;
+  /**
+   * Called after a batch commits, with the blocks that landed and the phase that wrote them.
+   * The live stream and alerts hang off this (#32). Errors thrown here are logged and
+   * swallowed: a broken subscriber must never fail or retry a committed batch.
+   */
+  readonly onCommit?: (event: { phase: SyncPhase; blocks: readonly DerivedBlock[] }) => void;
   /**
    * Used only by {@link SyncService.drain}, to wait for in-flight requests on shutdown.
    *
@@ -236,6 +244,29 @@ export class SyncService {
     });
 
     this.inFlight = run;
+    return run;
+  }
+
+  /**
+   * Run `work` when no cycle is in flight, and keep cycles out until it finishes.
+   *
+   * For the intelligence pass: re-deriving flows after a label change writes the same rows a
+   * sync batch writes, so the two must never interleave — a batch derived with the old labels
+   * and committed after the relabel would undo it.
+   */
+  async exclusive<T>(work: () => T | Promise<T>): Promise<T> {
+    while (this.inFlight) await this.inFlight.catch(() => {});
+
+    const run = Promise.resolve().then(work);
+    const guard: Promise<void> = run.then(
+      () => {},
+      () => {}
+    );
+    this.inFlight = guard;
+    void guard.finally(() => {
+      if (this.inFlight === guard) this.inFlight = undefined;
+    });
+
     return run;
   }
 
@@ -398,6 +429,15 @@ export class SyncService {
           },
           'batch committed'
         );
+
+        try {
+          this.options.onCommit?.({ phase, blocks: derived });
+        } catch (error) {
+          this.options.log.warn(
+            { reason: error instanceof Error ? error.message : String(error) },
+            'commit subscriber failed'
+          );
+        }
       } catch (error) {
         // The write failed, so none of it landed. Record every height in the batch as
         // missing rather than losing them.

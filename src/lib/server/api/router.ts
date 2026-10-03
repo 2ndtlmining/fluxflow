@@ -21,16 +21,43 @@ import type { SyncService } from '../ingest/sync.js';
 import type { LabelLookup } from '../labels.js';
 import type { FailoverDataSource } from '../ingest/datasource/circuitbreaker.js';
 import type { Db } from '../db/database.js';
+import { z } from 'zod';
 import { serialiseError } from '../logger.js';
+import type { StreamHub } from '../live/stream.js';
+import type { AlertService } from '../live/alerts.js';
+import { createRateLimiter } from './ratelimit.js';
+import { renderMetrics, type EventLoopMonitor } from './metrics.js';
 import { PERIODS, PERIOD_LABELS, isPeriodId, type PeriodId } from '../../shared/constants.js';
 import {
+  flowSeries,
   listFlowEvents,
+  openRange,
+  previousRange,
   resolvePeriod,
   summariseFlow,
-  summariseUnknowns,
-  topCounterparties
+  summariseFlowRange,
+  summariseUnknowns
 } from './queries.js';
+import {
+  ADDRESS_PATTERN,
+  LEADERBOARD_KINDS,
+  leaderboard,
+  search,
+  walletEvents,
+  walletProfile,
+  type LeaderboardKind
+} from './wallets.js';
 import { ResponseCache } from './cache.js';
+import {
+  APPLY_MIN_CONFIDENCE,
+  CONFIDENCE,
+  confidenceLevel,
+  parseMinConfidence
+} from '../labels.js';
+import type { IntelService } from '../intel/service.js';
+import { decideCandidate, listCandidates } from '../intel/clusters.js';
+import { foundationReport } from '../intel/foundation.js';
+import { listHops, summariseHops } from '../intel/hops.js';
 
 export interface ApiDependencies {
   readonly config: Config;
@@ -40,6 +67,14 @@ export interface ApiDependencies {
   readonly log: Logger;
   /** Absent when ingestion is switched off; the admin endpoints are then not registered. */
   readonly sync?: SyncService;
+  /** Live updates, alerts and runtime telemetry; absent pieces are simply not served. */
+  readonly runtime?: {
+    readonly stream?: StreamHub;
+    readonly alerts?: AlertService;
+    readonly eventLoop?: EventLoopMonitor;
+  };
+  /** Address intelligence (#18-#20, #31); absent when disabled. */
+  readonly intel?: IntelService;
   /** Read by `/api/health`; kept O(1) so the Docker healthcheck is never the bottleneck. */
   readonly health: {
     startedAt: number;
@@ -64,12 +99,12 @@ const PERIOD_SECONDS: Record<PeriodId, number> = {
  * user input (#21).
  */
 /**
- * How long a leaderboard may be reused across sync cycles.
+ * How long a long-period leaderboard may be reused across sync cycles.
  *
- * Top buyers and sellers group raw flows by address — ~100 ms for 30 days and several
- * hundred for 6 months on a full database, enough to block the event loop on every cycle.
- * Over a long period the ranking barely moves in a few minutes, so it is recomputed at most
- * every 10 minutes; short periods stay live. Per-wallet rollups (#28) will remove the need.
+ * Even on the per-wallet rollups, an exact top-N must group every wallet active in the
+ * window: on a synthetic 6-month database with ~19,000 distinct sellers that is ~110 ms
+ * (30 days: ~50 ms). Over a long period the ranking barely moves in a few minutes, so it is
+ * recomputed at most every 10 minutes instead of on every sync; 7 days and shorter stay live.
  */
 function leaderboardStaleness(period: PeriodId): { maxStaleMs: number } {
   return { maxStaleMs: PERIOD_SECONDS[period] > 7 * 86_400 ? 10 * 60_000 : 0 };
@@ -90,10 +125,19 @@ function parsePeriod(req: Request, res: Response): PeriodId | null {
 }
 
 export function createApiRouter(deps: ApiDependencies): Router {
-  const { config, db, labels, dataSource, health, sync, log } = deps;
+  const { config, db, labels, dataSource, health, sync, intel, log, runtime } = deps;
   const router = Router();
   // Counts and flow answers change only when a sync cycle commits (#3, #4).
   const cache = new ResponseCache(db);
+
+  // Monitoring and the live stream are exempt: a healthcheck must never be throttled into
+  // reporting the service down, and a stream is one long request, not many (#21).
+  const rateLimiter = createRateLimiter({
+    rps: config.rateLimit.rps,
+    burst: config.rateLimit.burst,
+    exempt: ['/health', '/status', '/metrics', '/stream']
+  });
+  router.use(rateLimiter);
 
   // ── Health ────────────────────────────────────────────────────────────────
   /**
@@ -133,6 +177,11 @@ export function createApiRouter(deps: ApiDependencies): Router {
         ...(reason ? { reason } : {})
       },
       ...(sync ? { ingest: sync.stats } : {}),
+      runtime: {
+        eventLoopDelayMs: runtime?.eventLoop?.snapshot() ?? null,
+        streamClients: runtime?.stream?.size ?? 0,
+        alerts: runtime?.alerts?.stats() ?? null
+      },
       database: {
         blocks: database.blocks,
         flows: database.flows,
@@ -196,7 +245,12 @@ export function createApiRouter(deps: ApiDependencies): Router {
     res.json({
       exchanges: { count: stats.exchanges },
       foundation: { count: stats.foundation },
-      nodeOperators: { count: 0, totalNodes: 0, lastRefresh: 0 },
+      nodeOperators: {
+        count: stats.nodeOperators,
+        totalNodes: intel?.status().nodeList?.addresses ?? 0,
+        lastRefresh: intel?.status().nodeList?.at ?? 0
+      },
+      bySource: stats.bySource,
       unknown: { count: databaseUnknownCount() }
     });
   };
@@ -225,6 +279,44 @@ export function createApiRouter(deps: ApiDependencies): Router {
     });
   });
 
+  // ── Intelligence (#18-#20, #31) ──────────────────────────────────────────
+  router.get('/intel/status', (_req: Request, res: Response) => {
+    res.json({ labels: labels.stats(), intel: intel?.status() ?? { enabled: false } });
+  });
+
+  /** Withdrawals re-deposited into an exchange by the same wallet shortly after (#20). */
+  router.get('/flow/:period/hops', (req: Request, res: Response) => {
+    const period = parsePeriod(req, res);
+    if (!period) return;
+
+    cache.send(req, res, () => {
+      const window = periodWindow(period);
+      return {
+        period,
+        summary: summariseHops(db, window.fromTime, window.toTime),
+        hops: listHops(db, window.fromTime, window.toTime, Number(req.query.limit) || 50)
+      };
+    });
+  });
+
+  /**
+   * The Foundation's wallets (#31). Not response-cached: balances refresh on their own
+   * schedule, and the report reads only the Foundation's few addresses.
+   */
+  router.get('/foundation', (req: Request, res: Response) => {
+    const raw = typeof req.query.period === 'string' ? req.query.period.toUpperCase() : '30D';
+    if (!isPeriodId(raw)) {
+      res.status(400).json({ error: 'Invalid period', message: `Unknown period: ${raw}` });
+      return;
+    }
+
+    const window = periodWindow(raw);
+    res.json({
+      period: raw,
+      ...foundationReport(db, labels, window, intel?.foundationBalances() ?? null)
+    });
+  });
+
   // ── Admin ─────────────────────────────────────────────────────────────────
   /*
    * Every mutating endpoint requires ADMIN_TOKEN.
@@ -236,17 +328,118 @@ export function createApiRouter(deps: ApiDependencies): Router {
    */
   const admin = requireAdmin(config);
 
+  const candidateKey = z.object({
+    address: z.string().regex(ADDRESS_PATTERN),
+    kind: z.enum(['exchange', 'foundation', 'node_operator']),
+    name: z.string().max(100).default('')
+  });
+
+  router.get('/admin/labels/candidates', admin, (req: Request, res: Response) => {
+    const status = z
+      .enum(['pending', 'accepted', 'rejected'])
+      .optional()
+      .safeParse(req.query.status ?? undefined);
+    if (!status.success) {
+      res.status(400).json({ error: 'Invalid status' });
+      return;
+    }
+    res.json({
+      candidates: listCandidates(db, {
+        ...(status.data ? { status: status.data } : {}),
+        limit: Number(req.query.limit) || 100
+      })
+    });
+  });
+
+  router.post('/admin/labels/candidates/decide', admin, (req: Request, res: Response) => {
+    const body = candidateKey
+      .extend({ decision: z.enum(['accepted', 'rejected']) })
+      .safeParse(req.body);
+    if (!body.success) {
+      res.status(400).json({ error: 'Invalid body', issues: body.error.issues });
+      return;
+    }
+
+    const { decision, ...key } = body.data;
+    if (!decideCandidate(db, labels, key, decision)) {
+      res.status(404).json({ error: 'No such candidate' });
+      return;
+    }
+    res.json({ success: true, decision, queued: intel?.status().relabelQueue ?? null });
+  });
+
+  /** A manual label beats every other source; `kind: "unknown"` overrides a wrong label. */
+  router.post('/admin/labels', admin, (req: Request, res: Response) => {
+    const body = z
+      .object({
+        address: z.string().regex(ADDRESS_PATTERN),
+        kind: z.enum(['exchange', 'foundation', 'node_operator', 'unknown']),
+        name: z.string().max(100).optional(),
+        subLabel: z.string().max(100).optional(),
+        note: z.string().max(500).optional()
+      })
+      .safeParse(req.body);
+    if (!body.success) {
+      res.status(400).json({ error: 'Invalid body', issues: body.error.issues });
+      return;
+    }
+
+    const { address, kind, name, subLabel, note } = body.data;
+    db.prepare(
+      `INSERT INTO address_labels
+         (address, kind, name, sub_label, source, confidence, evidence, updated_at)
+       VALUES (?, ?, ?, ?, 'manual', 1, ?, CAST(strftime('%s','now') AS INTEGER))
+       ON CONFLICT (address, kind, source) DO UPDATE SET
+         name = excluded.name, sub_label = excluded.sub_label,
+         evidence = excluded.evidence, updated_at = excluded.updated_at`
+    ).run(
+      address,
+      kind,
+      name ?? null,
+      subLabel ?? null,
+      JSON.stringify({ method: 'manual', note })
+    );
+
+    const changed = labels.refresh('manual label');
+    res.json({ success: true, changed: changed.length });
+  });
+
+  router.delete('/admin/labels/:address', admin, (req: Request, res: Response) => {
+    const address = parseAddress(req, res);
+    if (!address) return;
+
+    const removed = db
+      .prepare(`DELETE FROM address_labels WHERE address = ? AND source = 'manual'`)
+      .run(address).changes;
+    const changed = labels.refresh('manual label removed');
+    res.json({ success: true, removed, changed: changed.length });
+  });
+
+  if (intel) {
+    router.post('/admin/intel/run', admin, (_req: Request, res: Response) => {
+      void intel.runAll().then(
+        (status) => res.json({ success: true, status }),
+        (error: unknown) => {
+          log.error({ ...serialiseError(error) }, 'intelligence run failed');
+          res.status(500).json({ error: 'Intelligence run failed', message: 'see server logs' });
+        }
+      );
+    });
+  }
+
   if (sync) {
     const apiLog = log.child({ component: 'admin' });
 
+    /*
+     * Starts a cycle and answers at once. Waiting for it held the request open for as long
+     * as a full batch takes - minutes against a slow source (#21). Repeated calls are
+     * harmless: `runOnce` joins the cycle already in flight rather than starting another.
+     */
     router.post('/admin/sync', admin, (_req: Request, res: Response) => {
-      void sync.runOnce().then(
-        () => res.json({ success: true, stats: sync.stats }),
-        (error: unknown) => {
-          apiLog.error({ ...serialiseError(error) }, 'manual sync failed');
-          res.status(500).json({ error: 'Sync failed', message: 'see server logs' });
-        }
-      );
+      void sync.runOnce().catch((error: unknown) => {
+        apiLog.error({ ...serialiseError(error) }, 'manual sync failed');
+      });
+      res.status(202).json({ accepted: true, stats: sync.stats });
     });
 
     router.post('/admin/retention', admin, (_req: Request, res: Response) => {
@@ -254,6 +447,42 @@ export function createApiRouter(deps: ApiDependencies): Router {
       res.json({ success: true, prunedBlocks: sync.stats.prunedBlocks });
     });
   }
+
+  if (runtime?.alerts) {
+    const alerts = runtime.alerts;
+    router.post('/admin/alerts/reload', admin, (_req: Request, res: Response) => {
+      res.json(alerts.reload());
+    });
+  }
+
+  // ── Metrics (#24) ─────────────────────────────────────────────────────────
+  router.get('/metrics', (_req: Request, res: Response) => {
+    const pool = dataSource.detailsFor('fluxnode-pool');
+
+    res.type('text/plain; version=0.0.4').send(
+      renderMetrics({
+        db,
+        version: config.version,
+        uptimeSeconds: Math.round((Date.now() - health.startedAt) / 1000),
+        dataVersion: cache.version(),
+        degraded: health.degraded().degraded,
+        ...(sync ? { sync: sync.stats } : {}),
+        sources: dataSource.status(),
+        ...(pool ? { pool } : {}),
+        cache: cache.counters,
+        eventLoop: runtime?.eventLoop?.snapshot() ?? { p50: 0, p99: 0, max: 0 },
+        stream: {
+          clients: runtime?.stream?.size ?? 0,
+          eventsSent: runtime?.stream?.eventsSent ?? 0
+        },
+        alerts: runtime?.alerts?.stats() ?? { sent: 0, failed: 0, suppressed: 0 },
+        rateLimited: rateLimiter.rejected()
+      })
+    );
+  });
+
+  // ── Live stream (#32) ─────────────────────────────────────────────────────
+  if (runtime?.stream) router.get('/stream', runtime.stream.subscribe);
 
   // ── Flow analysis ─────────────────────────────────────────────────────────
   router.get('/flow/:period', (req: Request, res: Response) => {
@@ -285,6 +514,11 @@ export function createApiRouter(deps: ApiDependencies): Router {
     const buying = summariseFlow(db, window, 'buying');
     const selling = summariseFlow(db, window, 'selling');
 
+    // The equally long window just before this one, for "vs previous period" deltas (#28).
+    const before = previousRange(openRange(window));
+    const previousBuying = summariseFlowRange(db, before, 'buying');
+    const previousSelling = summariseFlowRange(db, before, 'selling');
+
     const complete = database.blocks >= requiredBlocks;
 
     return {
@@ -306,7 +540,36 @@ export function createApiRouter(deps: ApiDependencies): Router {
       buying: toDirection('buying', buying),
       selling: toDirection('selling', selling),
       p2p: { total: 0, count: 0 },
-      netFlow: buying.totalSat - selling.totalSat
+      netFlow: buying.totalSat - selling.totalSat,
+      previousPeriod: {
+        from: before.fromTime,
+        to: before.toTime,
+        buying: { total: previousBuying.totalSat, count: previousBuying.count },
+        selling: { total: previousSelling.totalSat, count: previousSelling.count },
+        netFlow: previousBuying.totalSat - previousSelling.totalSat,
+        byKind: { buying: previousBuying.byKind, selling: previousSelling.byKind }
+      },
+      byType: { buying: buying.byKind, selling: selling.byKind },
+      ...hopAdjusted(window.fromTime, window.toTime, buying.totalSat, selling.totalSat)
+    };
+  }
+
+  /**
+   * Exchange hops inside the window (#20): withdrawals re-deposited by the same wallet shortly
+   * after. They count as both a buy and a sell, so headline totals are also given without them.
+   * Nothing is subtracted from the main figures, which stay comparable with the raw events.
+   */
+  function hopAdjusted(fromTime: number, toTime: number, buying: number, selling: number) {
+    const hops = summariseHops(db, fromTime, toTime);
+    const adjustedBuying = Math.max(0, buying - hops.buyingExcluded);
+    const adjustedSelling = Math.max(0, selling - hops.sellingExcluded);
+    return {
+      exchangeHops: hops,
+      adjusted: {
+        buying: adjustedBuying,
+        selling: adjustedSelling,
+        netFlow: adjustedBuying - adjustedSelling
+      }
     };
   }
 
@@ -323,20 +586,23 @@ export function createApiRouter(deps: ApiDependencies): Router {
     const database = cache.databaseSummary();
     const window = resolvePeriod(db, Math.floor(database.maxTime - PERIOD_SECONDS[period]));
 
-    const cursor = parseCursor(req.query.cursor);
+    const query = parseQuery(eventsQuery, req, res);
+    if (!query) return;
 
-    if (req.query.cursor && !cursor) {
+    const cursor = query.cursor === undefined ? null : parseCursor(query.cursor);
+
+    if (query.cursor !== undefined && !cursor) {
       res.status(400).json({ error: 'Invalid cursor', message: 'Expected height:txid:vout' });
       return;
     }
 
     cache.send(req, res, () => {
       const page = listFlowEvents(db, window, {
-        ...(typeof req.query.type === 'string' ? { flowType: req.query.type } : {}),
-        ...(typeof req.query.kind === 'string' ? { kind: req.query.kind } : {}),
-        ...(typeof req.query.exchange === 'string' ? { exchange: req.query.exchange } : {}),
-        ...(req.query.minAmount ? { minSat: Number(req.query.minAmount) } : {}),
-        limit: Number(req.query.limit) || 50,
+        ...(query.type ? { flowType: query.type } : {}),
+        ...(query.kind ? { kind: query.kind } : {}),
+        ...(query.exchange ? { exchange: query.exchange } : {}),
+        ...(query.minAmount !== undefined ? { minSat: query.minAmount } : {}),
+        limit: query.limit,
         ...(cursor ? { cursor } : {})
       });
 
@@ -344,39 +610,217 @@ export function createApiRouter(deps: ApiDependencies): Router {
     });
   });
 
-  router.get('/flow/:period/buyers', (req: Request, res: Response) => {
+  /**
+   * Leaderboards: who withdrew from (buyers) or deposited to (sellers) exchanges (#28).
+   *
+   * Served from the per-wallet rollups; see {@link leaderboardStaleness} for long periods.
+   * `?kind=` narrows to one counterparty type.
+   */
+  const leaderboardRoute =
+    (flowType: 'buying' | 'selling', key: 'buyers' | 'sellers') =>
+    (req: Request, res: Response) => {
+      const period = parsePeriod(req, res);
+      if (!period) return;
+      const query = parseQuery(leaderboardQuery, req, res);
+      if (!query) return;
+
+      const kind = req.query.kind;
+      if (kind !== undefined && !LEADERBOARD_KINDS.includes(kind as LeaderboardKind)) {
+        res.status(400).json({
+          error: 'Invalid kind',
+          message: `kind must be one of: ${LEADERBOARD_KINDS.join(', ')}`
+        });
+        return;
+      }
+
+      const minConfidence = parseMinConfidence(req.query.minConfidence);
+      if (req.query.minConfidence !== undefined && minConfidence === null) {
+        res.status(400).json({
+          error: 'Invalid minConfidence',
+          message: `minConfidence must be 0..1 or one of: ${Object.keys(CONFIDENCE).join(', ')}`
+        });
+        return;
+      }
+
+      cache.send(
+        req,
+        res,
+        () => {
+          const window = periodWindow(period);
+          const limit = query.limit;
+          // Over-fetch when filtering by confidence, so the filter still returns `limit` rows.
+          const board = leaderboard(db, openRange(window), flowType, {
+            limit: minConfidence === null ? limit : Math.min(limit * 5, 100),
+            ...(kind ? { kind: kind as LeaderboardKind } : {})
+          });
+
+          const leaders = board.leaders
+            .map((leader) => {
+              const label = labels.labelOf(leader.address);
+              return {
+                ...leader,
+                name: label?.name ?? null,
+                confidence: label?.confidence ?? null,
+                level: label ? label.level : null,
+                labelSource: label?.source ?? null
+              };
+            })
+            .filter((leader) => minConfidence === null || (leader.confidence ?? 0) >= minConfidence)
+            .slice(0, limit)
+            .map((leader, index) => ({ ...leader, rank: index + 1 }));
+
+          return { period, flowType, total: board.total, minConfidence, [key]: leaders };
+        },
+        leaderboardStaleness(period)
+      );
+    };
+
+  router.get('/flow/:period/buyers', leaderboardRoute('buying', 'buyers'));
+  router.get('/flow/:period/sellers', leaderboardRoute('selling', 'sellers'));
+
+  /**
+   * Net flow over time (#29): hourly buckets up to 7 days, daily beyond, from the rollups.
+   * `?exchange=` and `?kind=` filter both directions.
+   */
+  router.get('/flow/:period/series', (req: Request, res: Response) => {
     const period = parsePeriod(req, res);
     if (!period) return;
 
-    const database = cache.databaseSummary();
-    const window = resolvePeriod(db, Math.floor(database.maxTime - PERIOD_SECONDS[period]));
+    const exchange = optionalText(req.query.exchange, 64);
+    const kind = req.query.kind;
+    if (exchange === null || (kind !== undefined && !SERIES_KINDS.includes(String(kind)))) {
+      res.status(400).json({ error: 'Invalid filter', message: 'Check exchange and kind' });
+      return;
+    }
 
-    cache.send(
-      req,
-      res,
-      () => ({
-        buyers: topCounterparties(db, window, 'buying', Number(req.query.limit) || 10)
-      }),
-      leaderboardStaleness(period)
-    );
+    cache.send(req, res, () => {
+      const bucketSeconds = PERIOD_SECONDS[period] <= 7 * 86_400 ? 3_600 : 86_400;
+      return {
+        period,
+        bucketSeconds,
+        points: flowSeries(db, periodWindow(period), {
+          bucketSeconds,
+          ...(exchange ? { exchange } : {}),
+          ...(kind ? { kind: String(kind) } : {})
+        })
+      };
+    });
   });
 
-  router.get('/flow/:period/sellers', (req: Request, res: Response) => {
-    const period = parsePeriod(req, res);
-    if (!period) return;
+  // ── Wallets (#30) ─────────────────────────────────────────────────────────
+  const searchRoute = (req: Request, res: Response) => {
+    const q = optionalText(req.query.q, 64);
+    if (!q || q.trim().length < 2) {
+      res.status(400).json({ error: 'Invalid query', message: 'q must be 2-64 characters' });
+      return;
+    }
 
-    const database = cache.databaseSummary();
-    const window = resolvePeriod(db, Math.floor(database.maxTime - PERIOD_SECONDS[period]));
+    cache.send(req, res, () => ({
+      query: q,
+      results: search(db, q, Number(req.query.limit) || 10).map((result) =>
+        result.type === 'wallet'
+          ? {
+              ...result,
+              name: result.name ?? labels.nameOf(result.address),
+              kind: labels.kindOf(result.address)
+            }
+          : result
+      )
+    }));
+  };
 
-    cache.send(
-      req,
-      res,
-      () => ({
-        sellers: topCounterparties(db, window, 'selling', Number(req.query.limit) || 10)
-      }),
-      leaderboardStaleness(period)
-    );
+  // Registered before `/wallets/:address`, which would otherwise capture "search".
+  router.get('/wallets/search', searchRoute);
+  router.get('/search', searchRoute);
+
+  router.get('/wallets/:address', (req: Request, res: Response) => {
+    const address = parseAddress(req, res);
+    if (!address) return;
+
+    const profile = walletProfile(db, address);
+    if (!profile) {
+      res.status(404).json({ error: 'Not found', message: 'No stored activity for this address' });
+      return;
+    }
+
+    cache.send(req, res, () => {
+      const label = labels.labelOf(address);
+      const cluster = db
+        .prepare<[string], { clusterId: string; size: number }>(
+          `SELECT cluster_id AS clusterId, size FROM address_clusters WHERE address = ?`
+        )
+        .get(address);
+
+      return {
+        ...profile,
+        kind: label?.kind ?? 'unknown',
+        name: label?.name ?? null,
+        // The label that classifies this wallet's flows, and every other one on record —
+        // including `possible` ones that are shown but never change a total (#19).
+        label,
+        labels: labels.allLabels(address).map((row) => ({
+          kind: row.kind,
+          name: row.name,
+          subLabel: row.subLabel,
+          source: row.source,
+          confidence: row.confidence,
+          level: confidenceLevel(row.confidence),
+          applied: row.confidence >= APPLY_MIN_CONFIDENCE && row.kind !== 'unknown',
+          validFrom: row.validFrom,
+          validTo: row.validTo,
+          evidence: row.evidence
+        })),
+        cluster: cluster
+          ? {
+              ...cluster,
+              sample: db
+                .prepare<[string, string], { address: string }>(
+                  `SELECT address FROM address_clusters
+                   WHERE cluster_id = ? AND address <> ? ORDER BY address LIMIT 10`
+                )
+                .all(cluster.clusterId, address)
+                .map((row) => row.address)
+            }
+          : null,
+        candidates: listCandidates(db, { address, limit: 10 }),
+        recent: walletEvents(db, address, { limit: 20 })
+      };
+    });
   });
+
+  router.get('/wallets/:address/events', (req: Request, res: Response) => {
+    const address = parseAddress(req, res);
+    if (!address) return;
+
+    const cursor = parseCursor(req.query.cursor);
+    if (req.query.cursor && !cursor) {
+      res.status(400).json({ error: 'Invalid cursor', message: 'Expected height:txid:vout' });
+      return;
+    }
+
+    const type = req.query.type;
+    if (type !== undefined && !['buying', 'selling', 'p2p'].includes(String(type))) {
+      res
+        .status(400)
+        .json({ error: 'Invalid type', message: 'type must be buying, selling or p2p' });
+      return;
+    }
+
+    cache.send(req, res, () => ({
+      address,
+      ...walletEvents(db, address, {
+        limit: Number(req.query.limit) || 50,
+        ...(cursor ? { cursor } : {}),
+        ...(type ? { flowType: String(type) } : {})
+      })
+    }));
+  });
+
+  /** A period's window, ending at the newest stored block. */
+  function periodWindow(period: PeriodId) {
+    const database = cache.databaseSummary();
+    return resolvePeriod(db, Math.floor(database.maxTime - PERIOD_SECONDS[period]));
+  }
 
   // ── Compatibility shims ───────────────────────────────────────────────────
   // The v1 dashboard and its components still call these. The v2 intelligence worker
@@ -469,6 +913,74 @@ function toDirection(flowType: 'buying' | 'selling', summary: ReturnType<typeof 
   };
 }
 
+/** Counterparty kinds the series can be filtered by (the exchange side is implied). */
+const SERIES_KINDS: readonly string[] = ['unknown', 'node_operator', 'foundation', 'exchange'];
+
+/**
+ * A bounded optional text query parameter: `undefined` when absent, `null` when present
+ * but not a short plain string (repeated parameters arrive as arrays).
+ */
+function optionalText(value: unknown, maxLength: number): string | undefined | null {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'string' || value.length === 0 || value.length > maxLength) return null;
+  return value;
+}
+
+/** Validate an `:address` route parameter (#21): anything else is a 400, never a query. */
+function parseAddress(req: Request, res: Response): string | null {
+  const address = req.params.address;
+  if (typeof address !== 'string' || !ADDRESS_PATTERN.test(address)) {
+    res.status(400).json({
+      error: 'Invalid address',
+      message: 'Expected a FLUX transparent address (t1… or t3…, 35 characters)'
+    });
+    return null;
+  }
+  return address;
+}
+
+// ── Query validation (#21) ───────────────────────────────────────────────────
+/*
+ * Every query parameter is parsed against a closed schema. Bad values are a 400 with the
+ * reason, not silently coerced: `Number('abc') || 50` used to turn garbage into a default
+ * and hide the client's bug.
+ */
+const ADDRESS_KINDS = ['exchange', 'foundation', 'node_operator', 'unknown'] as const;
+
+const eventsQuery = z.object({
+  type: z.enum(['buying', 'selling', 'p2p']).optional(),
+  kind: z.enum(ADDRESS_KINDS).optional(),
+  exchange: z.string().min(1).max(64).optional(),
+  minAmount: z.coerce.number().min(0).max(1e10).optional(),
+  limit: z.coerce.number().int().min(1).max(500).default(50),
+  cursor: z.string().max(200).optional()
+});
+
+const leaderboardQuery = z.object({
+  limit: z.coerce.number().int().min(1).max(100).default(10)
+});
+
+function parseQuery<T extends z.ZodTypeAny>(
+  schema: T,
+  req: Request,
+  res: Response
+): z.infer<T> | null {
+  const parsed = schema.safeParse(req.query);
+
+  if (!parsed.success) {
+    res.status(400).json({
+      error: 'Invalid query',
+      issues: parsed.error.issues.map((issue) => ({
+        parameter: issue.path.join('.'),
+        message: issue.message
+      }))
+    });
+    return null;
+  }
+
+  return parsed.data as z.infer<T>;
+}
+
 function parseCursor(value: unknown): { height: number; txid: string; vout: number } | null {
   if (typeof value !== 'string') return null;
 
@@ -508,6 +1020,21 @@ export function errorHandler(config: Config, log: Logger) {
 
     if (error instanceof ApiError) {
       res.status(error.status).json({ error: error.code, message: error.message });
+      return;
+    }
+
+    /*
+     * Errors raised by Express middleware describing a bad *request* — body-parser's 413 for
+     * an oversized body, 400 for malformed JSON — carry their status. They are the client's
+     * fault, so they are answered as such rather than logged as a server failure (#21).
+     */
+    const status = (error as { status?: unknown; type?: unknown } | null)?.status;
+    if (typeof status === 'number' && status >= 400 && status < 500) {
+      const type = (error as { type?: unknown }).type;
+      res.status(status).json({
+        error: typeof type === 'string' ? type : 'bad_request',
+        message: error instanceof Error ? error.message : 'Bad request'
+      });
       return;
     }
 

@@ -33,10 +33,24 @@ Real-time exchange flow analysis dashboard for the Flux blockchain network. Trac
 
 ### Classification
 
-- **Exchanges**: Configurable list of exchange addresses (Binance, KuCoin, etc.)
-- **Foundation**: Flux Foundation official addresses
-- **Node Operators**: Dynamic list fetched from Flux API (includes node count and tiers)
-- **Unknown**: All other addresses
+Every label lives in `address_labels` with a **source**, a **confidence** and its
+**evidence** (#18, #19). Only labels at _likely_ or above change how a flow is counted;
+weaker ones are shown on the wallet page and nowhere else.
+
+| Kind          | How we know                                                                                            | Confidence         |
+| ------------- | ------------------------------------------------------------------------------------------------------ | ------------------ |
+| Exchange      | `config/labels.json`, or a clustering candidate a human accepted                                       | confirmed / likely |
+| Foundation    | `config/labels.json`, with named sub-wallets                                                           | confirmed          |
+| Node operator | payment address on the current deterministic node list                                                 | confirmed          |
+| Node operator | received coinbase rewards in stored blocks, no longer on the list (valid 30 days past its last reward) | likely             |
+| Node operator | wallet fed ≥ 80% by node payout addresses (reward forwarding)                                          | likely / possible  |
+| Unknown       | everything else                                                                                        | —                  |
+
+When a label changes, the address's flows are re-derived from the stored transactions and
+the totals follow (the rollups are maintained by triggers, so they stay exact). Transfers
+between Foundation wallets produce no flow. Exchange **hops** — a withdrawal re-deposited by
+the same wallet shortly after — are reported separately, with headline totals also given
+without them.
 
 ## 🚀 Quick Start
 
@@ -51,6 +65,13 @@ npm run dev                # API on :3000 + Vite on :5173, both watching
 
 Open <http://localhost:5173>. `vite dev` proxies `/api` to the API process, so there is
 nothing else to start.
+
+To work on the UI against an API that is already running elsewhere, such as the Compose
+container with real data, point the proxy at it and start only the web server:
+
+```bash
+API_PROXY_TARGET=http://localhost:3000 npm run dev:web
+```
 
 To run the API on its own, without the web server:
 
@@ -230,7 +251,13 @@ fluxflow/
 │   │   ├── shared/                    # Isomorphic code, safe in any bundle
 │   │   │   └── constants.ts           # Periods, labels, block-time helpers
 │   │   ├── client/                    # Browser-only helpers, never imported server-side
-│   │   │   └── api.ts                 # Same-origin /api client
+│   │   │   ├── api.ts                 # Same-origin /api client, abortable, last-answer cache
+│   │   │   ├── urlState.ts            # period + filters <-> query string
+│   │   │   ├── format.ts, csv.ts      # display formatting, CSV export
+│   │   │   ├── endpoints.ts           # typed calls for every data endpoint (docs/api.md)
+│   │   │   ├── pager.ts               # keyset paging, merging buying + selling streams
+│   │   │   ├── live.svelte.ts         # one EventSource on /api/stream; polling fallback
+│   │   │   └── watchlist.ts           # per-browser watchlist (localStorage)
 │   │   ├── server/                    # Server-only; stripped from the client bundle
 │   │   │   ├── config.ts              # zod-validated environment
 │   │   │   ├── logger.ts              # pino, structured, redacted
@@ -240,7 +267,7 @@ fluxflow/
 │   │   │   ├── api/                   # read queries + the /api router
 │   │   │   ├── db/                    # SQLite connection + versioned migrations
 │   │   │   └── ingest/datasource/     # normalised chain shapes, adapters, breaker
-│   │   ├── components/                # Svelte UI
+│   │   ├── ui/                        # Svelte 5 components (balance axis, boards, explorer)
 │   │   └── data/exchanges.json        # legacy labels, superseded by config/labels.json
 │   ├── routes/                        # SvelteKit routes
 │   ├── server.ts                      # entry: /api router + SvelteKit handler, one process
@@ -300,6 +327,8 @@ derived from them and can be rebuilt.
 | `node_rewards`   | coinbase-derived, so "was a node operator" is time-accurate                  |
 | `address_labels` | exchange / Foundation / operator labels — mutable, correctable, re-derivable |
 | `flows`          | the derived buy/sell/p2p rows the API reads                                  |
+| `rollup_*`       | hourly and daily totals per direction, counterparty and exchange (triggers)  |
+| `wallet_*`       | daily and 30-day totals per wallet, for leaderboards and profiles (triggers) |
 | `missing_blocks` | heights that failed to fetch, with backoff — retried, never skipped          |
 
 Because labels are separate from facts, correcting an exchange address never rewrites
@@ -330,25 +359,76 @@ For each transfer transaction:
 
 All endpoints are same-origin. There is no CORS layer unless `ORIGIN` is set explicitly.
 
-| Method | Path                        | Notes                                         |
-| ------ | --------------------------- | --------------------------------------------- |
-| GET    | `/api/health`               | O(1); 503 + `degraded` when sync is stale     |
-| GET    | `/api/status`               | sync, database, data-source and label summary |
-| GET    | `/api/blocks/status`        | block range and sync progress                 |
-| GET    | `/api/database/stats`       | row counts and database size                  |
-| GET    | `/api/classification/stats` | label counts                                  |
-| GET    | `/api/unknowns/stats`       | how much is still unlabelled                  |
-| GET    | `/api/flow/:period`         | aggregated totals, no events attached         |
-| GET    | `/api/flow/:period/events`  | keyset-paginated events, filterable           |
-| GET    | `/api/flow/:period/buyers`  | top N addresses receiving from exchanges      |
-| GET    | `/api/flow/:period/sellers` | top N addresses sending to exchanges          |
+| Method | Path                           | Notes                                         |
+| ------ | ------------------------------ | --------------------------------------------- |
+| GET    | `/api/health`                  | O(1); 503 + `degraded` when sync is stale     |
+| GET    | `/api/status`                  | sync, database, data-source and label summary |
+| GET    | `/api/blocks/status`           | block range and sync progress                 |
+| GET    | `/api/database/stats`          | row counts and database size                  |
+| GET    | `/api/classification/stats`    | label counts                                  |
+| GET    | `/api/unknowns/stats`          | how much is still unlabelled                  |
+| GET    | `/api/flow/:period`            | aggregated totals, no events attached         |
+| GET    | `/api/flow/:period/events`     | keyset-paginated events, filterable           |
+| GET    | `/api/flow/:period/buyers`     | top wallets withdrawing from exchanges        |
+| GET    | `/api/flow/:period/sellers`    | top wallets depositing to exchanges           |
+| GET    | `/api/flow/:period/series`     | buying/selling/net per hour (≤7D) or day      |
+| GET    | `/api/wallets/:address`        | wallet profile: totals, exchanges, history    |
+| GET    | `/api/wallets/:address/events` | a wallet's flows, keyset-paginated            |
+| GET    | `/api/search?q=`               | address prefix, label name or txid            |
+| GET    | `/api/flow/:period/hops`       | exchange hops (withdraw → re-deposit)         |
+| GET    | `/api/foundation?period=`      | Foundation wallets, flows, balance history    |
+| GET    | `/api/intel/status`            | labels by source, node list, clustering       |
+| GET    | `/api/stream`                  | Server-Sent Events: `sync` and `flow` (live)  |
+| GET    | `/api/metrics`                 | Prometheus text format                        |
+| POST   | `/api/admin/sync`              | admin: start a cycle now (answers 202)        |
+| POST   | `/api/admin/retention`         | admin: prune past the retention window now    |
+| POST   | `/api/admin/alerts/reload`     | admin: re-read `config/alerts.json`           |
 
 `period` is one of `24H`, `7D`, `30D`, `90D`, `6M`. Windows are resolved from block **time**
 rather than a block count, so "Today" means today even if block times drift.
 
+Every response carries an `ETag` tied to the stored data's version: repeat requests between
+syncs are served from memory, or answered `304`. Full request and response shapes are in
+[`docs/api.md`](docs/api.md).
+
 `/api/flow/:period` returns aggregates only. Events are served a page at a time by
 `/events`, because shipping a whole period to the browser took 28 seconds and then crashed
 in `JSON.stringify` at six months.
+
+Admin endpoints need `Authorization: Bearer $ADMIN_TOKEN` and are refused outright when no
+token is configured.
+
+**Limits.** Every query parameter is validated: a bad `limit`, `type` or `kind` is a `400`
+naming the parameter, not a silent default. Clients are rate limited per IP
+(`API_RATE_LIMIT_RPS` sustained, `API_RATE_LIMIT_BURST` burst; `0` disables), except
+health, status, metrics and the stream. Request bodies over 64 KB are refused with `413`,
+and a request must arrive within 30 s. Behind a reverse proxy set `TRUST_PROXY=1` so the
+limiter sees real client IPs.
+
+### Live updates (`/api/stream`)
+
+After each committed sync cycle the server sends `event: sync` with the new tip and data
+version (the same version the API's ETags carry, so a refetch is a cheap `304` when nothing
+you show changed). New flows of at least `LIVE_FLOW_MIN_FLUX` from tip-following arrive as
+`event: flow`. Backfilled history never does.
+
+```js
+const events = new EventSource('/api/stream');
+events.addEventListener('sync', (e) => refresh(JSON.parse(e.data)));
+events.addEventListener('flow', (e) => toast(JSON.parse(e.data)));
+```
+
+At most `LIVE_MAX_CLIENTS` subscribers; beyond that the stream answers `503` and clients
+should fall back to polling.
+
+### Metrics (`/api/metrics`)
+
+Prometheus text format, cheap enough to scrape every 15 s. Highlights:
+`fluxflow_chain_height`, `fluxflow_sync_blocks_total{phase}`,
+`fluxflow_sync_blocks_per_minute`, `fluxflow_source_active{source}`,
+`fluxflow_pool_nodes{state}`, `fluxflow_api_cache_total{outcome}`,
+`fluxflow_event_loop_delay_seconds{quantile}`, `fluxflow_alerts_total{outcome}`.
+`/api/status` carries the event-loop delay too, under `runtime`.
 
 ---
 
@@ -366,12 +446,63 @@ in `JSON.stringify` at six months.
 }
 ```
 
-Mounted at `/app/config/labels.json` in the container, so this file can be edited on a live
-server without rebuilding. It is loaded into the `address_labels` table on startup, and
-`labels.reload()` re-reads it without a restart.
+Foundation sub-wallets go under `foundation.wallets` as `{ "name": "Treasury",
+"addresses": [...] }`; the name becomes the wallet's `subLabel`.
 
-Coverage is thin — only a handful of exchanges are known. Addresses discovered by
-clustering are proposed as candidates and need a human to add them here.
+Mounted at `/app/config/labels.json` in the container and **watched**: an edit is applied
+within a few seconds, without a restart, and the affected flows are re-derived. Removing an
+address from the file removes its label.
+
+### Growing exchange coverage (#20)
+
+Clustering (addresses spent together share an owner) and sweep detection (deposit
+addresses consolidated into a known hot wallet) propose **candidates**. They change no total
+until accepted:
+
+```bash
+curl -H "Authorization: Bearer $ADMIN_TOKEN" localhost:3000/api/admin/labels/candidates?status=pending
+curl -H "Authorization: Bearer $ADMIN_TOKEN" -H 'content-type: application/json' \
+  -d '{"address":"t1...","kind":"exchange","name":"Kucoin","decision":"accepted"}' \
+  localhost:3000/api/admin/labels/candidates/decide
+```
+
+A manual label (`POST /api/admin/labels`) beats every other source; `"kind": "unknown"`
+removes a wrong label. `npm run precision -- <copy of the db>` runs the whole pass on a
+database file and prints how often each heuristic agrees with independent ground truth.
+
+### Alerts (`config/alerts.json`)
+
+Whale and watchlist alerts to Discord, Telegram or any webhook. Copy
+[`config/alerts.example.json`](config/alerts.example.json) to `config/alerts.json` (or point
+`ALERTS_PATH` elsewhere); without the file, alerts are off.
+
+```json
+{
+  "channels": {
+    "discord": { "type": "discord", "url": "env:DISCORD_WEBHOOK_URL" }
+  },
+  "rules": [
+    {
+      "name": "Whale sell to an exchange",
+      "minFlux": 25000,
+      "flowTypes": ["selling"],
+      "channels": ["discord"],
+      "cooldownSeconds": 300
+    }
+  ]
+}
+```
+
+- **Matching:** `minFlux`, `flowTypes`, `exchanges`, `kinds` (the counterparty, e.g.
+  `node_operator`) and `addresses` (either side) — every condition given must hold.
+- **Secrets:** `"env:NAME"` reads a value from the environment, so webhook URLs and bot
+  tokens stay out of the file. A channel whose variable is unset is disabled with a warning.
+- **Noise control:** each flow alerts once per rule, `cooldownSeconds` suppresses repeats,
+  and one batch sends at most 5 alerts per rule plus a `(+N more)` note. Only recent
+  tip-following flows are checked; backfill never alerts.
+- **Delivery** runs in the background with retries, never delaying ingestion.
+- The file is re-read when it changes (or `POST /api/admin/alerts/reload`); an invalid edit
+  keeps the previous rules and is reported in `/api/status`.
 
 ## 🎨 Theming
 

@@ -1,5 +1,5 @@
 ﻿import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { Logger } from 'pino';
+import pino, { type Logger } from 'pino';
 import { createTestConfig, createTestDb, silentLogger, type Db } from '../testkit.js';
 import { FailoverDataSource } from './datasource/circuitbreaker.js';
 import type { DataSource, NormalisedBlock } from './datasource/types.js';
@@ -11,11 +11,25 @@ const SATS = 100_000_000;
 const NOW = 1_756_000_000;
 const EXCHANGE = 't1coinex1';
 
+const STATS = {
+  exchanges: 1,
+  foundation: 0,
+  nodeOperators: 0,
+  total: 1,
+  bySource: { config: 1 },
+  source: 'test',
+  loadedAt: 0
+};
+
 const LABELS: LabelLookup = {
   kindOf: (address) => (address === EXCHANGE ? 'exchange' : 'unknown'),
   nameOf: (address) => (address === EXCHANGE ? 'Coinex' : null),
-  reload: () => ({ exchanges: 1, foundation: 0, total: 1, source: 'test', loadedAt: 0 }),
-  stats: () => ({ exchanges: 1, foundation: 0, total: 1, source: 'test', loadedAt: 0 }),
+  labelOf: () => null,
+  allLabels: () => [],
+  addressesOf: () => [],
+  refresh: () => [],
+  reload: () => STATS,
+  stats: () => STATS,
   entries: () => new Map()
 };
 
@@ -989,6 +1003,23 @@ describe('SyncService', () => {
       expect(sync.tip()).toBe(50);
       // One cycle synced everything, a second confirmed there was nothing left; then quiet.
       expect(tipReads).toBeLessThanOrEqual(2);
+    });
+
+    it('logs at most 3 info lines for a steady-state cycle (#24)', async () => {
+      const lines: string[] = [];
+      const log = pino({ level: 'info' }, { write: (line: string) => void lines.push(line) });
+      const chain: FakeChain = { tip: 20, fetched: [] };
+      sync = buildSync(db, chainSource(chain), { SYNC_BATCH_SIZE: '1000' }, log);
+
+      await sync.runOnce();
+      lines.length = 0;
+
+      // Steady state: one new block per cycle.
+      chain.tip = 21;
+      await sync.runOnce();
+
+      expect(lines.length).toBeLessThanOrEqual(3);
+      expect(lines.length).toBeGreaterThan(0);
     });
   });
 });

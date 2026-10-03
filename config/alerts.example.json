@@ -1,0 +1,38 @@
+{
+  "channels": {
+    "discord": { "type": "discord", "url": "env:DISCORD_WEBHOOK_URL" },
+    "telegram": {
+      "type": "telegram",
+      "botToken": "env:TELEGRAM_BOT_TOKEN",
+      "chatId": "env:TELEGRAM_CHAT_ID"
+    },
+    "ops": {
+      "type": "webhook",
+      "url": "https://example.com/fluxflow-hook",
+      "headers": { "authorization": "env:OPS_WEBHOOK_AUTH" }
+    }
+  },
+  "rules": [
+    {
+      "name": "Whale sell to an exchange",
+      "minFlux": 25000,
+      "flowTypes": ["selling"],
+      "channels": ["discord"],
+      "cooldownSeconds": 300
+    },
+    {
+      "name": "Node operator selling",
+      "minFlux": 5000,
+      "flowTypes": ["selling"],
+      "kinds": ["node_operator"],
+      "channels": ["discord"],
+      "cooldownSeconds": 600
+    },
+    {
+      "name": "Watched wallets",
+      "addresses": ["t1ExampleAddressToWatchxxxxxxxxxx"],
+      "channels": ["discord", "telegram"],
+      "enabled": false
+    }
+  ]
+}
