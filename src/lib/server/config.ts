@@ -73,6 +73,32 @@ const optionalBaseUrl = optionalNonEmpty(z.string().url()).transform((value) =>
 
 const optionalToken = optionalNonEmpty(z.string());
 
+/**
+ * A comma-separated port list, e.g. `16127,16137`.
+ *
+ * Kept as a string in the env schema and resolved here, so a bad port is reported with the
+ * variable name the operator actually set rather than as an index into an array.
+ */
+const portList = nonEmpty(z.string()).transform((value, ctx) => {
+  const ports = value
+    .split(',')
+    .map((part) => part.trim())
+    .filter((part) => part !== '')
+    .map((part) => {
+      const port = Number(part);
+      if (!Number.isInteger(port) || port < 1 || port > 65_535) {
+        ctx.addIssue({
+          code: 'custom',
+          message: `${part} is not a valid TCP port`
+        });
+        return Number.NaN;
+      }
+      return port;
+    });
+
+  return ports;
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Schema
 // ─────────────────────────────────────────────────────────────────────────────
@@ -103,6 +129,44 @@ const rawConfigSchema = z
     BLOCKBOOK_URL: baseUrl.default('https://blockbook.runonflux.io'),
     FLUX_NODES_API: baseUrl.default('https://explorer.runonflux.io/api/status?q=getFluxNodes'),
     SYNC_ENABLED: boolFlag.default(true),
+
+    // ── FluxNode pool (#35) ───────────────────────────────────────────────────
+    /**
+     * Spread reads across many FluxNode daemon APIs instead of one rate-limited Blockbook.
+     *
+     * Every FluxNode runs `fluxd` and FluxOS republishes its RPCs over HTTP, so thousands
+     * of full nodes exist and the load can be spread across them. This costs the project
+     * nothing and — unlike the single public Blockbook instance — is not rate-limited per
+     * IP. It is also one request per block rather than one request per transaction.
+     */
+    FLUXNODE_POOL_ENABLED: boolFlag.default(true),
+    /** How many probed nodes to keep. More nodes means faster sync and less pressure each. */
+    FLUXNODE_POOL_SIZE: z.coerce.number().int().min(1).max(200).default(15),
+    /** How many candidates to probe before keeping the fastest `FLUXNODE_POOL_SIZE`. */
+    FLUXNODE_PROBE_SAMPLE: z.coerce.number().int().min(1).max(500).default(60),
+    /**
+     * Max concurrent requests **per node**.
+     *
+     * Deliberately small: these are operators' home connections, not our infrastructure.
+     * Two in flight keeps the pipe full without being rude. FluxOS has no general HTTP rate
+     * limiter, so operator goodwill is the only real limit.
+     */
+    FLUXNODE_MAX_INFLIGHT: z.coerce.number().int().min(1).max(8).default(2),
+    /**
+     * Daemon API ports to try per node. 16127 is the Flux default; UPnP deployments use
+     * 16137-16197. Ports are tried in order and the first that answers is used.
+     */
+    FLUXNODE_API_PORTS: portList.default([16127, 16137, 16147, 16157, 16167]),
+    /** How often to re-discover and re-probe the node list. */
+    FLUXNODE_DISCOVERY_SECONDS: z.coerce.number().int().min(300).max(86_400).default(1_800),
+    /** How long a node is benched after a timeout, 5xx, or a wrong-height answer. */
+    FLUXNODE_BENCH_SECONDS: z.coerce.number().int().min(10).max(3_600).default(120),
+    /** A node is discarded if its tip is this far behind the pool median. */
+    FLUXNODE_TIP_TOLERANCE: z.coerce.number().int().min(0).max(100).default(2),
+    /** Timeout for a liveness or capability probe. Probes must not stall a sync cycle. */
+    FLUXNODE_PROBE_TIMEOUT_MS: z.coerce.number().int().min(500).max(60_000).default(5_000),
+    /** Fetch every Nth block's hash from a second node to catch a node that lies. */
+    FLUXNODE_SPOTCHECK_EVERY: z.coerce.number().int().min(0).max(1_000).default(25),
 
     // ── Sync ──────────────────────────────────────────────────────────────────
     SYNC_POLL_SECONDS: z.coerce.number().int().min(5).max(3_600).default(30),
@@ -189,6 +253,23 @@ export interface Config {
   };
   /** Dedicated indexer present? Gates anything that needs per-address queries (#7). */
   readonly hasDedicatedIndexer: boolean;
+
+  /** FluxNode daemon pool (#35). */
+  readonly fluxNode: {
+    readonly enabled: boolean;
+    /** Explorer endpoint the node list is discovered from. */
+    readonly discoveryUrl: string;
+    readonly poolSize: number;
+    readonly probeSample: number;
+    readonly maxInflightPerNode: number;
+    readonly apiPorts: readonly number[];
+    readonly discoverySeconds: number;
+    readonly benchSeconds: number;
+    readonly tipTolerance: number;
+    readonly probeTimeoutMs: number;
+    /** 0 disables cross-node hash verification. */
+    readonly spotCheckEvery: number;
+  };
   /**
    * Historical wallet analysis needs a source that can answer address queries.
    * Without an indexer the v2 intelligence layer uses local data only (coinbase node
@@ -246,6 +327,21 @@ function toConfig(raw: RawConfig): Config {
     hasDedicatedIndexer: raw.FLUX_INDEXER_URL !== undefined,
     enhancementEnabled: raw.SYNC_ENABLED && raw.FLUX_INDEXER_URL !== undefined,
     syncEnabled: raw.SYNC_ENABLED,
+
+    fluxNode: {
+      // Only useful when we are actually syncing.
+      enabled: raw.SYNC_ENABLED && raw.FLUXNODE_POOL_ENABLED,
+      discoveryUrl: raw.FLUX_NODE_POOL_URL,
+      poolSize: raw.FLUXNODE_POOL_SIZE,
+      probeSample: raw.FLUXNODE_PROBE_SAMPLE,
+      maxInflightPerNode: raw.FLUXNODE_MAX_INFLIGHT,
+      apiPorts: raw.FLUXNODE_API_PORTS,
+      discoverySeconds: raw.FLUXNODE_DISCOVERY_SECONDS,
+      benchSeconds: raw.FLUXNODE_BENCH_SECONDS,
+      tipTolerance: raw.FLUXNODE_TIP_TOLERANCE,
+      probeTimeoutMs: raw.FLUXNODE_PROBE_TIMEOUT_MS,
+      spotCheckEvery: raw.FLUXNODE_SPOTCHECK_EVERY
+    },
 
     sync: {
       pollSeconds: raw.SYNC_POLL_SECONDS,
@@ -323,7 +419,10 @@ export function describeConfig(config: Config): Record<string, unknown> {
     dataSources: {
       fluxNodePoolUrl: config.dataSources.fluxNodePoolUrl,
       fluxIndexerUrl: config.dataSources.fluxIndexerUrl ?? '(not configured)',
-      blockbookUrl: config.dataSources.blockbookUrl
+      blockbookUrl: config.dataSources.blockbookUrl,
+      fluxNodePool: config.fluxNode.enabled
+        ? `${config.fluxNode.poolSize} nodes, ${config.fluxNode.maxInflightPerNode} in flight each`
+        : '(disabled)'
     },
     sync: config.sync,
     labelsPath: config.labelsPath,

@@ -135,6 +135,31 @@ function hashingSource(chain: FakeChain): DataSource & { chain: FakeChain; hashC
   });
 }
 
+/**
+ * The wiring `createService` actually builds: one shared limiter, passed to both the
+ * failover source and the sync service.
+ *
+ * Every other test omits the limiter from the failover source, which hides double-wrapping
+ * bugs. This is the shape that ships.
+ */
+function buildSyncWithSharedLimiter(
+  db: Db,
+  source: DataSource,
+  env: Record<string, string> = {}
+): SyncService {
+  const config = createTestConfig(env);
+  const limiter = createLimiter(config.sync.concurrency);
+
+  const dataSource = new FailoverDataSource({
+    sources: [source],
+    config,
+    log: silentLogger(),
+    limiter
+  });
+
+  return new SyncService({ config, db, labels: LABELS, dataSource, log: silentLogger(), limiter });
+}
+
 describe('retentionBlocks', () => {
   it('converts days to blocks at a 30-second block time', () => {
     expect(retentionBlocks(1)).toBe(2_880);
@@ -277,6 +302,33 @@ describe('SyncService', () => {
       // hung, did so forever.
       expect(sync.stats.cycles).toBe(1);
       expect(storedHeights().filter((height) => height === 100)).toHaveLength(1);
+    });
+
+    it('completes a cycle when the data source applies the shared limiter', async () => {
+      /*
+       * Regression: the limiter used to be applied twice, once by `FailoverDataSource` and
+       * once again around each fetch. A limiter holds its slot while awaiting the work
+       * inside it, so with `concurrency` callers every one of them took a slot and then
+       * blocked forever waiting for a second. Nothing was written, nothing was logged as
+       * failed, and the service reported itself healthy — the pool was probed and serving,
+       * and not one block was ever committed.
+       *
+       * No earlier test caught this because the tests build the failover source without a
+       * limiter, so only one level of wrapping was ever exercised. This one uses the real
+       * wiring, and has a timeout so a deadlock fails as a failure rather than a hang.
+       */
+      const source = chainSource({ tip: 40, fetched: [] });
+      sync = buildSyncWithSharedLimiter(db, source, { SYNC_BATCH_SIZE: '1000' });
+
+      await Promise.race([
+        sync.runOnce(),
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error('sync cycle deadlocked')), 5_000)
+        )
+      ]);
+
+      expect(count('blocks')).toBe(40);
+      expect(sync.stats.cycles).toBe(1);
     });
   });
 
@@ -564,6 +616,68 @@ describe('SyncService', () => {
       expect(sync.stats.lastSuccessAt).toBeNull();
       await sync.runOnce();
       expect(sync.stats.lastSuccessAt).toBeGreaterThan(0);
+    });
+
+    it('reports success when there is simply nothing new to fetch', async () => {
+      /*
+       * A caught-up service commits no blocks, which is not a failure. Recording success
+       * only on a commit would leave a fully-synced service reporting itself stale, and an
+       * orchestrator would eventually restart it for doing its job correctly.
+       */
+      const source = chainSource({ tip: 10, fetched: [] });
+      sync = buildSync(db, source, { SYNC_BATCH_SIZE: '1000' });
+
+      await sync.runOnce();
+      const first = sync.stats.lastSuccessAt;
+
+      await sync.runOnce();
+      await sync.runOnce();
+
+      // The tip has not moved, so nothing was committed — and the service is still healthy.
+      expect(sync.stats.lastSuccessAt).toBeGreaterThanOrEqual(first!);
+    });
+
+    it('reports success when a pass had some failures but other blocks landed', async () => {
+      const chain = { tip: 10, fetched: [] as number[], failingOnce: new Set([3, 7]) };
+      const source = chainSource(chain);
+      sync = buildSync(db, source, { SYNC_BATCH_SIZE: '1000' });
+
+      await sync.runOnce();
+
+      // Data is landing. Individual heights failing is a different thing, and is already
+      // visible as `missing_blocks` and the `failed` counter.
+      expect(sync.stats.lastSuccessAt).toBeGreaterThan(0);
+      expect(count('missing_blocks')).toBe(2);
+    });
+
+    it('notifies its listener on success, which is how /api/health learns sync is working', async () => {
+      const seen: number[] = [];
+      const source = chainSource({ tip: 10, fetched: [] });
+
+      sync = buildSync(db, source, { SYNC_BATCH_SIZE: '1000' }, silentLogger(), {
+        onSuccess: (at) => seen.push(at)
+      });
+
+      await sync.runOnce();
+
+      expect(seen).toHaveLength(1);
+      expect(seen[0]).toBeGreaterThan(0);
+    });
+
+    it('does not notify its listener when no data source could be reached', async () => {
+      const seen: number[] = [];
+      const source = chainSource({ tip: 10, fetched: [] });
+      source.getTip = async () => {
+        throw new Error('network down');
+      };
+
+      sync = buildSync(db, source, { SYNC_BATCH_SIZE: '1000' }, silentLogger(), {
+        onSuccess: (at) => seen.push(at)
+      });
+
+      await sync.runOnce();
+
+      expect(seen).toEqual([]);
     });
 
     it('survives a total data-source outage without throwing', async () => {

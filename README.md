@@ -101,10 +101,27 @@ characters. See [`.env.example`](.env.example) for every variable, or
 
 ```bash
 DATABASE_PATH=/app/data/flux-flow.db
-FLUX_INDEXER_URL=http://your-indexer:42067   # optional; omit to use the public FluxNode pool
+FLUX_INDEXER_URL=http://your-indexer:42067   # optional; omit to use the FluxNode pool
 SYNC_POLL_SECONDS=30
 ADMIN_TOKEN=$(openssl rand -hex 32)
 ```
+
+#### Where the data comes from
+
+With no configuration at all, FluxFlow reads chain data from the **FluxNode pool**: it
+discovers nodes from the public explorer, probes them, keeps the fastest ~15 within two
+blocks of the pool median tip, and spreads every block fetch across them at two concurrent
+requests per node. This is free, needs no indexer, and — unlike the single public Blockbook
+instance — is not rate-limited per IP.
+
+Each FluxNode is an operator's home connection, so the pool is deliberately restrained:
+`User-Agent: FluxFlow/2 (+repo url)`, two requests in flight per node, a random sample rather
+than a sweep, and exponential backoff on any failure. It also does not trust any single node:
+the tip is the **median** across the pool, every 25th block's hash is re-fetched from a
+_different_ node and compared, and a node that disagrees is benched rather than believed.
+
+Set `FLUXNODE_POOL_ENABLED=0` to turn it off. If you run your own indexer or `fluxd`, set
+`FLUX_INDEXER_URL` and it is preferred — the pool stays as the fallback.
 
 Address labels live in [`config/labels.json`](config/labels.json), which is mounted into the
 container — exchanges and Foundation addresses can be corrected without a rebuild.
@@ -177,21 +194,21 @@ credentials belong there rather than in `$lib/shared`.
 
 ### Server modules
 
-| Module                      | Responsibility                                                                      | Issues       |
-| --------------------------- | ----------------------------------------------------------------------------------- | ------------ |
-| `server/config.ts`          | zod-validated environment, resolved once at startup                                 | #11          |
-| `server/logger.ts`          | pino structured logging with redaction                                              | #24          |
-| `server/http.ts`            | the only outbound call site: mandatory timeout, retries, shared concurrency limiter | #10, #5      |
-| `server/db/database.ts`     | SQLite connection and pragmas; `DEBUG_SQL` gates SQL logging                        | #6           |
-| `server/db/migrations.ts`   | versioned schema migrations; refuses a legacy v1 database                           | #17          |
-| `server/ingest/datasource/` | normalised chain shapes, Blockbook + FluxIndexer adapters, circuit breaker          | #12, #15     |
-| `server/ingest/derive.ts`   | a fetched block → deltas, flows and node rewards. Pure, no I/O                      | #15, #18     |
-| `server/ingest/writer.ts`   | the single writer: one transaction per batch, statements prepared once              | #14, #16     |
-| `server/ingest/sync.ts`     | tip-following, gap repair, reorg rollback, retention                                | #5, #13, #17 |
-| `server/labels.ts`          | `config/labels.json` → `address_labels`, reloadable without a restart               | #18, #20     |
-| `server/api/queries.ts`     | bounded SQL: aggregates in the database, keyset pagination, no full scans           | #2, #3       |
-| `server/api/router.ts`      | the `/api` surface; O(1) health that reports staleness                              | #3, #21      |
-| `server/index.ts`           | service assembly and graceful shutdown                                              | #14, #22     |
+| Module                      | Responsibility                                                                      | Issues        |
+| --------------------------- | ----------------------------------------------------------------------------------- | ------------- |
+| `server/config.ts`          | zod-validated environment, resolved once at startup                                 | #11           |
+| `server/logger.ts`          | pino structured logging with redaction                                              | #24           |
+| `server/http.ts`            | the only outbound call site: mandatory timeout, retries, shared concurrency limiter | #10, #5       |
+| `server/db/database.ts`     | SQLite connection and pragmas; `DEBUG_SQL` gates SQL logging                        | #6            |
+| `server/db/migrations.ts`   | versioned schema migrations; refuses a legacy v1 database                           | #17           |
+| `server/ingest/datasource/` | normalised chain shapes, FluxNode pool + Blockbook + FluxIndexer, circuit breaker   | #12, #15, #35 |
+| `server/ingest/derive.ts`   | a fetched block → deltas, flows and node rewards. Pure, no I/O                      | #15, #18      |
+| `server/ingest/writer.ts`   | the single writer: one transaction per batch, statements prepared once              | #14, #16      |
+| `server/ingest/sync.ts`     | tip-following, gap repair, reorg rollback, retention                                | #5, #13, #17  |
+| `server/labels.ts`          | `config/labels.json` → `address_labels`, reloadable without a restart               | #18, #20      |
+| `server/api/queries.ts`     | bounded SQL: aggregates in the database, keyset pagination, no full scans           | #2, #3        |
+| `server/api/router.ts`      | the `/api` surface; O(1) health that reports staleness                              | #3, #21       |
+| `server/index.ts`           | service assembly and graceful shutdown                                              | #14, #22      |
 
 ## 🔧 How It Works
 
@@ -310,11 +327,37 @@ docker logs -f fluxflow | grep "batch committed"
 
 ### Ingestion stalls on `HTTP 429` or timeouts
 
-The **public** Blockbook instance rate-limits by IP, so a shared or busy host will be
-throttled. The service handles this correctly — it backs off, opens the circuit breaker and
-reports `degraded` rather than writing partial data — but it cannot make progress.
+If `blockbook` is the active source it is being rate-limited by IP, which it does to shared
+and busy hosts. The service handles this correctly — it backs off, opens the circuit breaker
+and reports `degraded` rather than writing partial data — but it cannot make progress.
 
-For sustained ingestion, give it a source that is not rate-limited:
+Check which source is actually in use:
+
+```bash
+curl -s localhost:3000/api/status | jq '.dataSources.active'
+```
+
+If that says `blockbook` when you expected `fluxnode-pool`, the pool found no usable nodes.
+`/api/status` carries the detail:
+
+```bash
+curl -s localhost:3000/api/status | jq '.dataSources.details["fluxnode-pool"]'
+```
+
+| Field             | Meaning                                                         |
+| ----------------- | --------------------------------------------------------------- |
+| `discovered`      | nodes kept after probing                                        |
+| `serving`         | not currently benched                                           |
+| `insight`         | of those, how many can attribute transaction inputs             |
+| `medianTip`       | the agreed chain tip                                            |
+| `lastError`       | why the last probe or fetch failed                              |
+| `nodes[].benched` | a node answering wrongly or failing is out for a cooling period |
+
+`insight: 0` means no node could tell us **who sent** the value, so the pool refuses to serve
+blocks rather than record flows with no counterparty. Raise `FLUXNODE_PROBE_SAMPLE` to look
+at more candidates, and check `FLUXNODE_API_PORTS` if your nodes run on non-standard ports.
+
+For sustained ingestion, prefer a source you control:
 
 | Option                                | How                                                                    |
 | ------------------------------------- | ---------------------------------------------------------------------- |
@@ -322,8 +365,8 @@ For sustained ingestion, give it a source that is not rate-limited:
 | **FluxNode pool** (free, distributed) | default; many nodes instead of one                                     |
 | **Own `fluxd`**                       | planned — see [#36](https://github.com/2ndtlmining/fluxflow/issues/36) |
 
-`SYNC_CONCURRENCY` and `SYNC_BATCH_SIZE` are the two knobs. Lowering them reduces the
-pressure on a shared source at the cost of a slower initial backfill.
+`SYNC_CONCURRENCY`, `SYNC_BATCH_SIZE`, `FLUXNODE_POOL_SIZE` and `FLUXNODE_MAX_INFLIGHT` are
+the knobs. Lowering them reduces pressure on remote nodes at the cost of a slower backfill.
 
 ### Insufficient data
 
@@ -353,8 +396,6 @@ pruned on a schedule; rollups can be kept for longer than the raw data once they
 Work in progress is tracked in [#36](https://github.com/2ndtlmining/fluxflow/issues/36) and
 [#34](https://github.com/2ndtlmining/fluxflow/issues/34). The remaining layers are:
 
-- **FluxNode pool** — a distributed, non-rate-limited data source (#35), so a fresh install
-  does not depend on the single public Blockbook instance
 - **Read models** — rollup tables so dashboard queries are O(buckets) rather than O(events)
 - **Intelligence** — node-operator detection from coinbase rewards, exchange clustering,
   confidence-scored heuristics

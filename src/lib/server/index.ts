@@ -15,6 +15,7 @@ import { loadLabels, type LabelLookup } from './labels.js';
 import { createLimiter } from './http.js';
 import { BlockbookDataSource } from './ingest/datasource/blockbook.js';
 import { FluxIndexerDataSource } from './ingest/datasource/fluxindexer.js';
+import { FluxNodePool } from './ingest/datasource/fluxnode.js';
 import { FailoverDataSource } from './ingest/datasource/circuitbreaker.js';
 import type { DataSource } from './ingest/datasource/types.js';
 import { SyncService } from './ingest/sync.js';
@@ -59,10 +60,17 @@ export interface CreateServiceOptions {
 /**
  * Build the data sources in preference order.
  *
- * The public Blockbook instance is always available, so there is always something to fall
- * back to; a dedicated indexer is added first when configured because it is the fastest.
+ * A dedicated indexer comes first when configured: the operator chose it, it is on their
+ * own LAN, and it is the fastest option available.
+ *
+ * Then the FluxNode pool (#35). This is what makes ingestion work at all on a public
+ * deployment — the single public Blockbook instance rate-limits by IP and cannot sustain a
+ * sync. The pool is spread across thousands of operator-run nodes, and it returns a whole
+ * block per request instead of one request per transaction (#15).
+ *
+ * Blockbook is always last, so there is always something to fall back to.
  */
-function buildSources(config: Config): DataSource[] {
+function buildSources(config: Config, log: Logger): DataSource[] {
   const http = {
     timeoutMs: config.http.timeoutMs,
     retries: config.http.retries,
@@ -78,6 +86,34 @@ function buildSources(config: Config): DataSource[] {
         enrichConcurrency: config.sync.concurrency,
         http
       })
+    );
+  }
+
+  if (config.fluxNode.enabled) {
+    const pool = new FluxNodePool({
+      discoveryUrl: config.fluxNode.discoveryUrl,
+      poolSize: config.fluxNode.poolSize,
+      probeSample: config.fluxNode.probeSample,
+      maxInflightPerNode: config.fluxNode.maxInflightPerNode,
+      apiPorts: config.fluxNode.apiPorts,
+      discoverySeconds: config.fluxNode.discoverySeconds,
+      benchSeconds: config.fluxNode.benchSeconds,
+      tipTolerance: config.fluxNode.tipTolerance,
+      probeTimeoutMs: config.fluxNode.probeTimeoutMs,
+      spotCheckEvery: config.fluxNode.spotCheckEvery,
+      http,
+      log: log.child({ component: 'fluxnode-pool' })
+    });
+
+    sources.push(pool);
+
+    log.info(
+      {
+        poolSize: config.fluxNode.poolSize,
+        maxInflightPerNode: config.fluxNode.maxInflightPerNode,
+        apiPorts: config.fluxNode.apiPorts
+      },
+      'FluxNode pool enabled: spreading reads across operator nodes instead of one Blockbook'
     );
   }
 
@@ -111,7 +147,7 @@ export function createService(options: CreateServiceOptions = {}): Service {
 
   const limiter = createLimiter(config.sync.concurrency);
   const dataSource = new FailoverDataSource({
-    sources: options.sources ?? buildSources(config),
+    sources: options.sources ?? buildSources(config, log),
     config,
     log: log.child({ component: 'datasource' }),
     limiter

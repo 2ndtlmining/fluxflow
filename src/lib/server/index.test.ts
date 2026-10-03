@@ -178,6 +178,28 @@ describe('createService', () => {
       expect(boot({ SYNC_ENABLED: '0' }).sync).toBeNull();
     });
 
+    it('reports healthy once a real cycle runs, without anything calling markSyncSuccess', async () => {
+      /*
+       * Regression: `lastSuccessfulSyncAt` used to be set only by `markSyncSuccess`, which
+       * no production path calls. A service that had committed hundreds of blocks still
+       * answered `/api/health` with 503 "no successful sync yet" for the life of the
+       * process — so a Docker healthcheck would restart a perfectly healthy container.
+       * Found by running the image: 500 blocks ingested, health still degraded.
+       */
+      const port = 39_500 + Math.floor(Math.random() * 400);
+      const service = boot(
+        { PORT: String(port), SYNC_ENABLED: '1', SYNC_BATCH_SIZE: '1000' },
+        { autoStartSync: false }
+      );
+      await service.listen();
+
+      expect((await fetch(`http://127.0.0.1:${port}/api/health`)).status).toBe(503);
+
+      await service.sync!.runOnce();
+
+      expect((await fetch(`http://127.0.0.1:${port}/api/health`)).status).toBe(200);
+    });
+
     it('never reports degraded when syncing is switched off entirely', async () => {
       const port = 39_000 + Math.floor(Math.random() * 1_000);
       const service = boot({ PORT: String(port), SYNC_ENABLED: '0' });

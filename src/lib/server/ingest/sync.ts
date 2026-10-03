@@ -328,7 +328,7 @@ export class SyncService {
   /**
    * Fetch and commit a list of heights.
    *
-   * Heights are fetched concurrently through the shared limiter, then committed in one
+   * Heights are fetched concurrently, bounded by the data source's limiter, then committed in one
    * transaction. A failure is recorded against its own height, never against the batch.
    */
   private async syncRange(
