@@ -240,8 +240,10 @@ fluxflow/
 │   │   │   ├── api.ts                 # Same-origin /api client, abortable, last-answer cache
 │   │   │   ├── urlState.ts            # period + filters <-> query string
 │   │   │   ├── format.ts, csv.ts      # display formatting, CSV export
-│   │   │   ├── watchlist.ts           # per-browser watchlist (localStorage)
-│   │   │   └── pending.ts             # endpoints not built yet; return null until wired
+│   │   │   ├── endpoints.ts           # typed calls for every data endpoint (docs/api.md)
+│   │   │   ├── pager.ts               # keyset paging, merging buying + selling streams
+│   │   │   ├── live.svelte.ts         # one EventSource on /api/stream; polling fallback
+│   │   │   └── watchlist.ts           # per-browser watchlist (localStorage)
 │   │   ├── server/                    # Server-only; stripped from the client bundle
 │   │   │   ├── config.ts              # zod-validated environment
 │   │   │   ├── logger.ts              # pino, structured, redacted

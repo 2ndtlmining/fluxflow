@@ -2,24 +2,31 @@
   Transactions explorer (#27): filters in the URL, one page at a time with keyset paging,
   and CSV export of whatever the filters select.
 
-  Rows are only ever the pages asked for, so the table stays light however many events a
-  period holds; v1 rendered every event of the period at once.
+  The default view is exchange flows — deposits and withdrawals — because that is what the
+  page is about; wallet-to-wallet transfers, mostly small, are one choice away. The API
+  filters one direction per request, so exchange flows are two streams merged in order
+  (see `MergedPager`).
+
+  New transfers arrive with live updates (#32): while the first page is showing, it is
+  refreshed and new rows are highlighted. Once older pages are loaded the list stays put,
+  so reading is never interrupted.
 -->
 <script lang="ts">
+  import { untrack } from 'svelte';
   import { apiFetch, isAbort } from '$lib/client/api';
   import { downloadCsv, eventsToCsv } from '$lib/client/csv';
-  import {
-    flowLabel,
-    formatFlux,
-    formatFluxFull,
-    formatTime,
-    kindLabel,
-    shortAddress,
-    timeAgo
-  } from '$lib/client/format';
+  import { live } from '$lib/client/live.svelte';
+  import { MergedPager } from '$lib/client/pager';
   import type { EventsPage, FlowEvent } from '$lib/client/types';
-  import { eventsPath, hasFilters, EMPTY_FILTERS, type TxFilters } from '$lib/client/urlState';
+  import {
+    directionsFor,
+    eventsPath,
+    hasFilters,
+    EMPTY_FILTERS,
+    type TxFilters
+  } from '$lib/client/urlState';
   import type { PeriodId } from '$lib/shared/constants';
+  import EventRows from './EventRows.svelte';
 
   interface Props {
     period: PeriodId;
@@ -35,15 +42,30 @@
   const EXPORT_MAX = 10_000;
 
   let events = $state<FlowEvent[]>([]);
-  let cursor = $state<string | null>(null);
+  let hasMore = $state(false);
   let loading = $state(true);
   let loadingMore = $state(false);
   let exporting = $state(false);
   let error = $state<string | null>(null);
   let minDraft = $state('');
+  let fresh = $state<ReadonlySet<string>>(new Set());
+  let pager: MergedPager | null = null;
   let controller: AbortController | null = null;
   let debounce: ReturnType<typeof setTimeout> | undefined;
-  const now = Date.now();
+
+  const key = (event: FlowEvent) => `${event.txid}:${event.vout}`;
+
+  function makePager(signal?: AbortSignal, limit = PAGE): MergedPager {
+    return new MergedPager(
+      directionsFor(filters.type).map(
+        (direction) => (cursor: string | null) =>
+          apiFetch<EventsPage>(
+            eventsPath(period, direction, filters, { cursor, limit }),
+            signal ? { signal } : {}
+          )
+      )
+    );
+  }
 
   // Keep the input in step with the URL (back button, shared links).
   $effect(() => {
@@ -53,18 +75,23 @@
   // A new period or filter set starts again from the first page; the previous request is
   // aborted, so a slow answer can never overwrite a newer one (#26).
   $effect(() => {
-    const path = eventsPath(period, filters, { limit: PAGE });
+    void period;
+    void filters;
     controller?.abort();
     const current = new AbortController();
     controller = current;
+    const next = makePager(current.signal);
+    pager = next;
     loading = true;
     error = null;
+    fresh = new Set();
 
-    apiFetch<EventsPage>(path, { signal: current.signal })
+    next
+      .next(PAGE)
       .then((page) => {
         if (current.signal.aborted) return;
-        events = page.events;
-        cursor = page.nextCursor;
+        events = page;
+        hasMore = next.hasMore;
       })
       .catch((reason: unknown) => {
         if (!isAbort(reason)) error = (reason as Error).message;
@@ -76,20 +103,43 @@
     return () => current.abort();
   });
 
+  // Live: refresh the first page when new data lands, unless the reader has paged further.
+  let seenVersion = -1;
+  $effect(() => {
+    const version = live.version;
+    untrack(() => {
+      if (seenVersion === -1 || loading || events.length > PAGE) {
+        seenVersion = version;
+        return;
+      }
+      seenVersion = version;
+      const signal = controller?.signal;
+      const refreshed = makePager(signal);
+      void refreshed
+        .next(PAGE)
+        .then((page) => {
+          if (signal?.aborted) return;
+          const known = new Set(events.map(key));
+          const arrived = page.filter((event) => !known.has(key(event)));
+          if (arrived.length === 0) return;
+          events = page;
+          pager = refreshed;
+          hasMore = refreshed.hasMore;
+          fresh = new Set(arrived.map(key));
+        })
+        .catch(() => {});
+    });
+  });
+
   async function loadMore(): Promise<void> {
-    if (!cursor || loadingMore) return;
+    if (!pager || loadingMore) return;
     loadingMore = true;
     const signal = controller?.signal;
     try {
-      const page = await apiFetch<EventsPage>(
-        eventsPath(period, filters, { cursor, limit: PAGE }),
-        {
-          signal
-        }
-      );
+      const page = await pager.next(PAGE);
       if (signal?.aborted) return;
-      events = [...events, ...page.events];
-      cursor = page.nextCursor;
+      events = [...events, ...page];
+      hasMore = pager.hasMore;
     } catch (reason) {
       if (!isAbort(reason)) error = (reason as Error).message;
     } finally {
@@ -99,17 +149,15 @@
 
   async function exportCsv(): Promise<void> {
     exporting = true;
-    const rows: FlowEvent[] = [];
-    let next: string | null = null;
     try {
-      do {
-        const page: EventsPage = await apiFetch<EventsPage>(
-          eventsPath(period, filters, { cursor: next, limit: EXPORT_PAGE })
-        );
-        rows.push(...page.events);
-        next = page.nextCursor;
-      } while (next && rows.length < EXPORT_MAX);
-      downloadCsv(`fluxflow-${period.toLowerCase()}-transactions.csv`, eventsToCsv(rows));
+      const all = makePager(undefined, EXPORT_PAGE);
+      const rows: FlowEvent[] = [];
+      while (all.hasMore && rows.length < EXPORT_MAX) {
+        const page = await all.next(EXPORT_PAGE);
+        if (page.length === 0) break;
+        rows.push(...page);
+      }
+      downloadCsv(`fluxflow-${period.toLowerCase()}-transfers.csv`, eventsToCsv(rows));
     } catch (reason) {
       error = `Export stopped: ${(reason as Error).message}`;
     } finally {
@@ -129,17 +177,17 @@
       set({ min: Number.isFinite(min) && min > 0 ? min : 0 });
     }, 400);
   }
-
-  function counterparty(event: FlowEvent): 'from' | 'to' {
-    return event.flowType === 'buying' ? 'to' : 'from';
-  }
 </script>
 
 <section aria-labelledby="tx-heading" class="explorer">
   <header class="head">
     <div>
-      <h2 id="tx-heading">Transactions</h2>
-      <p class="muted">Every transfer in this period, newest first.</p>
+      <h2 id="tx-heading">Transfers</h2>
+      <p class="muted">
+        {filters.type === 'exchange'
+          ? 'Deposits to and withdrawals from exchanges, newest first.'
+          : 'Transfers in this period, newest first.'}
+      </p>
     </div>
     <button
       type="button"
@@ -153,15 +201,16 @@
 
   <form class="filters" onsubmit={(event) => event.preventDefault()}>
     <label>
-      <span>Direction</span>
+      <span>Show</span>
       <select
         value={filters.type}
         onchange={(event) => set({ type: event.currentTarget.value as TxFilters['type'] })}
       >
-        <option value="">All</option>
-        <option value="selling">Deposited to exchange</option>
-        <option value="buying">Withdrawn from exchange</option>
+        <option value="exchange">Exchange deposits and withdrawals</option>
+        <option value="selling">Deposits to exchanges</option>
+        <option value="buying">Withdrawals from exchanges</option>
         <option value="p2p">Wallet to wallet</option>
+        <option value="all">All transfers</option>
       </select>
     </label>
     <label>
@@ -205,9 +254,9 @@
       />
     </label>
     {#if hasFilters(filters)}
-      <button type="button" class="link" onclick={() => onfilters(EMPTY_FILTERS)}
-        >Clear filters</button
-      >
+      <button type="button" class="link" onclick={() => onfilters(EMPTY_FILTERS)}>
+        Reset filters
+      </button>
     {/if}
   </form>
 
@@ -215,75 +264,18 @@
     <p class="error" role="alert">{error}</p>
   {/if}
 
-  <div class="table-wrap" aria-busy={loading}>
-    <table>
-      <caption class="visually-hidden">Transfers in this period, newest first</caption>
-      <thead>
-        <tr>
-          <th scope="col">When</th>
-          <th scope="col">What</th>
-          <th scope="col">Wallet</th>
-          <th scope="col" class="num">FLUX</th>
-        </tr>
-      </thead>
-      <tbody class:stale={loading && events.length > 0}>
-        {#if loading && events.length === 0}
-          {#each Array.from({ length: 6 }, (_, i) => i) as i (i)}
-            <tr><td colspan="4"><span class="skeleton">loading transfer row</span></td></tr>
-          {/each}
-        {:else if events.length === 0}
-          <tr>
-            <td colspan="4" class="muted empty">
-              No transfers match these filters in this period.
-              {#if hasFilters(filters)}
-                <button type="button" class="link" onclick={() => onfilters(EMPTY_FILTERS)}
-                  >Clear filters</button
-                >
-              {/if}
-            </td>
-          </tr>
-        {:else}
-          {#each events as event (`${event.txid}:${event.vout}`)}
-            {@const side = counterparty(event)}
-            {@const address = side === 'to' ? event.toAddress : event.fromAddress}
-            {@const kind = side === 'to' ? event.toKind : event.fromKind}
-            <tr>
-              <td class="when">
-                <span title={formatTime(event.time)}>{timeAgo(event.time, now)}</span>
-                <a
-                  class="muted mono small"
-                  href="https://explorer.runonflux.io/tx/{event.txid}"
-                  rel="noopener noreferrer"
-                  target="_blank">#{event.height}</a
-                >
-              </td>
-              <td class="what">
-                <span
-                  class={event.flowType === 'selling'
-                    ? 'sell'
-                    : event.flowType === 'buying'
-                      ? 'buy'
-                      : 'muted'}
-                >
-                  {flowLabel(event.flowType)}
-                </span>
-                {#if event.exchange}<span class="muted">{event.exchange}</span>{/if}
-              </td>
-              <td class="wallet">
-                <a class="mono" href="/wallet/{address}" title={address}>{shortAddress(address)}</a>
-                <span class="muted small">{kindLabel(kind)}</span>
-              </td>
-              <td class="num" title="{formatFluxFull(event.amount)} FLUX"
-                >{formatFlux(event.amount)}</td
-              >
-            </tr>
-          {/each}
-        {/if}
-      </tbody>
-    </table>
-  </div>
+  <EventRows {events} {loading} {fresh} caption="Transfers in this period, newest first">
+    {#snippet empty()}
+      No transfers match these filters in this period.
+      {#if hasFilters(filters)}
+        <button type="button" class="link" onclick={() => onfilters(EMPTY_FILTERS)}>
+          Reset filters
+        </button>
+      {/if}
+    {/snippet}
+  </EventRows>
 
-  {#if cursor && !loading}
+  {#if hasMore && !loading}
     <button type="button" class="button more" onclick={loadMore} disabled={loadingMore}>
       {loadingMore ? 'Loading…' : 'Show older transfers'}
     </button>
@@ -372,107 +364,7 @@
     color: var(--bad);
   }
 
-  table {
-    width: 100%;
-    border-collapse: collapse;
-  }
-
-  th {
-    text-align: left;
-    font-size: var(--step--1);
-    font-weight: 500;
-    color: var(--text-muted);
-    padding: 0.4rem 0.5rem 0.4rem 0;
-    border-bottom: 1px solid var(--line);
-  }
-
-  td {
-    padding: 0.6rem 0.5rem 0.6rem 0;
-    border-bottom: 1px solid var(--line);
-    vertical-align: top;
-  }
-
-  tbody tr {
-    content-visibility: auto;
-    contain-intrinsic-size: auto 3.25rem;
-  }
-
-  tbody.stale {
-    opacity: 0.55;
-    transition: opacity 150ms;
-  }
-
-  .when,
-  .what,
-  .wallet {
-    display: table-cell;
-  }
-
-  .when > *,
-  .what > *,
-  .wallet > * {
-    display: block;
-  }
-
-  .small {
-    font-size: var(--step--1);
-  }
-
-  .num {
-    text-align: right;
-    font-weight: 600;
-    padding-right: 0;
-    white-space: nowrap;
-  }
-
-  .empty {
-    padding: 1.25rem 0;
-  }
-
-  /* Phone: each transfer becomes a compact two-line block instead of a wide row. */
   @media (max-width: 640px) {
-    thead {
-      position: absolute;
-      width: 1px;
-      height: 1px;
-      overflow: hidden;
-      clip: rect(0 0 0 0);
-    }
-
-    tbody tr {
-      display: grid;
-      grid-template-columns: 1fr auto;
-      grid-template-areas:
-        'what num'
-        'wallet when';
-      gap: 0.15rem 0.75rem;
-      padding: 0.6rem 0;
-      border-bottom: 1px solid var(--line);
-    }
-
-    td {
-      padding: 0;
-      border: 0;
-    }
-
-    td[colspan] {
-      grid-column: 1 / -1;
-    }
-
-    .what {
-      grid-area: what;
-    }
-    .num {
-      grid-area: num;
-    }
-    .wallet {
-      grid-area: wallet;
-    }
-    .when {
-      grid-area: when;
-      text-align: right;
-    }
-
     select,
     input {
       min-width: 0;
@@ -482,6 +374,10 @@
     .filters {
       display: grid;
       grid-template-columns: 1fr 1fr;
+    }
+
+    .filters label:first-child {
+      grid-column: 1 / -1;
     }
   }
 </style>

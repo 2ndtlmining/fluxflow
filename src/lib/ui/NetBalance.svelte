@@ -28,6 +28,15 @@
   const net = $derived(bought - sold);
   const scale = $derived(Math.max(bought, sold, 1));
   const empty = $derived(summary !== undefined && bought === 0 && sold === 0);
+  const previous = $derived(summary?.previousPeriod);
+
+  const BEFORE: Record<PeriodId, string> = {
+    '24H': 'The 24 hours before',
+    '7D': 'The 7 days before',
+    '30D': 'The 30 days before',
+    '90D': 'The 90 days before',
+    '6M': 'The 6 months before'
+  };
 </script>
 
 <section class="hero" aria-labelledby="net-heading">
@@ -85,6 +94,14 @@
           <span class="muted">in {formatCount(summary.buying?.count ?? 0)} transfers</span>
         </p>
       </div>
+    {/if}
+
+    {#if previous && (previous.buying.total > 0 || previous.selling.total > 0)}
+      <p class="previous muted">
+        {BEFORE[period]}: net {formatFlux(Math.abs(previous.netFlow))} FLUX
+        {previous.netFlow < 0 ? 'deposited' : 'withdrawn'}
+        ({formatFlux(previous.selling.total)} deposited, {formatFlux(previous.buying.total)} withdrawn).
+      </p>
     {/if}
 
     {#if summary.partial && summary.partialWarning}
@@ -180,6 +197,10 @@
     font-size: var(--step-2);
     font-weight: 600;
     display: block;
+  }
+
+  .previous {
+    font-size: var(--step--1);
   }
 
   .partial {

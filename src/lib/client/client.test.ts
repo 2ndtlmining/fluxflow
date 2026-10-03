@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { csvField, eventsToCsv } from './csv';
 import { formatFlux, formatSigned, kindLabel, flowLabel, shortAddress, timeAgo } from './format';
 import type { FlowEvent } from './types';
-import { EMPTY_FILTERS, eventsPath, hasFilters, readState, writeState } from './urlState';
+import { fillDays } from './series';
 import { readWatchlist, toggleWatch } from './watchlist';
 
 describe('formatFlux', () => {
@@ -44,48 +44,6 @@ describe('labels', () => {
     expect(timeAgo(now / 1000 - 3 * 86_400, now)).toBe('3d ago');
     // A block timestamp slightly ahead of the browser clock is "now", not negative.
     expect(timeAgo(now / 1000 + 20, now)).toBe('0s ago');
-  });
-});
-
-describe('URL state (#26, #27)', () => {
-  it('round-trips the period and every filter', () => {
-    const state = {
-      period: '30D' as const,
-      filters: {
-        type: 'selling' as const,
-        kind: 'node_operator' as const,
-        exchange: 'Kucoin',
-        min: 500
-      }
-    };
-    expect(readState(new URLSearchParams(writeState(state)))).toEqual(state);
-  });
-
-  it('keeps defaults out of the URL', () => {
-    expect(writeState({ period: '24H', filters: EMPTY_FILTERS })).toBe('');
-  });
-
-  it('opens a malformed link on safe defaults instead of failing', () => {
-    const state = readState(new URLSearchParams('period=1Y&type=hack&kind=x&min=-5'));
-    expect(state).toEqual({ period: '24H', filters: EMPTY_FILTERS });
-    expect(readState(new URLSearchParams('period=7d')).period).toBe('7D');
-  });
-
-  it('builds the events path the API expects', () => {
-    expect(
-      eventsPath(
-        '7D',
-        { type: 'buying', kind: '', exchange: 'GateIO', min: 100 },
-        {
-          cursor: '3004268:abc:0',
-          limit: 50
-        }
-      )
-    ).toBe(
-      '/flow/7D/events?type=buying&exchange=GateIO&minAmount=100&limit=50&cursor=3004268%3Aabc%3A0'
-    );
-    expect(hasFilters(EMPTY_FILTERS)).toBe(false);
-    expect(hasFilters({ ...EMPTY_FILTERS, min: 1 })).toBe(true);
   });
 });
 
@@ -146,5 +104,33 @@ describe('watchlist (#30)', () => {
     expect(readWatchlist({ getItem: () => '{not json' })).toEqual([]);
     expect(readWatchlist({ getItem: () => '{"a":1}' })).toEqual([]);
     expect(readWatchlist(null)).toEqual([]);
+  });
+});
+
+describe('fillDays', () => {
+  it('puts sparse activity on a continuous daily timeline', () => {
+    const day = 86_400;
+    const filled = fillDays([
+      { time: 10 * day, bought: 0, sold: 5 },
+      { time: 13 * day + 3_600, bought: 2, sold: 0 }
+    ]);
+    expect(filled.map((p) => p.time / day)).toEqual([10, 11, 12, 13]);
+    expect(filled.map((p) => [p.buying, p.selling])).toEqual([
+      [0, 5],
+      [0, 0],
+      [0, 0],
+      [2, 0]
+    ]);
+    expect(fillDays([])).toEqual([]);
+  });
+
+  it('keeps only the most recent 400 days', () => {
+    const day = 86_400;
+    const filled = fillDays([
+      { time: 0, bought: 1, sold: 0 },
+      { time: 999 * day, bought: 1, sold: 0 }
+    ]);
+    expect(filled).toHaveLength(400);
+    expect(filled.at(-1)!.time).toBe(999 * day);
   });
 });

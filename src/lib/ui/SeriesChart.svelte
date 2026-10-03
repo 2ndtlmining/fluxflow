@@ -1,21 +1,34 @@
 <!--
-  Net flow over time (#29): withdrawals as cyan columns above the axis, deposits as amber
-  columns below it, on the same balance axis as the rest of the page, turned upright.
-  Plain SVG: a few hundred buckets at most, so no charting library is needed.
+  Net flow over time (#29): the page's balance axis turned upright. Withdrawals are cyan
+  columns above the line, deposits amber columns below it, and the running net is drawn
+  across them, so a steady build-up of selling or buying is visible at a glance.
+  Plain SVG: at most a few hundred buckets, so no charting library is needed.
 -->
 <script lang="ts">
-  import { formatFlux, formatFluxFull, formatTime } from '$lib/client/format';
-  import type { SeriesPoint } from '$lib/client/pending';
+  import { formatFlux, formatFluxFull, formatSigned } from '$lib/client/format';
 
-  interface Props {
-    points: SeriesPoint[];
+  interface Point {
+    readonly time: number;
+    readonly buying: number;
+    readonly selling: number;
+    readonly cumulativeNet?: number;
   }
 
-  let { points }: Props = $props();
+  interface Props {
+    points: Point[];
+    /** Bucket width; daily buckets are labelled by date, hourly by time. */
+    bucketSeconds: number;
+    /** Draw the running net line. Off for a single wallet, where it adds little. */
+    showNet?: boolean;
+    label?: string;
+  }
+
+  let { points, bucketSeconds, showNet = true, label = 'Net flow over time' }: Props = $props();
 
   const WIDTH = 1000;
   const HEIGHT = 240;
   const MID = HEIGHT / 2;
+  const PAD = 6;
 
   const scale = $derived(Math.max(1, ...points.flatMap((p) => [p.buying, p.selling])));
   const step = $derived(WIDTH / Math.max(points.length, 1));
@@ -26,7 +39,26 @@
       { buying: 0, selling: 0 }
     )
   );
+  const netScale = $derived(Math.max(1, ...points.map((p) => Math.abs(p.cumulativeNet ?? 0))));
+  const netLine = $derived(
+    points
+      .map((p, i) => {
+        const x = i * step + step / 2;
+        const y = MID - ((p.cumulativeNet ?? 0) / netScale) * (MID - PAD);
+        return `${x.toFixed(1)},${y.toFixed(1)}`;
+      })
+      .join(' ')
+  );
+  const final = $derived(points.at(-1)?.cumulativeNet ?? 0);
+
   let active = $state<number | null>(null);
+
+  function bucketLabel(time: number): string {
+    const date = new Date(time * 1000);
+    return bucketSeconds >= 86_400
+      ? date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+      : date.toLocaleString(undefined, { weekday: 'short', hour: '2-digit', minute: '2-digit' });
+  }
 </script>
 
 <figure>
@@ -34,14 +66,14 @@
     viewBox="0 0 {WIDTH} {HEIGHT}"
     preserveAspectRatio="none"
     role="img"
-    aria-label="Withdrawals and deposits per period bucket: {formatFluxFull(
-      totals.buying
-    )} FLUX withdrawn, {formatFluxFull(totals.selling)} FLUX deposited"
+    aria-label="{label}: {formatFluxFull(totals.buying)} FLUX withdrawn and {formatFluxFull(
+      totals.selling
+    )} FLUX deposited across {points.length} {bucketSeconds >= 86_400 ? 'days' : 'hours'}"
   >
-    {#each points as point, i (point.t)}
+    {#each points as point, i (point.time)}
       {@const x = i * step + (step - column) / 2}
-      {@const up = (point.buying / scale) * (MID - 4)}
-      {@const down = (point.selling / scale) * (MID - 4)}
+      {@const up = (point.buying / scale) * (MID - PAD)}
+      {@const down = (point.selling / scale) * (MID - PAD)}
       <!-- Hover only reveals per-bucket totals; the chart's label carries the totals for assistive tech. -->
       <!-- svelte-ignore a11y_no_static_element_interactions -->
       <g
@@ -55,15 +87,26 @@
       </g>
     {/each}
     <line x1="0" x2={WIDTH} y1={MID} y2={MID} class="zero" />
+    {#if showNet && points.length > 1}
+      <polyline points={netLine} class="net" />
+    {/if}
   </svg>
   <figcaption>
     {#if active !== null && points[active]}
       {@const p = points[active]}
-      <span>{formatTime(p.t)}</span>
+      <span>{bucketLabel(p.time)}</span>
       <span class="buy">{formatFlux(p.buying)} withdrawn</span>
       <span class="sell">{formatFlux(p.selling)} deposited</span>
+      {#if showNet && p.cumulativeNet !== undefined}
+        <span>running net {formatSigned(p.cumulativeNet)}</span>
+      {/if}
     {:else}
-      <span class="muted">Hover a column for its totals.</span>
+      <span class="muted">
+        {#if showNet}
+          The line is the running net, ending at {formatSigned(final)} FLUX.
+        {/if}
+        Hover a column for its totals.
+      </span>
     {/if}
   </figcaption>
 </figure>
@@ -92,6 +135,14 @@
   .zero {
     stroke: var(--text);
     stroke-width: 2;
+    vector-effect: non-scaling-stroke;
+  }
+
+  .net {
+    fill: none;
+    stroke: var(--brand);
+    stroke-width: 2.5;
+    stroke-linejoin: round;
     vector-effect: non-scaling-stroke;
   }
 

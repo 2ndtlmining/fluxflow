@@ -1,17 +1,15 @@
 <!--
   Server status, from the server (#25).
 
-  One /api/status request every 30 s, none while the tab is hidden, and a fresh one when it
-  becomes visible again. Every figure is the server's own: no browser OS or CPU, and no
-  "uptime" that was really the time since the last sync.
+  Refreshed when `live.version` moves: on each committed sync while the event stream is open,
+  otherwise every 30 s, and never while the tab is hidden (#32). Every figure is the
+  server's own: no browser OS or CPU, and no "uptime" that was really time since a sync.
 -->
 <script lang="ts">
-  import { onMount } from 'svelte';
   import { apiFetch, isAbort } from '$lib/client/api';
   import { formatCount, timeAgo } from '$lib/client/format';
+  import { live } from '$lib/client/live.svelte';
   import type { Status } from '$lib/client/types';
-
-  const POLL_MS = 30_000;
 
   let status = $state<Status | null>(null);
   let offline = $state(false);
@@ -22,7 +20,7 @@
     if (!status) return { tone: 'idle', text: 'Checking…' };
     if (!status.sync.enabled) return { tone: 'idle', text: 'Sync disabled' };
     if (status.sync.degraded) return { tone: 'warn', text: status.sync.reason ?? 'Sync delayed' };
-    return { tone: 'good', text: 'In sync' };
+    return { tone: 'good', text: live.connected ? 'Live' : 'In sync' };
   });
 
   const source = $derived.by(() => {
@@ -44,19 +42,11 @@
     now = Date.now();
   }
 
-  onMount(() => {
+  $effect(() => live.start());
+
+  $effect(() => {
+    void live.version;
     void refresh();
-    const timer = setInterval(() => {
-      if (!document.hidden) void refresh();
-    }, POLL_MS);
-    const onVisibility = () => {
-      if (!document.hidden) void refresh();
-    };
-    document.addEventListener('visibilitychange', onVisibility);
-    return () => {
-      clearInterval(timer);
-      document.removeEventListener('visibilitychange', onVisibility);
-    };
   });
 </script>
 

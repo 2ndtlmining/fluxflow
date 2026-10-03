@@ -1,6 +1,8 @@
 <script lang="ts">
   import '../app.css';
   import { onMount, type Snippet } from 'svelte';
+  import LiveToasts from '$lib/ui/LiveToasts.svelte';
+  import SearchBox from '$lib/ui/SearchBox.svelte';
   import StatusBar from '$lib/ui/StatusBar.svelte';
 
   let { children }: { children: Snippet } = $props();
@@ -37,6 +39,7 @@
       FluxFlow
     </a>
     <StatusBar />
+    <SearchBox />
     <button
       type="button"
       class="theme"
@@ -65,6 +68,8 @@
 <main id="main">
   {@render children()}
 </main>
+
+<LiveToasts />
 
 <footer class="foot muted">
   <p>
@@ -150,13 +155,25 @@
     max-width: 70ch;
   }
 
-  @media (max-width: 640px) {
+  /* Below this the status needs its own line; squeezed beside the search it wraps word by word. */
+  @media (max-width: 900px) {
     .inner {
       gap: 0.5rem 1rem;
     }
     .inner :global(.status) {
       order: 3;
       flex-basis: 100%;
+    }
+    .inner :global(form[role='search']) {
+      margin-left: auto;
+    }
+  }
+
+  @media (max-width: 640px) {
+    .inner :global(form[role='search']) {
+      order: 4;
+      flex-basis: 100%;
+      margin-left: 0;
     }
     .theme {
       margin-left: auto;
