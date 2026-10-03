@@ -16,6 +16,7 @@ import { createLimiter } from './http.js';
 import { BlockbookDataSource } from './ingest/datasource/blockbook.js';
 import { FluxIndexerDataSource } from './ingest/datasource/fluxindexer.js';
 import { FluxNodePool } from './ingest/datasource/fluxnode.js';
+import { OwnNodeDataSource } from './ingest/datasource/ownnode.js';
 import { FailoverDataSource } from './ingest/datasource/circuitbreaker.js';
 import type { DataSource } from './ingest/datasource/types.js';
 import { SyncService } from './ingest/sync.js';
@@ -78,6 +79,12 @@ function buildSources(config: Config, log: Logger): DataSource[] {
   };
 
   const sources: DataSource[] = [];
+
+  // Your own node first: trusted, local, and not limited to the pool's courtesy rate.
+  if (config.dataSources.fluxNodeUrl) {
+    sources.push(new OwnNodeDataSource({ baseUrl: config.dataSources.fluxNodeUrl, http }));
+    log.info({ url: config.dataSources.fluxNodeUrl }, 'own FluxNode configured as primary source');
+  }
 
   if (config.dataSources.fluxIndexerUrl) {
     sources.push(

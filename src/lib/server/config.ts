@@ -131,6 +131,13 @@ const rawConfigSchema = z
     FLUX_NODE_POOL_URL: baseUrl.default('https://explorer.runonflux.io/api/status?q=getFluxNodes'),
     /** Optional dedicated indexer. Unset by default: no LAN addresses ship in the image. */
     FLUX_INDEXER_URL: optionalBaseUrl,
+    /**
+     * Your own FluxNode's FluxOS API, e.g. `http://192.168.40.155:16127`. Tried before the
+     * public pool, and trusted: no spot checks, no private-address filtering. Needs the
+     * spent index (`insightexplorer=1`); without it the node reports unhealthy and the
+     * pool takes over.
+     */
+    FLUX_NODE_URL: optionalBaseUrl,
     BLOCKBOOK_URL: baseUrl.default('https://blockbook.runonflux.io'),
     FLUX_NODES_API: baseUrl.default('https://explorer.runonflux.io/api/status?q=getFluxNodes'),
     SYNC_ENABLED: boolFlag.default(true),
@@ -255,6 +262,8 @@ export interface Config {
   readonly dataSources: {
     readonly fluxNodePoolUrl: string;
     readonly fluxIndexerUrl: string | undefined;
+    /** Your own FluxNode's FluxOS API; trusted and tried first. */
+    readonly fluxNodeUrl: string | undefined;
     readonly blockbookUrl: string;
     readonly fluxNodesApi: string;
   };
@@ -329,6 +338,7 @@ function toConfig(raw: RawConfig): Config {
     dataSources: {
       fluxNodePoolUrl: raw.FLUX_NODE_POOL_URL,
       fluxIndexerUrl: raw.FLUX_INDEXER_URL,
+      fluxNodeUrl: raw.FLUX_NODE_URL,
       blockbookUrl: raw.BLOCKBOOK_URL,
       fluxNodesApi: raw.FLUX_NODES_API
     },
@@ -428,6 +438,7 @@ export function describeConfig(config: Config): Record<string, unknown> {
     dataSources: {
       fluxNodePoolUrl: config.dataSources.fluxNodePoolUrl,
       fluxIndexerUrl: config.dataSources.fluxIndexerUrl ?? '(not configured)',
+      fluxNodeUrl: config.dataSources.fluxNodeUrl ?? '(not configured)',
       blockbookUrl: config.dataSources.blockbookUrl,
       fluxNodePool: config.fluxNode.enabled
         ? `${config.fluxNode.poolSize} nodes, ${config.fluxNode.maxInflightPerNode} in flight each`
