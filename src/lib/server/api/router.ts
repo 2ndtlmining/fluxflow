@@ -43,6 +43,17 @@ import {
   type LeaderboardKind
 } from './wallets.js';
 import { ResponseCache } from './cache.js';
+import { z } from 'zod';
+import {
+  APPLY_MIN_CONFIDENCE,
+  CONFIDENCE,
+  confidenceLevel,
+  parseMinConfidence
+} from '../labels.js';
+import type { IntelService } from '../intel/service.js';
+import { decideCandidate, listCandidates } from '../intel/clusters.js';
+import { foundationReport } from '../intel/foundation.js';
+import { listHops, summariseHops } from '../intel/hops.js';
 
 export interface ApiDependencies {
   readonly config: Config;
@@ -52,6 +63,8 @@ export interface ApiDependencies {
   readonly log: Logger;
   /** Absent when ingestion is switched off; the admin endpoints are then not registered. */
   readonly sync?: SyncService;
+  /** Address intelligence (#18-#20, #31); absent when disabled. */
+  readonly intel?: IntelService;
   /** Read by `/api/health`; kept O(1) so the Docker healthcheck is never the bottleneck. */
   readonly health: {
     startedAt: number;
@@ -102,7 +115,7 @@ function parsePeriod(req: Request, res: Response): PeriodId | null {
 }
 
 export function createApiRouter(deps: ApiDependencies): Router {
-  const { config, db, labels, dataSource, health, sync, log } = deps;
+  const { config, db, labels, dataSource, health, sync, intel, log } = deps;
   const router = Router();
   // Counts and flow answers change only when a sync cycle commits (#3, #4).
   const cache = new ResponseCache(db);
@@ -208,7 +221,12 @@ export function createApiRouter(deps: ApiDependencies): Router {
     res.json({
       exchanges: { count: stats.exchanges },
       foundation: { count: stats.foundation },
-      nodeOperators: { count: 0, totalNodes: 0, lastRefresh: 0 },
+      nodeOperators: {
+        count: stats.nodeOperators,
+        totalNodes: intel?.status().nodeList?.addresses ?? 0,
+        lastRefresh: intel?.status().nodeList?.at ?? 0
+      },
+      bySource: stats.bySource,
       unknown: { count: databaseUnknownCount() }
     });
   };
@@ -237,6 +255,44 @@ export function createApiRouter(deps: ApiDependencies): Router {
     });
   });
 
+  // ── Intelligence (#18-#20, #31) ──────────────────────────────────────────
+  router.get('/intel/status', (_req: Request, res: Response) => {
+    res.json({ labels: labels.stats(), intel: intel?.status() ?? { enabled: false } });
+  });
+
+  /** Withdrawals re-deposited into an exchange by the same wallet shortly after (#20). */
+  router.get('/flow/:period/hops', (req: Request, res: Response) => {
+    const period = parsePeriod(req, res);
+    if (!period) return;
+
+    cache.send(req, res, () => {
+      const window = periodWindow(period);
+      return {
+        period,
+        summary: summariseHops(db, window.fromTime, window.toTime),
+        hops: listHops(db, window.fromTime, window.toTime, Number(req.query.limit) || 50)
+      };
+    });
+  });
+
+  /**
+   * The Foundation's wallets (#31). Not response-cached: balances refresh on their own
+   * schedule, and the report reads only the Foundation's few addresses.
+   */
+  router.get('/foundation', (req: Request, res: Response) => {
+    const raw = typeof req.query.period === 'string' ? req.query.period.toUpperCase() : '30D';
+    if (!isPeriodId(raw)) {
+      res.status(400).json({ error: 'Invalid period', message: `Unknown period: ${raw}` });
+      return;
+    }
+
+    const window = periodWindow(raw);
+    res.json({
+      period: raw,
+      ...foundationReport(db, labels, window, intel?.foundationBalances() ?? null)
+    });
+  });
+
   // ── Admin ─────────────────────────────────────────────────────────────────
   /*
    * Every mutating endpoint requires ADMIN_TOKEN.
@@ -247,6 +303,105 @@ export function createApiRouter(deps: ApiDependencies): Router {
    * and a way to point the service at someone else's infrastructure (#21).
    */
   const admin = requireAdmin(config);
+
+  const candidateKey = z.object({
+    address: z.string().regex(ADDRESS_PATTERN),
+    kind: z.enum(['exchange', 'foundation', 'node_operator']),
+    name: z.string().max(100).default('')
+  });
+
+  router.get('/admin/labels/candidates', admin, (req: Request, res: Response) => {
+    const status = z
+      .enum(['pending', 'accepted', 'rejected'])
+      .optional()
+      .safeParse(req.query.status ?? undefined);
+    if (!status.success) {
+      res.status(400).json({ error: 'Invalid status' });
+      return;
+    }
+    res.json({
+      candidates: listCandidates(db, {
+        ...(status.data ? { status: status.data } : {}),
+        limit: Number(req.query.limit) || 100
+      })
+    });
+  });
+
+  router.post('/admin/labels/candidates/decide', admin, (req: Request, res: Response) => {
+    const body = candidateKey
+      .extend({ decision: z.enum(['accepted', 'rejected']) })
+      .safeParse(req.body);
+    if (!body.success) {
+      res.status(400).json({ error: 'Invalid body', issues: body.error.issues });
+      return;
+    }
+
+    const { decision, ...key } = body.data;
+    if (!decideCandidate(db, labels, key, decision)) {
+      res.status(404).json({ error: 'No such candidate' });
+      return;
+    }
+    res.json({ success: true, decision, queued: intel?.status().relabelQueue ?? null });
+  });
+
+  /** A manual label beats every other source; `kind: "unknown"` overrides a wrong label. */
+  router.post('/admin/labels', admin, (req: Request, res: Response) => {
+    const body = z
+      .object({
+        address: z.string().regex(ADDRESS_PATTERN),
+        kind: z.enum(['exchange', 'foundation', 'node_operator', 'unknown']),
+        name: z.string().max(100).optional(),
+        subLabel: z.string().max(100).optional(),
+        note: z.string().max(500).optional()
+      })
+      .safeParse(req.body);
+    if (!body.success) {
+      res.status(400).json({ error: 'Invalid body', issues: body.error.issues });
+      return;
+    }
+
+    const { address, kind, name, subLabel, note } = body.data;
+    db.prepare(
+      `INSERT INTO address_labels
+         (address, kind, name, sub_label, source, confidence, evidence, updated_at)
+       VALUES (?, ?, ?, ?, 'manual', 1, ?, CAST(strftime('%s','now') AS INTEGER))
+       ON CONFLICT (address, kind, source) DO UPDATE SET
+         name = excluded.name, sub_label = excluded.sub_label,
+         evidence = excluded.evidence, updated_at = excluded.updated_at`
+    ).run(
+      address,
+      kind,
+      name ?? null,
+      subLabel ?? null,
+      JSON.stringify({ method: 'manual', note })
+    );
+
+    const changed = labels.refresh('manual label');
+    res.json({ success: true, changed: changed.length });
+  });
+
+  router.delete('/admin/labels/:address', admin, (req: Request, res: Response) => {
+    const address = parseAddress(req, res);
+    if (!address) return;
+
+    const removed = db
+      .prepare(`DELETE FROM address_labels WHERE address = ? AND source = 'manual'`)
+      .run(address).changes;
+    const changed = labels.refresh('manual label removed');
+    res.json({ success: true, removed, changed: changed.length });
+  });
+
+  if (intel) {
+    router.post('/admin/intel/run', admin, (_req: Request, res: Response) => {
+      void intel.runAll().then(
+        (status) => res.json({ success: true, status }),
+        (error: unknown) => {
+          log.error({ ...serialiseError(error) }, 'intelligence run failed');
+          res.status(500).json({ error: 'Intelligence run failed', message: 'see server logs' });
+        }
+      );
+    });
+  }
 
   if (sync) {
     const apiLog = log.child({ component: 'admin' });
@@ -332,7 +487,27 @@ export function createApiRouter(deps: ApiDependencies): Router {
         netFlow: previousBuying.totalSat - previousSelling.totalSat,
         byKind: { buying: previousBuying.byKind, selling: previousSelling.byKind }
       },
-      byType: { buying: buying.byKind, selling: selling.byKind }
+      byType: { buying: buying.byKind, selling: selling.byKind },
+      ...hopAdjusted(window.fromTime, window.toTime, buying.totalSat, selling.totalSat)
+    };
+  }
+
+  /**
+   * Exchange hops inside the window (#20): withdrawals re-deposited by the same wallet shortly
+   * after. They count as both a buy and a sell, so headline totals are also given without them.
+   * Nothing is subtracted from the main figures, which stay comparable with the raw events.
+   */
+  function hopAdjusted(fromTime: number, toTime: number, buying: number, selling: number) {
+    const hops = summariseHops(db, fromTime, toTime);
+    const adjustedBuying = Math.max(0, buying - hops.buyingExcluded);
+    const adjustedSelling = Math.max(0, selling - hops.sellingExcluded);
+    return {
+      exchangeHops: hops,
+      adjusted: {
+        buying: adjustedBuying,
+        selling: adjustedSelling,
+        netFlow: adjustedBuying - adjustedSelling
+      }
     };
   }
 
@@ -391,25 +566,43 @@ export function createApiRouter(deps: ApiDependencies): Router {
         return;
       }
 
+      const minConfidence = parseMinConfidence(req.query.minConfidence);
+      if (req.query.minConfidence !== undefined && minConfidence === null) {
+        res.status(400).json({
+          error: 'Invalid minConfidence',
+          message: `minConfidence must be 0..1 or one of: ${Object.keys(CONFIDENCE).join(', ')}`
+        });
+        return;
+      }
+
       cache.send(
         req,
         res,
         () => {
           const window = periodWindow(period);
+          const limit = Math.min(Math.max(1, Number(req.query.limit) || 10), 100);
+          // Over-fetch when filtering by confidence, so the filter still returns `limit` rows.
           const board = leaderboard(db, openRange(window), flowType, {
-            limit: Number(req.query.limit) || 10,
+            limit: minConfidence === null ? limit : Math.min(limit * 5, 100),
             ...(kind ? { kind: kind as LeaderboardKind } : {})
           });
 
-          return {
-            period,
-            flowType,
-            total: board.total,
-            [key]: board.leaders.map((leader) => ({
-              ...leader,
-              name: labels.nameOf(leader.address)
-            }))
-          };
+          const leaders = board.leaders
+            .map((leader) => {
+              const label = labels.labelOf(leader.address);
+              return {
+                ...leader,
+                name: label?.name ?? null,
+                confidence: label?.confidence ?? null,
+                level: label ? label.level : null,
+                labelSource: label?.source ?? null
+              };
+            })
+            .filter((leader) => minConfidence === null || (leader.confidence ?? 0) >= minConfidence)
+            .slice(0, limit)
+            .map((leader, index) => ({ ...leader, rank: index + 1 }));
+
+          return { period, flowType, total: board.total, minConfidence, [key]: leaders };
         },
         leaderboardStaleness(period)
       );
@@ -483,12 +676,49 @@ export function createApiRouter(deps: ApiDependencies): Router {
       return;
     }
 
-    cache.send(req, res, () => ({
-      ...profile,
-      kind: labels.kindOf(address),
-      name: labels.nameOf(address),
-      recent: walletEvents(db, address, { limit: 20 })
-    }));
+    cache.send(req, res, () => {
+      const label = labels.labelOf(address);
+      const cluster = db
+        .prepare<[string], { clusterId: string; size: number }>(
+          `SELECT cluster_id AS clusterId, size FROM address_clusters WHERE address = ?`
+        )
+        .get(address);
+
+      return {
+        ...profile,
+        kind: label?.kind ?? 'unknown',
+        name: label?.name ?? null,
+        // The label that classifies this wallet's flows, and every other one on record —
+        // including `possible` ones that are shown but never change a total (#19).
+        label,
+        labels: labels.allLabels(address).map((row) => ({
+          kind: row.kind,
+          name: row.name,
+          subLabel: row.subLabel,
+          source: row.source,
+          confidence: row.confidence,
+          level: confidenceLevel(row.confidence),
+          applied: row.confidence >= APPLY_MIN_CONFIDENCE && row.kind !== 'unknown',
+          validFrom: row.validFrom,
+          validTo: row.validTo,
+          evidence: row.evidence
+        })),
+        cluster: cluster
+          ? {
+              ...cluster,
+              sample: db
+                .prepare<[string, string], { address: string }>(
+                  `SELECT address FROM address_clusters
+                   WHERE cluster_id = ? AND address <> ? ORDER BY address LIMIT 10`
+                )
+                .all(cluster.clusterId, address)
+                .map((row) => row.address)
+            }
+          : null,
+        candidates: listCandidates(db, { address, limit: 10 }),
+        recent: walletEvents(db, address, { limit: 20 })
+      };
+    });
   });
 
   router.get('/wallets/:address/events', (req: Request, res: Response) => {

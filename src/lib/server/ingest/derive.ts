@@ -13,10 +13,15 @@ import { SATS_PER_FLUX } from './datasource/types.js';
 
 const SECONDS_PER_DAY = 86_400;
 
-/** A label lookup. Matches `LabelLookup` in `$lib/server/labels`. */
+/**
+ * A label lookup. Matches `LabelLookup` in `$lib/server/labels`.
+ *
+ * `time` is the block time: a label can be valid only for a window (a node operator who
+ * stopped running nodes), so a flow is classified by what the address was *then* (#18).
+ */
 export interface Resolver {
-  kindOf(address: string): AddressKind;
-  nameOf(address: string): string | null;
+  kindOf(address: string, time?: number): AddressKind;
+  nameOf(address: string, time?: number): string | null;
 }
 
 export interface DeltaRow {
@@ -162,7 +167,32 @@ export function deriveFlows(
   time: number,
   resolve: Resolver
 ): FlowRow[] {
-  const deltas = toValueDeltas(tx);
+  return flowsFromDeltas(tx.txid, height, time, toValueDeltas(tx), resolve);
+}
+
+/**
+ * Flows from one transaction's per-address deltas.
+ *
+ * Shared by ingestion and by re-derivation after a label change (`intel/relabel.ts`), which
+ * rebuilds the deltas from `tx_deltas`. The deltas are sorted by address first, so both
+ * paths produce identical rows — including which funder wins a tie and which `vout` a
+ * recipient gets — whatever order they arrived in.
+ *
+ * A transfer between two Foundation wallets produces no flow at all: moving money between
+ * its own wallets is neither buying nor selling, and counted as p2p it dwarfed every real
+ * p2p figure (#31).
+ */
+export function flowsFromDeltas(
+  txid: string,
+  height: number,
+  time: number,
+  values: readonly { address: string; satIn: number; satOut: number }[],
+  resolve: Resolver
+): FlowRow[] {
+  const deltas = [...values].sort((a, b) =>
+    a.address < b.address ? -1 : a.address > b.address ? 1 : 0
+  );
+  const kindOf = (address: string) => resolve.kindOf(address, time);
 
   // Net out: addresses that funded the transaction more than they got back.
   const funders = deltas
@@ -180,20 +210,24 @@ export function deriveFlows(
   let vout = 0;
 
   for (const recipient of recipients) {
-    const from = pickFunder(funders, recipient, resolve);
+    const from = pickFunder(funders, recipient, kindOf);
     if (!from) continue;
 
+    const fromKind = kindOf(from.address);
+    const toKind = kindOf(recipient.address);
+    if (fromKind === 'foundation' && toKind === 'foundation') continue;
+
     rows.push({
-      txid: tx.txid,
+      txid,
       vout: vout++,
       height,
       time,
       fromAddress: from.address,
-      fromKind: resolve.kindOf(from.address),
+      fromKind,
       toAddress: recipient.address,
-      toKind: resolve.kindOf(recipient.address),
-      exchange: exchangeName(from, recipient, resolve),
-      flowType: classifyFlow(resolve.kindOf(from.address), resolve.kindOf(recipient.address)),
+      toKind,
+      exchange: exchangeName(from, recipient, resolve, time),
+      flowType: classifyFlow(fromKind, toKind),
       sat: recipient.sat
     });
   }
@@ -211,11 +245,11 @@ export function deriveFlows(
 function pickFunder(
   funders: { address: string; sat: number }[],
   recipient: { address: string; sat: number },
-  resolve: Resolver
+  kindOf: (address: string) => AddressKind
 ): { address: string; sat: number } | null {
   if (funders.length === 0) return null;
 
-  const named = funders.filter((funder) => resolve.kindOf(funder.address) !== 'unknown');
+  const named = funders.filter((funder) => kindOf(funder.address) !== 'unknown');
   const pool = named.length > 0 ? named : funders;
 
   // Smallest sufficient funder: the most specific explanation for this output.
@@ -234,10 +268,11 @@ function pickFunder(
 function exchangeName(
   from: { address: string },
   to: { address: string },
-  resolve: Resolver
+  resolve: Resolver,
+  time: number
 ): string | null {
   const exchangeOf = (address: string): string | null =>
-    resolve.kindOf(address) === 'exchange' ? resolve.nameOf(address) : null;
+    resolve.kindOf(address, time) === 'exchange' ? resolve.nameOf(address, time) : null;
 
   return exchangeOf(from.address) ?? exchangeOf(to.address);
 }
