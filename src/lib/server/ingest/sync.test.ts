@@ -946,5 +946,49 @@ describe('SyncService', () => {
 
       expect(storedHeights()).toContain(5);
     });
+
+    it('runs cycles back to back while behind, instead of one batch per poll', async () => {
+      const chain: FakeChain = { tip: 1_000, fetched: [] };
+      const source = chainSource(chain);
+      // A 30 s poll: if catching up waited for it, this test would time out.
+      sync = buildSync(db, source, {
+        SYNC_BATCH_SIZE: '100',
+        SYNC_POLL_SECONDS: '30',
+        REORG_CHECK_DEPTH: '0',
+        RETENTION_DAYS: '1'
+      });
+
+      sync.start();
+      const deadline = Date.now() + 3_000;
+      while (sync.tip() !== 1_000 && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+
+      expect(sync.tip()).toBe(1_000);
+    });
+
+    it('waits for the poll once caught up, rather than spinning', async () => {
+      const chain: FakeChain = { tip: 50, fetched: [] };
+      const source = chainSource(chain);
+      let tipReads = 0;
+      const getTip = source.getTip.bind(source);
+      source.getTip = async () => {
+        tipReads++;
+        return getTip();
+      };
+      sync = buildSync(db, source, {
+        SYNC_BATCH_SIZE: '100',
+        SYNC_POLL_SECONDS: '30',
+        REORG_CHECK_DEPTH: '0',
+        RETENTION_DAYS: '1'
+      });
+
+      sync.start();
+      await new Promise((resolve) => setTimeout(resolve, 300));
+
+      expect(sync.tip()).toBe(50);
+      // One cycle synced everything, a second confirmed there was nothing left; then quiet.
+      expect(tipReads).toBeLessThanOrEqual(2);
+    });
   });
 });

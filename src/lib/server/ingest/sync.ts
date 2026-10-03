@@ -7,7 +7,7 @@
  * ran the retention cleanup that its own database code contained.
  *
  * Structure:
- *   - one tip poll per `pollSeconds`
+ *   - one tip poll per `pollSeconds` once caught up; back-to-back cycles while behind
  *   - tip-following gets priority; backfill only runs once the tip is caught up
  *   - heights are derived in memory, then committed in one transaction per batch
  *   - a failure records the height in `missing_blocks` with backoff; a repair pass retries it
@@ -113,6 +113,8 @@ export class SyncService {
   private readonly writer: BlockWriter;
   private readonly limiter: Limiter;
   private timer: NodeJS.Timeout | undefined;
+  /** The last cycle made progress and there is more to fetch: run the next one at once. */
+  private behind = false;
   private inFlight: Promise<void> | undefined;
   private stopped = true;
   private lastSuccessAt: number | null = null;
@@ -185,21 +187,34 @@ export class SyncService {
     this.stopped = false;
 
     const intervalMs = this.options.config.sync.pollSeconds * 1000;
-    this.timer = setInterval(() => {
-      void this.runOnce();
-    }, intervalMs);
 
-    // Never hold the process open for a poll.
-    this.timer.unref?.();
+    /*
+     * Self-scheduling rather than `setInterval`.
+     *
+     * A fixed interval ran one batch per poll, so however fast the source, a fresh install
+     * advanced 250 blocks every 30 s: six months took ~17 hours with a node that can serve
+     * them in minutes. While a cycle makes progress and more remains, the next one starts
+     * immediately; the poll interval applies only once caught up, or after a failure, so a
+     * struggling source still gets its breathing room.
+     */
+    const tick = async (): Promise<void> => {
+      if (this.stopped) return;
+      await this.runOnce();
+      if (this.stopped) return;
 
-    void this.runOnce();
+      this.timer = setTimeout(() => void tick(), this.behind ? 0 : intervalMs);
+      // Never hold the process open for a poll.
+      this.timer.unref?.();
+    };
+
+    void tick();
   }
 
   async stop(): Promise<void> {
     this.stopped = true;
 
     if (this.timer) {
-      clearInterval(this.timer);
+      clearTimeout(this.timer);
       this.timer = undefined;
     }
 
@@ -227,6 +242,8 @@ export class SyncService {
   private async cycle(): Promise<void> {
     const startedAt = Date.now();
     const { log } = this.options;
+    // Only a cycle that gets to the end with progress made sets this; anything else backs off.
+    this.behind = false;
 
     try {
       await this.checkForReorg();
@@ -299,7 +316,8 @@ export class SyncService {
       }
 
       // History can wait; the tip cannot. Backfill only once tip-following has caught up.
-      if (end >= tip) await this.backfill(tip);
+      const moreHistory = end >= tip ? await this.backfill(tip) : false;
+      this.behind = (result.synced > 0 && end < tip) || moreHistory;
 
       if (now - this.lastPruneAt >= PRUNE_INTERVAL_MS) {
         this.lastPruneAt = now;
@@ -493,23 +511,25 @@ export class SyncService {
    * once at startup and never moved it, so a long-running service kept trying to fetch a
    * range below its own retention floor forever.
    */
-  private async backfill(tip: number): Promise<void> {
+  /** @returns whether this pass stored blocks and older ones are still missing. */
+  private async backfill(tip: number): Promise<boolean> {
     const { config } = this.options;
 
-    if (config.sync.retentionDays <= 0) return;
+    if (config.sync.retentionDays <= 0) return false;
 
     const floor = Math.max(1, tip - retentionBlocks(config.sync.retentionDays));
     const base = this.base();
 
     if (base === null) {
       await this.syncRange(range(floor, tip), 'backfill');
-      return;
+      return false;
     }
 
-    if (base <= floor) return;
+    if (base <= floor) return false;
 
     const end = Math.max(floor, base - config.sync.batchSize);
-    await this.syncRange(range(end, base - 1), 'backfill');
+    const result = await this.syncRange(range(end, base - 1), 'backfill');
+    return result.synced > 0 && result.failed === 0 && end > floor;
   }
 
   /**
