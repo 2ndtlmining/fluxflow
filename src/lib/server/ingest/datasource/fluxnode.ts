@@ -57,6 +57,21 @@ import {
  * itself empty. Found by running the image against the live explorer, not by a test: the
  * fake fetch never validated its headers.
  */
+/**
+ * How long to wait before retrying discovery when it left the pool empty, doubling per
+ * consecutive empty result up to the normal discovery interval.
+ *
+ * Without this an empty pool rediscovered on every call (every tip poll, every block
+ * request, every health probe), re-probing dozens of operators' home connections each time.
+ */
+const EMPTY_POOL_RETRY_MS = 60_000;
+
+/** Heights whose last serving node is remembered, so a confirmation read can go elsewhere. */
+const SERVED_BY_MEMORY = 1_024;
+
+/** Thrown after `spotCheck` has already benched the node, so it is not benched twice. */
+class VerificationError extends Error {}
+
 export const USER_AGENT =
   'FluxFlow/2 (+https://github.com/2ndtlmining/fluxflow; FLUX chain data; report issues there)';
 
@@ -78,6 +93,14 @@ export interface PoolNode {
    * have no counterparty, and a flow with no counterparty is a guess, not a fact (#15).
    */
   readonly insight: boolean;
+  /**
+   * The highest block this node is known to have, from its probe or its latest tip answer.
+   *
+   * A node inside the tip tolerance can be a block or two behind the pool. Asking it for a
+   * block it has not reached fails, and benching it for that punished a healthy node at
+   * every new block, so heights are routed only to nodes known to have them.
+   */
+  tip: number;
   /** Epoch ms until which the node is not used. */
   benchedUntil: number;
   /** Consecutive failures, used to decide how long to bench for. */
@@ -126,6 +149,10 @@ export class FluxNodePool implements DataSource {
   private cursor = 0;
   private lastTip: number | null = null;
   private lastError: string | null = null;
+  /** Consecutive discoveries that left the pool empty, for the retry backoff. */
+  private emptyDiscoveries = 0;
+  /** Which node last answered for a height, so a re-read can ask a different one. */
+  private readonly servedBy = new Map<number, string>();
 
   private readonly now: () => number;
   private readonly sleep: (ms: number) => Promise<void>;
@@ -157,6 +184,7 @@ export class FluxNodePool implements DataSource {
       insight: boolean;
       latencyMs: number;
       benched: boolean;
+      failures: number;
     }[];
   } {
     return {
@@ -170,7 +198,8 @@ export class FluxNodePool implements DataSource {
         tier: node.tier,
         insight: node.insight,
         latencyMs: node.latencyMs,
-        benched: node.benchedUntil > this.now()
+        benched: node.benchedUntil > this.now(),
+        failures: node.failures
       }))
     };
   }
@@ -225,11 +254,21 @@ export class FluxNodePool implements DataSource {
 
     // Only insight nodes can serve a block. Fetching from a node without a spent index
     // would silently produce flows with no counterparty (#15).
-    const candidates = this.availableNodes(true);
-    if (candidates.length === 0) {
+    const capable = this.availableNodes(true);
+    if (capable.length === 0) {
       throw new Error(
         'no FluxNode with a spent index is available; cannot attribute transaction inputs'
       );
+    }
+
+    // Only nodes known to have reached the height. A node asked for a block above its tip
+    // fails through no fault of its own, and must not be benched for it.
+    const candidates = this.preferOtherThan(
+      capable.filter((node) => node.tip >= height),
+      height
+    );
+    if (candidates.length === 0) {
+      throw new Error(`no FluxNode in the pool has reached block ${height} yet`);
     }
 
     let lastError: unknown;
@@ -244,23 +283,21 @@ export class FluxNodePool implements DataSource {
        * Reserve the slot **synchronously**.
        *
        * Testing `inflight < max` and then incrementing after an await is a race: sixteen
-       * concurrent callers all read `inflight === 0`, all pass, and all issue a request —
+       * concurrent callers all read `inflight === 0`, all pass, and all issue a request,
        * so one home connection ends up taking sixteen at once, which is exactly what the
        * per-node limit exists to prevent. Incrementing here, with no await in between,
        * makes the check-and-claim indivisible.
        */
+      if (node.benchedUntil > this.now()) continue;
       if (node.inflight >= this.options.maxInflightPerNode) continue;
       node.inflight++;
 
       try {
-        const block = await this.fetchBlock(node, height, true);
-        await this.spotCheck(node, height, block.hash);
+        const block = await this.serveBlock(node, height);
         this.cursor = (this.cursor + attempt + 1) % candidates.length;
-        this.lastError = null;
         return block;
       } catch (error) {
         lastError = error;
-        this.bench(node.id, describe(error));
       }
     }
 
@@ -269,34 +306,98 @@ export class FluxNodePool implements DataSource {
      * rather than reporting an error the caller would record as a missing block (#13).
      *
      * Bounded by the request deadline, and retried across nodes so a single stuck node
-     * cannot hold up the whole batch.
+     * cannot hold up the whole batch. If no node is merely *busy* (every one has been
+     * benched) there is nothing to wait for, and holding the caller's limiter slot until
+     * the deadline would only delay failover to the next source.
      */
     while (this.now() < deadline) {
+      if (candidates.every((node) => node.benchedUntil > this.now())) break;
+
       await this.sleep(50);
 
-      const freed = candidates.filter(
-        (node) => node.benchedUntil <= this.now() && node.inflight < this.options.maxInflightPerNode
+      const node = candidates.find(
+        (candidate) =>
+          candidate.benchedUntil <= this.now() &&
+          candidate.inflight < this.options.maxInflightPerNode
       );
+      if (!node) continue;
 
-      if (freed.length === 0) continue;
-
-      const node = freed[0]!;
       node.inflight++;
 
       try {
-        const block = await this.fetchBlock(node, height, true);
-        await this.spotCheck(node, height, block.hash);
-        this.lastError = null;
-        return block;
+        return await this.serveBlock(node, height);
       } catch (error) {
         lastError = error;
-        this.bench(node.id, describe(error));
       }
     }
 
     throw lastError instanceof Error
       ? lastError
       : new Error(`no FluxNode had a free request slot within the deadline for block ${height}`);
+  }
+
+  /**
+   * The hash at a height, from a node other than the one that last answered for it.
+   *
+   * The sync loop re-reads a hash that disagrees with the stored one before it rolls back
+   * (a rollback deletes history). That second read is only worth something if it comes from
+   * a different node: the same node asked twice will happily repeat itself.
+   */
+  async getBlockHash(height: number): Promise<string> {
+    await this.ensurePool();
+
+    const candidates = this.preferOtherThan(
+      this.availableNodes().filter((node) => node.tip >= height),
+      height
+    );
+    if (candidates.length === 0) {
+      throw new Error(`no FluxNode in the pool has reached block ${height} yet`);
+    }
+
+    let lastError: unknown;
+
+    for (const node of candidates) {
+      node.requests++;
+
+      try {
+        const hash = await this.daemonGet<DaemonBlockHash>(
+          node.ip,
+          node.port,
+          `/daemon/getblockhash/${height}`,
+          { retries: 0, timeoutMs: this.options.probeTimeoutMs }
+        );
+
+        if (typeof hash !== 'string' || hash === '') {
+          throw new Error(`implausible block hash: ${JSON.stringify(hash)}`);
+        }
+
+        this.succeeded(node);
+        this.rememberServer(height, node.id);
+        return hash;
+      } catch (error) {
+        lastError = error;
+        this.bench(node.id, describe(error));
+      }
+    }
+
+    throw lastError instanceof Error ? lastError : new Error(`no hash for block ${height}`);
+  }
+
+  /** Fetch, verify and account for one block from a node whose slot is already held. */
+  private async serveBlock(node: PoolNode, height: number): Promise<NormalisedBlock> {
+    try {
+      const block = await this.fetchBlock(node, height, true);
+      await this.spotCheck(node, height, block.hash);
+      this.succeeded(node);
+      this.rememberServer(height, node.id);
+      this.lastError = null;
+      return block;
+    } catch (error) {
+      // A failed spot check has already benched the node; benching again would double the
+      // penalty for one disagreement.
+      if (!(error instanceof VerificationError)) this.bench(node.id, describe(error));
+      throw error;
+    }
   }
 
   async isHealthy(): Promise<boolean> {
@@ -323,8 +424,9 @@ export class FluxNodePool implements DataSource {
   private async ensurePool(): Promise<void> {
     if (this.discovering) return this.discovering;
 
-    const stale = this.now() >= this.nextDiscoveryAt;
-    if (this.nodes.length > 0 && !stale) return;
+    // Respected even when the pool is empty: rediscovering on every call would turn an
+    // empty pool into a scan of operators' nodes every few seconds.
+    if (this.now() < this.nextDiscoveryAt) return;
 
     this.discovering = this.rebuildPool().finally(() => {
       this.discovering = undefined;
@@ -347,14 +449,19 @@ export class FluxNodePool implements DataSource {
         { reason: this.lastError, keeping: this.nodes.length },
         'FluxNode discovery failed, keeping the existing pool'
       );
-      this.nextDiscoveryAt = this.now() + this.options.discoverySeconds * 1_000;
+      this.scheduleDiscovery();
       return;
     }
 
     if (candidates.length === 0) {
+      // The explorer has answered 200 with an empty or reshaped list before. That says
+      // nothing about the nodes already in the pool, so they are kept, as on an error.
       this.lastError = 'discovery returned no usable node addresses';
-      this.nodes = [];
-      this.nextDiscoveryAt = this.now() + this.options.discoverySeconds * 1_000;
+      this.options.log.warn(
+        { keeping: this.nodes.length },
+        'FluxNode discovery returned no candidates, keeping the existing pool'
+      );
+      this.scheduleDiscovery();
       return;
     }
 
@@ -369,11 +476,15 @@ export class FluxNodePool implements DataSource {
         ? []
         : probed.filter((node) => node.tip >= medianTip - this.options.tipTolerance);
 
-    // Fastest first, so the `poolSize` cut keeps the responsive nodes.
-    eligible.sort((a, b) => a.latencyMs - b.latencyMs || b.tip - a.tip);
+    // Nodes that can serve a block first, then fastest first. Cut by latency alone, fast
+    // nodes without a spent index could push out every node that can actually serve, and
+    // the pool would be unusable for a whole discovery interval.
+    eligible.sort(
+      (a, b) => Number(b.insight) - Number(a.insight) || a.latencyMs - b.latencyMs || b.tip - a.tip
+    );
 
-    this.nodes = eligible.slice(0, this.options.poolSize).map(({ tip: _tip, ...node }) => node);
-    this.nextDiscoveryAt = this.now() + this.options.discoverySeconds * 1_000;
+    this.nodes = eligible.slice(0, this.options.poolSize);
+    this.scheduleDiscovery();
 
     const insight = this.nodes.filter((node) => node.insight).length;
 
@@ -529,12 +640,12 @@ export class FluxNodePool implements DataSource {
           { node: serving.id, height, served: hash, checked, checker: checker.id },
           'FluxNode served a block hash that no other node agrees with'
         );
-        throw new Error(`block ${height} failed cross-node verification`);
+        throw new VerificationError(`block ${height} failed cross-node verification`);
       }
     } catch (error) {
       // A checker that cannot answer is itself suspicious, but it is not evidence about
       // `serving`. Only a disagreement is disqualifying.
-      if (error instanceof Error && error.message.includes('cross-node verification')) throw error;
+      if (error instanceof VerificationError) throw error;
       this.options.log.debug(
         { checker: checker.id, height, reason: describe(error) },
         'cross-node check could not run'
@@ -559,6 +670,8 @@ export class FluxNodePool implements DataSource {
         throw new Error(`implausible block count: ${JSON.stringify(count)}`);
       }
 
+      node.tip = count;
+      this.succeeded(node);
       return count;
     } catch (error) {
       this.bench(node.id, describe(error));
@@ -627,6 +740,55 @@ export class FluxNodePool implements DataSource {
   private availableNodes(insightOnly = false): PoolNode[] {
     const now = this.now();
     return this.nodes.filter((node) => node.benchedUntil <= now && (!insightOnly || node.insight));
+  }
+
+  /** A served request ends a failure streak; only *consecutive* failures grow the bench. */
+  private succeeded(node: PoolNode): void {
+    node.failures = 0;
+  }
+
+  /**
+   * Order nodes so the one that last answered for `height` comes last.
+   *
+   * Used for re-reads: a confirmation is only independent if a different node gives it.
+   */
+  private preferOtherThan(nodes: PoolNode[], height: number): PoolNode[] {
+    const last = this.servedBy.get(height);
+    if (last === undefined) return nodes;
+
+    return [
+      ...nodes.filter((node) => node.id !== last),
+      ...nodes.filter((node) => node.id === last)
+    ];
+  }
+
+  private rememberServer(height: number, nodeId: string): void {
+    this.servedBy.delete(height);
+    this.servedBy.set(height, nodeId);
+
+    // Insertion-ordered, so the oldest entry is first.
+    if (this.servedBy.size > SERVED_BY_MEMORY) {
+      const oldest = this.servedBy.keys().next().value;
+      if (oldest !== undefined) this.servedBy.delete(oldest);
+    }
+  }
+
+  /**
+   * When to look for nodes next: the normal interval for a working pool, and a short,
+   * growing backoff for an empty one so it recovers without being re-probed on every call.
+   */
+  private scheduleDiscovery(): void {
+    const intervalMs = this.options.discoverySeconds * 1_000;
+
+    if (this.nodes.length > 0) {
+      this.emptyDiscoveries = 0;
+      this.nextDiscoveryAt = this.now() + intervalMs;
+      return;
+    }
+
+    const backoffMs = Math.min(EMPTY_POOL_RETRY_MS * 2 ** this.emptyDiscoveries, intervalMs);
+    this.emptyDiscoveries++;
+    this.nextDiscoveryAt = this.now() + backoffMs;
   }
 
   /**
@@ -747,39 +909,22 @@ function firstString(record: Record<string, unknown>, keys: readonly string[]): 
 /**
  * Split a node-list address into host and optional port.
  *
- * The explorer publishes these several ways, and all of them appear in real responses:
- * `185.13.30.11`, `24.108.153.230:16147` (inline port — measured on the live list, and
- * common on UPnP nodes), and bracketed IPv6 such as `[2a03::1]:16127`.
+ * The explorer publishes these several ways, and both IPv4 forms appear in real responses:
+ * `185.13.30.11` and `24.108.153.230:16147` (inline port, measured on the live list, and
+ * common on UPnP nodes).
  *
- * @returns `null` for anything we will not open a socket to. Loopback, unspecified and
- * link-local addresses are excluded on purpose: the discovery endpoint is a public API, and
- * if it ever returns `0.0.0.0` the resulting requests go nowhere while looking successful.
+ * @returns `null` for anything we will not open a socket to:
+ *
+ *  - **Any IPv6 address.** Out of scope for now (#35); requests built as `http://ip:port`
+ *    would need bracketing, and every such node only wasted a probe slot.
+ *  - **Any non-public IPv4 range**: private, shared (CGNAT), loopback, link-local,
+ *    benchmarking, documentation, multicast and reserved. The node list is a third-party
+ *    response; accepting a private address would have FluxFlow probe hosts on the LAN it
+ *    runs in, which is a request-forgery route into the operator's own network.
  */
 export function parseHost(raw: string): { address: string; port: number | null } | null {
   const trimmed = raw.trim();
-  if (trimmed === '') return null;
-
-  if (trimmed.startsWith('[')) {
-    const close = trimmed.indexOf(']');
-    if (close === -1) return null;
-
-    const address = trimmed.slice(1, close);
-    const rest = trimmed.slice(close + 1);
-
-    let port: number | null = null;
-    if (rest.startsWith(':')) {
-      port = Number(rest.slice(1));
-      if (!Number.isInteger(port) || port < 1 || port > 65_535) return null;
-    } else if (rest !== '') {
-      return null;
-    }
-
-    if (!/^[0-9a-f:]+$/i.test(address)) return null;
-    // Loopback (::1) and the unspecified address.
-    if (/^(0*:)*0*1$/i.test(address) || /^(0*:)*:?0*$/i.test(address)) return null;
-
-    return { address, port };
-  }
+  if (trimmed === '' || trimmed.startsWith('[')) return null;
 
   const parts = trimmed.split(':');
   if (parts.length > 2) return null;
@@ -797,14 +942,27 @@ export function parseHost(raw: string): { address: string; port: number | null }
   const octets = address.split('.').map(Number);
   if (octets.some((octet) => !Number.isInteger(octet) || octet < 0 || octet > 255)) return null;
 
-  const first = octets[0]!;
-  const second = octets[1]!;
+  return isPublicIpv4(octets) ? { address, port } : null;
+}
 
-  // 0.x unspecified, 127/8 loopback, 169.254 link-local, 224+ multicast or reserved.
-  if (first === 0 || first === 127 || first >= 224) return null;
-  if (first === 169 && second === 254) return null;
+/** Whether an IPv4 address, given as four octets, is globally routable. */
+function isPublicIpv4(octets: readonly number[]): boolean {
+  const [a = 0, b = 0, c = 0] = octets;
 
-  return { address, port };
+  return !(
+    a === 0 || // "this network"
+    a === 10 || // private
+    a === 127 || // loopback
+    a >= 224 || // multicast and reserved
+    (a === 100 && b >= 64 && b <= 127) || // shared address space (CGNAT)
+    (a === 169 && b === 254) || // link-local
+    (a === 172 && b >= 16 && b <= 31) || // private
+    (a === 192 && b === 168) || // private
+    (a === 192 && b === 0 && (c === 0 || c === 2)) || // IETF assignments, TEST-NET-1
+    (a === 198 && (b === 18 || b === 19)) || // benchmarking
+    (a === 198 && b === 51 && c === 100) || // TEST-NET-2
+    (a === 203 && b === 0 && c === 113) // TEST-NET-3
+  );
 }
 
 /** Median of a numeric array. Assumes a non-empty array. */

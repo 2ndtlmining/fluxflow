@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+﻿import { describe, expect, it, vi } from 'vitest';
 import { silentLogger } from '../../testkit.js';
 import { hasInputAddresses, unwrap, type DaemonBlock } from './daemon.js';
 import {
@@ -143,8 +143,40 @@ describe('parseHost', () => {
     });
   });
 
-  it('accepts a bracketed IPv6 address with a port', () => {
-    expect(parseHost('[2a03::1]:16127')).toEqual({ address: '2a03::1', port: 16_127 });
+  it('skips IPv6 addresses for now', () => {
+    // Requests were built as `http://${ip}:${port}` without brackets, so every IPv6 node got
+    // a malformed URL and wasted a probe slot. #35 scopes IPv6 out until it is supported.
+    expect(parseHost('[2a03::1]:16127')).toBeNull();
+    expect(parseHost('[2a03::1]')).toBeNull();
+    expect(parseHost('2a03::1')).toBeNull();
+  });
+
+  it('rejects private, shared and documentation ranges', () => {
+    // The node list is a remote response. Accepting these would have FluxFlow probe hosts
+    // on its own LAN on the operator's behalf.
+    for (const host of [
+      '10.0.0.5',
+      '10.0.0.5:16127',
+      '172.16.0.1',
+      '172.31.255.254',
+      '192.168.1.1',
+      '100.64.0.1',
+      '100.127.255.254',
+      '198.18.0.1',
+      '192.0.2.10',
+      '198.51.100.10',
+      '203.0.113.10',
+      '[fe80::1]:16127',
+      '[fc00::1]'
+    ]) {
+      expect(parseHost(host), host).toBeNull();
+    }
+  });
+
+  it('keeps public addresses next to the private ranges', () => {
+    for (const host of ['172.15.0.1', '172.32.0.1', '100.63.0.1', '100.128.0.1', '11.0.0.1']) {
+      expect(parseHost(host), host).not.toBeNull();
+    }
   });
 
   it('rejects an out-of-range port rather than clamping it', () => {
@@ -917,7 +949,7 @@ describe('FluxNodePool', () => {
       const { pool } = buildPool([node('185.13.30.11'), node('185.13.30.12')]);
       await pool.getTip();
 
-      await expect(pool.getBlock(999_999)).rejects.toThrow(/Block not found/);
+      await expect(pool.getBlock(999_999)).rejects.toThrow(/999999/);
     });
 
     it('rejects a node that answers with a block at the wrong height', async () => {
@@ -1047,3 +1079,172 @@ describe('fixtures', () => {
 
 // Referenced so the unused-import lint stays honest about the types in use.
 export type { DaemonBlock };
+
+describe('FluxNodePool review fixes (#43)', () => {
+  function discoveryCalls(fetchImpl: { mock: { calls: unknown[][] } }): number {
+    return fetchImpl.mock.calls.filter((call) => String(call[0]).includes('explorer.test')).length;
+  }
+
+  it('keeps spent-index nodes even when faster nodes without one were probed', async () => {
+    // Cut by latency alone, three fast nodes with no spent index pushed out every node that
+    // could actually serve a block, and the pool was unusable for a whole discovery interval.
+    const { pool } = buildPool(
+      [
+        node('185.13.30.11', { noInsight: true, latencyMs: 1 }),
+        node('185.13.30.12', { noInsight: true, latencyMs: 1 }),
+        node('185.13.30.13', { noInsight: true, latencyMs: 1 }),
+        node('185.13.30.14', { latencyMs: 30 }),
+        node('185.13.30.15', { latencyMs: 30 })
+      ],
+      { poolSize: 3 }
+    );
+
+    await pool.getTip();
+
+    expect(pool.status().insight).toBe(2);
+    await expect(pool.getBlock(1_000)).resolves.toMatchObject({ height: 1_000 });
+  });
+
+  it('does not rediscover on every call while the pool is empty', async () => {
+    const { pool, fetchImpl } = buildPool([node('185.13.30.11', { fail: true })]);
+
+    for (let call = 0; call < 4; call++) await pool.getTip().catch(() => undefined);
+
+    // Each call re-ran discovery and re-probed every candidate on every port: a scan of
+    // operators' home connections every few seconds, indefinitely.
+    expect(discoveryCalls(fetchImpl)).toBe(1);
+  });
+
+  it('tries discovery again once the empty-pool backoff has passed', async () => {
+    const flaky = node('185.13.30.11', { fail: true });
+    const { pool, fetchImpl, advance } = buildPool([flaky]);
+
+    await pool.getTip().catch(() => undefined);
+    flaky.fail = false;
+    advance(10 * 60_000);
+
+    await expect(pool.getTip()).resolves.toBe(TIP);
+    expect(discoveryCalls(fetchImpl)).toBe(2);
+  });
+
+  it('keeps the working pool when discovery returns no candidates', async () => {
+    const { pool, fetchImpl, advance } = buildPool([node('185.13.30.11'), node('185.13.30.12')]);
+
+    await pool.getTip();
+    advance(1_800_001);
+
+    // The explorer briefly answers 200 with nothing usable, as it has done before.
+    fetchImpl.mockImplementationOnce(
+      async () => new Response(JSON.stringify({ fluxNodes: [] }), { status: 200 })
+    );
+
+    await expect(pool.getTip()).resolves.toBe(TIP);
+    expect(pool.status().discovered).toBe(2);
+  });
+
+  it('does not bench a node for a block it has not reached yet', async () => {
+    // One block behind is inside the tolerance, so the node is kept, and it is the fastest,
+    // so it is asked first. Asking it for the tip block made it fail and benched it at
+    // every new block.
+    const lagging = node('185.13.30.11', { tip: TIP - 1, latencyMs: 0 });
+    const { pool } = buildPool([
+      lagging,
+      node('185.13.30.12', { latencyMs: 3 }),
+      node('185.13.30.13', { latencyMs: 3 })
+    ]);
+
+    await pool.getTip();
+    await expect(pool.getBlock(TIP)).resolves.toMatchObject({ height: TIP });
+
+    expect(pool.status().nodes.find((entry) => entry.id === '185.13.30.11:16127')?.benched).toBe(
+      false
+    );
+  });
+
+  it('does not bench anyone for a block no node has reached', async () => {
+    const { pool } = buildPool([node('185.13.30.11'), node('185.13.30.12')]);
+    await pool.getTip();
+
+    await expect(pool.getBlock(TIP + 50)).rejects.toThrow();
+
+    expect(pool.status().nodes.every((entry) => !entry.benched)).toBe(true);
+  });
+
+  it('gives up at once when every spent-index node has just been benched', async () => {
+    const a = node('185.13.30.11');
+    const b = node('185.13.30.12');
+    const { pool, clock } = buildPool([a, b]);
+
+    await pool.getTip();
+    a.fail = true;
+    b.fail = true;
+
+    const before = clock();
+    await expect(pool.getBlock(1_000)).rejects.toThrow();
+
+    // Waiting for a "free slot" on nodes that are benched, not busy, held a shared limiter
+    // slot for the whole deadline before failing over.
+    expect(clock() - before).toBeLessThan(1_000);
+  });
+
+  it('clears a node failure count once it serves successfully', async () => {
+    const flaky = node('185.13.30.11');
+    const { pool, advance } = buildPool([flaky, node('185.13.30.12'), node('185.13.30.13')]);
+
+    await pool.getTip();
+    flaky.fail = true;
+    await pool.getTip();
+    flaky.fail = false;
+    advance(10 * 60_000);
+
+    await pool.getTip();
+
+    // Otherwise every blip ever seen compounds the next bench, up to the 8x cap.
+    expect(pool.status().nodes.find((entry) => entry.id === '185.13.30.11:16127')?.failures).toBe(
+      0
+    );
+  });
+
+  it('counts a hash mismatch as one failure, not two', async () => {
+    const liar = node('185.13.30.11', { blockHash: 'f'.repeat(64), latencyMs: 0 });
+    const { pool } = buildPool(
+      [liar, node('185.13.30.12', { latencyMs: 3 }), node('185.13.30.13', { latencyMs: 3 })],
+      { spotCheckEvery: 1 }
+    );
+
+    await pool.getTip();
+    await pool.getBlock(1_000);
+
+    expect(pool.status().nodes.find((entry) => entry.id === '185.13.30.11:16127')?.failures).toBe(
+      1
+    );
+  });
+  it('asks a different node when a hash is re-read', async () => {
+    const { pool, fetchImpl } = buildPool([node('185.13.30.11'), node('185.13.30.12')]);
+    await pool.getTip();
+
+    const hashHosts = (): string[] =>
+      fetchImpl.mock.calls
+        .map((call) => new URL(String(call[0])))
+        .filter((url) => url.pathname.endsWith('/getblockhash/1000'))
+        .map((url) => url.hostname);
+
+    await pool.getBlockHash(1_000);
+    await pool.getBlockHash(1_000);
+
+    // The sync loop re-reads a disagreeing hash before it rolls back. The same node asked
+    // twice would just repeat itself, so the confirmation must come from somewhere else.
+    const [first, second] = hashHosts();
+    expect(first).toBeDefined();
+    expect(second).toBeDefined();
+    expect(second).not.toBe(first);
+  });
+
+  it('does not ask a node for a hash above its known tip', async () => {
+    const { pool } = buildPool([node('185.13.30.11'), node('185.13.30.12')]);
+    await pool.getTip();
+
+    await expect(pool.getBlockHash(TIP + 50)).rejects.toThrow(/has reached block/);
+    expect(pool.status().nodes.every((entry) => !entry.benched)).toBe(true);
+  });
+});
