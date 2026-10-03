@@ -1142,6 +1142,27 @@ describe('FluxNodePool review fixes (#43)', () => {
     expect(pool.status().discovered).toBe(2);
   });
 
+  it('keeps the working pool when a re-probe finds no usable node', async () => {
+    const nodes = [node('185.13.30.11'), node('185.13.30.12')];
+    const { pool, advance } = buildPool(nodes);
+
+    await pool.getTip();
+    advance(1_800_001);
+
+    // Our own network blips while re-probing: every probe fails. That says nothing about the
+    // nodes, and swapping a working pool for an empty one stalls ingestion until the next
+    // discovery even though the blip is long over.
+    for (const entry of nodes) entry.fail = true;
+    await pool.getTip().catch(() => undefined);
+    for (const entry of nodes) entry.fail = false;
+
+    expect(pool.status().discovered).toBe(2);
+    // The tip read during the blip benched them, which is right; once that expires the
+    // same pool serves again, with no rediscovery needed.
+    advance(10 * 60_000);
+    await expect(pool.getTip()).resolves.toBe(TIP);
+  });
+
   it('does not bench a node for a block it has not reached yet', async () => {
     // One block behind is inside the tolerance, so the node is kept, and it is the fastest,
     // so it is asked first. Asking it for the tip block made it fail and benched it at

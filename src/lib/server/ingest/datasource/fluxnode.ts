@@ -483,7 +483,22 @@ export class FluxNodePool implements DataSource {
       (a, b) => Number(b.insight) - Number(a.insight) || a.latencyMs - b.latencyMs || b.tip - a.tip
     );
 
-    this.nodes = eligible.slice(0, this.options.poolSize);
+    const selected = eligible.slice(0, this.options.poolSize);
+
+    // A probe round that found nothing able to serve a block says more about our own
+    // connectivity at that moment than about the nodes. Keep a pool that can still serve
+    // rather than replace it with one that cannot, as on a discovery failure.
+    if (!selected.some((node) => node.insight) && this.nodes.some((node) => node.insight)) {
+      this.lastError = `re-probe found no usable FluxNode (${probed.length} answered)`;
+      this.options.log.warn(
+        { probed: probed.length, eligible: eligible.length, keeping: this.nodes.length },
+        'FluxNode re-probe found no node that can serve blocks, keeping the existing pool'
+      );
+      this.scheduleDiscovery();
+      return;
+    }
+
+    this.nodes = selected;
     this.scheduleDiscovery();
 
     const insight = this.nodes.filter((node) => node.insight).length;
