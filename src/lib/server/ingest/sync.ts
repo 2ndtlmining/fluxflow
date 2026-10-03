@@ -29,13 +29,12 @@ import { BlockWriter, logWarnings } from './writer.js';
 const BLOCKS_PER_DAY = 2_880;
 
 /**
- * Maintenance runs on a clock, not only on idle cycles.
+ * Prune runs on a clock, not only on idle cycles.
  *
  * With 30-second blocks and a 30-second poll, almost every cycle has one new block. Running
- * repair and prune only when a cycle found nothing new starved both: due gaps waited far
- * past their backoff and retention lagged indefinitely.
+ * maintenance only when a cycle found nothing new starved it: retention lagged indefinitely.
+ * Gap repair needs no clock of its own; each missing height carries its own backoff.
  */
-const REPAIR_INTERVAL_MS = 60_000;
 const PRUNE_INTERVAL_MS = 60 * 60_000;
 
 /** Throughput is averaged over this window, so the rate reflects current work. */
@@ -117,7 +116,6 @@ export class SyncService {
   private inFlight: Promise<void> | undefined;
   private stopped = true;
   private lastSuccessAt: number | null = null;
-  private lastRepairAt = 0;
   private lastPruneAt = 0;
   private counters = {
     cycles: 0,
@@ -268,31 +266,36 @@ export class SyncService {
       const heights = range(start, end);
       const result = await this.syncRange(heights, stored === null ? 'backfill' : 'forward');
 
-      // Healthy means data is landing, or there was nothing new to land. Reading the tip
-      // alone proves only that the source answers.
-      if (heights.length === 0 || result.synced > 0) this.markSuccess(Date.now());
-
-      /*
-       * Stop here if this pass had failures.
-       *
-       * The failed heights are already queued in `missing_blocks` with a backoff. Running
-       * repair and backfill in the same cycle would re-fetch them immediately — tripling
-       * the load on a source that is already struggling, which is how a brief slowdown
-       * becomes a sustained outage.
-       */
-      if (result.failed > 0) {
-        log.info(
-          { failed: result.failed },
-          'cycle had failures; deferring repair and backfill to a later cycle'
-        );
-        return;
+      // Healthy means data is landing, or the stored tip already equals the chain's. Reading
+      // the tip alone proves only that the source answers, and a tip *below* what is stored
+      // also leaves nothing to fetch: that is a stuck or lagging source, not "caught up".
+      if (result.synced > 0 || (heights.length === 0 && stored === tip)) {
+        this.markSuccess(Date.now());
+      } else if (stored !== null && tip < stored) {
+        log.warn({ tip, stored }, 'source reports a tip below the stored tip; not marking healthy');
       }
 
       const now = Date.now();
 
-      if (now - this.lastRepairAt >= REPAIR_INTERVAL_MS) {
-        this.lastRepairAt = now;
-        await this.repairGaps(floor);
+      /*
+       * Repair runs every cycle, even after a pass with failures.
+       *
+       * Its load is already bounded: only heights whose backoff has expired are retried, and
+       * the heights that just failed were queued with a fresh backoff, so they are not among
+       * them. Skipping repair whenever the forward pass failed meant a source that kept
+       * failing on new tip blocks starved every older gap indefinitely.
+       */
+      await this.repairGaps(floor);
+
+      /*
+       * Stop here if this pass had failures.
+       *
+       * Backfill would add a whole batch of new requests on a source that is already
+       * struggling, which is how a brief slowdown becomes a sustained outage.
+       */
+      if (result.failed > 0) {
+        log.info({ failed: result.failed }, 'cycle had failures; deferring backfill');
+        return;
       }
 
       // History can wait; the tip cannot. Backfill only once tip-following has caught up.
@@ -538,6 +541,7 @@ export class SyncService {
 
       if (live === null) continue; // Cannot verify; do not roll back on a fetch failure.
       if (live !== row.hash) {
+        if (!(await this.confirmHash(row.height, live))) continue;
         mismatch = row.height;
         break;
       }
@@ -576,11 +580,33 @@ export class SyncService {
 
       const live = await this.liveHash(height);
       if (live === null || live === stored.hash) break;
+      if (!(await this.confirmHash(height, live))) break;
 
       fork = height;
     }
 
     return fork;
+  }
+
+  /**
+   * Re-read a hash that disagrees with the stored one, before acting on it.
+   *
+   * A rollback deletes stored history, so it must never rest on a single remote answer: one
+   * glitching or dishonest source (a node in a pool, a cache serving a stale view) would
+   * otherwise be able to wipe blocks. The second read goes through failover again, so with a
+   * pool it can come from a different node. Anything other than the same answer twice is
+   * treated as unverified, which keeps the stored data.
+   */
+  private async confirmHash(height: number, first: string): Promise<boolean> {
+    const second = await this.liveHash(height);
+
+    if (second === first) return true;
+
+    this.options.log.warn(
+      { height, first, second },
+      'hash mismatch was not confirmed by a second read; keeping stored block'
+    );
+    return false;
   }
 
   /**
