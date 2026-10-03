@@ -391,6 +391,24 @@ export class FailoverDataSource {
       })
     };
   }
+
+  /**
+   * Extra per-source detail for `/api/status`, when a source offers it.
+   *
+   * The FluxNode pool reports how many nodes it found, how many can attribute inputs and
+   * which are benched (#25). That is the difference between "the pool is unhealthy" and
+   * "the pool is fine but half of it has no spent index", which are very different
+   * problems.
+   *
+   * Kept optional on the contract so a source is not required to expose internals in order
+   * to be used.
+   */
+  detailsFor(id: string): Record<string, unknown> | undefined {
+    const source = this.options.sources.find((candidate) => candidate.id === id);
+    const status = (source as { status?: () => Record<string, unknown> } | undefined)?.status;
+
+    return typeof status === 'function' ? status.call(source) : undefined;
+  }
 }
 
 /**

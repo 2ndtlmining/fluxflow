@@ -104,6 +104,73 @@ describe('loadConfig', () => {
     expect(config.log.pretty).toBe(false);
   });
 
+  describe('FluxNode pool (#35)', () => {
+    it('is enabled by default, so a public install can actually ingest', () => {
+      const config = loadConfig(env());
+
+      expect(config.fluxNode.enabled).toBe(true);
+      expect(config.fluxNode.poolSize).toBe(15);
+      // Two in flight per node: enough to fill the pipe, low enough to be courteous.
+      expect(config.fluxNode.maxInflightPerNode).toBe(2);
+      expect(config.fluxNode.apiPorts).toEqual([16_127, 16_137, 16_147, 16_157, 16_167]);
+    });
+
+    it('can be switched off', () => {
+      expect(loadConfig(env({ FLUXNODE_POOL_ENABLED: '0' })).fluxNode.enabled).toBe(false);
+    });
+
+    it('is off when syncing is off, since a pool with nothing to fetch is just load', () => {
+      expect(loadConfig(env({ SYNC_ENABLED: '0' })).fluxNode.enabled).toBe(false);
+    });
+
+    it('parses a port list, ignoring spaces and blanks', () => {
+      expect(loadConfig(env({ FLUXNODE_API_PORTS: ' 16127 , 16137 ,' })).fluxNode.apiPorts).toEqual(
+        [16_127, 16_137]
+      );
+    });
+
+    it('names the variable when a port is not a number', () => {
+      // A bad port has to be reported against the variable the operator actually set.
+      let issues: ConfigError | undefined;
+      try {
+        loadConfig(env({ FLUXNODE_API_PORTS: '16127,http' }));
+      } catch (error) {
+        issues = error as ConfigError;
+      }
+
+      expect(issues?.message).toContain('FLUXNODE_API_PORTS');
+      expect(issues?.message).toMatch(/http is not a valid TCP port/);
+    });
+
+    it('rejects an out-of-range port', () => {
+      expect(() => loadConfig(env({ FLUXNODE_API_PORTS: '16127,99999' }))).toThrow(ConfigError);
+    });
+
+    it('rejects a per-node limit that would hammer a home connection', () => {
+      expect(() => loadConfig(env({ FLUXNODE_MAX_INFLIGHT: '64' }))).toThrow(ConfigError);
+    });
+
+    it('allows spot checks to be turned off', () => {
+      expect(loadConfig(env({ FLUXNODE_SPOTCHECK_EVERY: '0' })).fluxNode.spotCheckEvery).toBe(0);
+    });
+
+    it('appears in the loggable config view', () => {
+      const described = describeConfig(loadConfig(env())) as {
+        dataSources: Record<string, unknown>;
+      };
+
+      expect(described.dataSources.fluxNodePool).toMatch(/15 nodes/);
+    });
+
+    it('says so when the pool is disabled', () => {
+      const described = describeConfig(loadConfig(env({ FLUXNODE_POOL_ENABLED: '0' }))) as {
+        dataSources: Record<string, unknown>;
+      };
+
+      expect(described.dataSources.fluxNodePool).toBe('(disabled)');
+    });
+  });
+
   describe('validation failures', () => {
     it('rejects a non-numeric port', () => {
       expect(() => loadConfig(env({ PORT: 'not-a-port' }))).toThrow(ConfigError);

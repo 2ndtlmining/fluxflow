@@ -123,7 +123,16 @@ export function createApiRouter(deps: ApiDependencies): Router {
         missingBlocks: database.missingBlocks,
         sizeBytes: database.dbSizeBytes
       },
-      dataSources: dataSource.status(),
+      dataSources: {
+        ...dataSource.status(),
+        // Per-source detail, where a source has any. Currently the FluxNode pool (#25).
+        details: Object.fromEntries(
+          dataSource
+            .status()
+            .sources.map((source) => [source.id, dataSource.detailsFor(source.id)])
+            .filter(([, detail]) => detail !== undefined)
+        )
+      },
       labels: labels.stats()
     });
   });
