@@ -1,312 +1,287 @@
-<script>
-  import { onMount } from 'svelte';
-  import { DEFAULT_PERIOD, FRONTEND_REFRESH_INTERVAL } from '$lib/shared/constants';
-  import { getApiUrl } from '$lib/client/api';
-  import Header from '$lib/components/Header.svelte';
-  import FlowStats from '$lib/components/FlowStats.svelte';
-  import PeriodSelector from '$lib/components/PeriodSelector.svelte';
-  import FlowComparison from '$lib/components/FlowComparison.svelte';
-  import TransactionTable from '$lib/components/TransactionTable.svelte';
-  // PHASE 4: Removed WalletEnhancement component - now handled by background job
+<!--
+  Dashboard: the balance first, then who is behind it, then how it splits by exchange and by
+  kind of wallet, how it moved over time, and every transfer (#36 Phase 4).
 
-  let API_URL = '';
+  State lives in the URL (#26): the period, the leaderboard filter and the transaction
+  filters are query parameters, so refresh, back/forward and shared links all land on the
+  same view. Switching period never blanks the page: the previous figures stay, dimmed, until
+  the new ones arrive, and each switch aborts the request it replaces so the last click wins.
 
-  let selectedPeriod = DEFAULT_PERIOD;
-  let flowData = null;
-  let loading = true;
-  let error = null;
+  Data is revalidated whenever `live.version` moves: on each committed sync while the event
+  stream is open, otherwise every 30 s (#32). Between syncs that costs a 304.
+-->
+<script lang="ts">
+  import { goto } from '$app/navigation';
+  import { page } from '$app/state';
+  import { untrack } from 'svelte';
+  import { isAbort, peek } from '$lib/client/api';
+  import {
+    boardPath,
+    fetchBoard,
+    fetchSeries,
+    fetchSummary,
+    seriesPath,
+    summaryPath
+  } from '$lib/client/endpoints';
+  import { kindLabel } from '$lib/client/format';
+  import { live } from '$lib/client/live.svelte';
+  import type { FlowSummary, Leaderboard as Board, Series } from '$lib/client/types';
+  import { readState, writeState, type BoardKind, type TxFilters } from '$lib/client/urlState';
+  import type { PeriodId } from '$lib/shared/constants';
+  import Diverging from '$lib/ui/Diverging.svelte';
+  import Leaderboard from '$lib/ui/Leaderboard.svelte';
+  import NetBalance from '$lib/ui/NetBalance.svelte';
+  import PeriodTabs from '$lib/ui/PeriodTabs.svelte';
+  import SeriesChart from '$lib/ui/SeriesChart.svelte';
+  import Transactions from '$lib/ui/Transactions.svelte';
+  import Watchlist from '$lib/ui/Watchlist.svelte';
+  import type { DivergingRow } from '$lib/ui/types';
 
-  // Transaction table state (inline, not modal)
-  let showTransactionTable = false;
-  let transactionTableData = {
-    transactions: [],
-    title: '',
-    type: 'selling'
-  };
+  const view = $derived(readState(page.url.searchParams));
 
-  // Fetch flow data for selected period
-  async function fetchFlowData() {
-    try {
-      loading = true;
+  let summary = $state<FlowSummary | undefined>();
+  let sellers = $state<Board | undefined>();
+  let buyers = $state<Board | undefined>();
+  let series = $state<Series | undefined>();
+  let error = $state<string | null>(null);
+
+  const stale = $derived(summary !== undefined && summary.period !== view.period);
+
+  /**
+   * Each section settles on its own: a leaderboard or chart that fails must not take the
+   * headline figures down with it. Only the summary's failure is reported, since everything
+   * else on the page is read in its light.
+   */
+  async function load(period: PeriodId, who: BoardKind, signal: AbortSignal): Promise<void> {
+    const [nextSummary, nextSellers, nextBuyers, nextSeries] = await Promise.allSettled([
+      fetchSummary(period, signal),
+      fetchBoard(period, 'sellers', who, signal),
+      fetchBoard(period, 'buyers', who, signal),
+      fetchSeries(period, signal)
+    ]);
+    if (signal.aborted) return;
+
+    if (nextSummary.status === 'fulfilled') {
+      summary = nextSummary.value;
       error = null;
-
-      const response = await fetch(`${API_URL}/api/flow/${selectedPeriod}`);
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(data.error || 'Failed to fetch flow data');
-      }
-
-      flowData = data;
-    } catch (err) {
-      console.error('Error fetching flow data:', err);
-      error = err.message;
-    } finally {
-      loading = false;
+    } else if (!isAbort(nextSummary.reason)) {
+      error = (nextSummary.reason as Error).message;
     }
+    if (nextSellers.status === 'fulfilled') sellers = nextSellers.value;
+    if (nextBuyers.status === 'fulfilled') buyers = nextBuyers.value;
+    series = nextSeries.status === 'fulfilled' ? nextSeries.value : undefined;
   }
 
-  // Handle period change
-  function handlePeriodChange(event) {
-    selectedPeriod = event.detail.period;
-    showTransactionTable = false; // Hide table when period changes
-    fetchFlowData();
-  }
+  $effect(() => live.start());
 
-  // Handle show details from FlowCard (inline display)
-  function handleShowDetails(event) {
-    transactionTableData = event.detail;
-    showTransactionTable = true;
+  $effect(() => {
+    const { period, who } = view;
+    void live.version;
+    const controller = new AbortController();
 
-    // Smooth scroll to transaction table
-    setTimeout(() => {
-      const tableElement = document.getElementById('transaction-table');
-      if (tableElement) {
-        tableElement.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-      }
-    }, 100);
-  }
+    // Show what we already know for this view at once; keep the old figures otherwise.
+    untrack(() => {
+      summary = peek<FlowSummary>(summaryPath(period)) ?? summary;
+      sellers = peek<Board>(boardPath(period, 'sellers', who)) ?? sellers;
+      buyers = peek<Board>(boardPath(period, 'buyers', who)) ?? buyers;
+      series = peek<Series>(seriesPath(period)) ?? series;
+    });
 
-  // Initial load and refresh
-  onMount(() => {
-    API_URL = getApiUrl();
-    console.log('✅ Using API URL:', API_URL);
-
-    fetchFlowData();
-
-    // Auto-refresh every 5 minutes
-    const interval = setInterval(fetchFlowData, FRONTEND_REFRESH_INTERVAL);
-
-    return () => clearInterval(interval);
+    void load(period, who, controller.signal);
+    return () => controller.abort();
   });
+
+  function hrefFor(period: PeriodId): string {
+    const query = writeState({ ...view, period });
+    return query ? `/?${query}` : '/';
+  }
+
+  function navigate(patch: { who?: BoardKind; filters?: TxFilters }): void {
+    const query = writeState({ ...view, ...patch });
+    void goto(query ? `/?${query}` : '/', { keepFocus: true, noScroll: true, replaceState: true });
+  }
+
+  const exchangeRows = $derived.by((): DivergingRow[] => {
+    const names = new Set([
+      ...Object.keys(summary?.buying?.byExchange ?? {}),
+      ...Object.keys(summary?.selling?.byExchange ?? {})
+    ]);
+    return [...names]
+      .map((name) => ({
+        key: name,
+        label: name,
+        buy: summary?.buying?.byExchange[name]?.total ?? 0,
+        sell: summary?.selling?.byExchange[name]?.total ?? 0
+      }))
+      .sort((a, b) => b.buy + b.sell - (a.buy + a.sell));
+  });
+
+  const kindRows = $derived.by((): DivergingRow[] => {
+    const buying = summary?.byType?.buying ?? {};
+    const selling = summary?.byType?.selling ?? {};
+    return [...new Set([...Object.keys(buying), ...Object.keys(selling)])]
+      .map((kind) => ({
+        key: kind,
+        label: kindLabel(kind),
+        buy: buying[kind] ?? 0,
+        sell: selling[kind] ?? 0
+      }))
+      .filter((row) => row.buy > 0 || row.sell > 0)
+      .sort((a, b) => b.buy + b.sell - (a.buy + a.sell));
+  });
+
+  const exchanges = $derived(exchangeRows.map((row) => row.key).sort());
+  const boardsStale = $derived(sellers !== undefined && (sellers.period !== view.period || stale));
 </script>
 
-<Header />
+<svelte:head>
+  <title>FluxFlow: who is moving FLUX on and off exchanges</title>
+</svelte:head>
 
-<div class="container">
-  <FlowStats />
+<div class="dashboard" class:stale>
+  <div class="bar">
+    <PeriodTabs current={view.period} href={hrefFor} />
+    {#if error}
+      <p class="error" role="alert">{error}</p>
+    {/if}
+  </div>
 
-  <!-- PHASE 4: WalletEnhancement panel removed - auto-enhancement runs in background -->
+  <NetBalance {summary} period={summary?.period ?? view.period} />
 
-  <PeriodSelector selected={selectedPeriod} on:change={handlePeriodChange} />
-
-  {#if loading}
-    <div class="loading-container">
-      <div class="loading"></div>
-      <p>Loading flow data...</p>
+  <section class="block" aria-label="Leaderboards">
+    <div class="board-filter">
+      <label>
+        <span>Kind of wallet</span>
+        <select
+          value={view.who}
+          onchange={(event) => navigate({ who: event.currentTarget.value as BoardKind })}
+        >
+          <option value="">Everyone</option>
+          <option value="unknown">Unlabelled wallets</option>
+          <option value="node_operator">Node operators</option>
+          <option value="foundation">Flux Foundation</option>
+        </select>
+      </label>
     </div>
-  {:else if error}
-    <div class="error-container">
-      <p>Error: {error}</p>
-      <button class="btn" on:click={fetchFlowData}>Retry</button>
+    <div class="boards" class:dim={boardsStale}>
+      <Leaderboard side="selling" rows={sellers?.sellers} total={sellers?.total} />
+      <Leaderboard side="buying" rows={buyers?.buyers} total={buyers?.total} />
     </div>
-  {:else if flowData && flowData.partial}
-    <!-- Partial data warning banner -->
-    <div class="warning-banner card">
-      <div class="warning-icon">⚠️</div>
-      <div class="warning-content">
-        <h3>Partial Data - Sync in Progress</h3>
-        <p>{flowData.partialWarning}</p>
-        <div class="progress-bar">
-          <div class="progress-fill" style="width: {flowData.progress}%"></div>
-        </div>
-        <p class="progress-text">
-          {flowData.blocksSynced?.toLocaleString() || 0} / {flowData.blocksNeeded?.toLocaleString() ||
-            0} blocks ({flowData.progress?.toFixed(1) || 0}% complete)
+  </section>
+
+  <Watchlist />
+
+  {#if exchangeRows.length > 0}
+    <section aria-labelledby="by-exchange" class="block">
+      <header>
+        <h2 id="by-exchange">By exchange</h2>
+        <p class="muted">
+          <span class="sell">Deposits</span> to the left, <span class="buy">withdrawals</span> to the
+          right, net on the end.
         </p>
-      </div>
-    </div>
-
-    <!-- Show data even though partial -->
-    <FlowComparison
-      buyingData={flowData.buying}
-      sellingData={flowData.selling}
-      on:showDetails={handleShowDetails}
-    />
-
-    <!-- Inline Transaction Table -->
-    {#if showTransactionTable}
-      <div id="transaction-table">
-        <TransactionTable
-          transactions={transactionTableData.transactions}
-          title={transactionTableData.title}
-          type={transactionTableData.type}
-        />
-      </div>
-    {/if}
-  {:else if flowData && !flowData.ready && !flowData.partial}
-    <div class="info-container card">
-      <h3>No Data Available</h3>
-      <p>{flowData.message}</p>
-      <div class="progress-bar">
-        <div class="progress-fill" style="width: {flowData.progress || 0}%"></div>
-      </div>
-      <p class="progress-text">{flowData.progress?.toFixed(1) || 0}% complete</p>
-    </div>
-  {:else if flowData}
-    <!-- Full data - no warning -->
-    <FlowComparison
-      buyingData={flowData.buying}
-      sellingData={flowData.selling}
-      on:showDetails={handleShowDetails}
-    />
-
-    <!-- Inline Transaction Table -->
-    {#if showTransactionTable}
-      <div id="transaction-table">
-        <TransactionTable
-          transactions={transactionTableData.transactions}
-          title={transactionTableData.title}
-          type={transactionTableData.type}
-        />
-      </div>
-    {/if}
+      </header>
+      <Diverging rows={exchangeRows} caption="Deposits and withdrawals by exchange" />
+    </section>
   {/if}
+
+  {#if kindRows.length > 0}
+    <section aria-labelledby="by-kind" class="block">
+      <header>
+        <h2 id="by-kind">By kind of wallet</h2>
+        <p class="muted">Who was on the other side of the exchange transfers.</p>
+      </header>
+      <Diverging rows={kindRows} caption="Deposits and withdrawals by kind of wallet" />
+    </section>
+  {/if}
+
+  {#if series && series.points.length > 0}
+    <section aria-labelledby="over-time" class="block">
+      <header>
+        <h2 id="over-time">Over time</h2>
+        <p class="muted">
+          {series.bucketSeconds >= 86_400 ? 'Per day' : 'Per hour'}:
+          <span class="buy">withdrawals</span> up, <span class="sell">deposits</span> down.
+        </p>
+      </header>
+      <SeriesChart points={series.points} bucketSeconds={series.bucketSeconds} />
+    </section>
+  {/if}
+
+  <div class="block">
+    <Transactions
+      period={view.period}
+      filters={view.filters}
+      {exchanges}
+      onfilters={(filters) => navigate({ filters })}
+    />
+  </div>
 </div>
 
 <style>
-  :global(:root) {
-    --flux-cyan: #06b6d4;
-    --flux-blue: #0ea5e9;
-    --bg-primary: #0a0a0f;
-    --bg-secondary: #1a1a2e;
-    --bg-header: #0f0f1a;
-    --border-color: rgba(6, 182, 212, 0.2);
-    --text-primary: #ffffff;
-    --text-white: #ffffff;
-    --text-secondary: #a0aec0;
-    --text-muted: #718096;
-    --text-dim: #4a5568;
-    --accent-cyan: #06b6d4;
-    --accent-green: #10b981;
-    --accent-red: #ef4444;
-    --accent-yellow: #f59e0b;
-    --glow-cyan: 0 0 20px rgba(6, 182, 212, 0.5);
-    --spacing-xs: 0.25rem;
-    --spacing-sm: 0.5rem;
-    --spacing-md: 1rem;
-    --spacing-lg: 1.5rem;
-    --spacing-xl: 2rem;
+  .dashboard {
+    display: grid;
+    gap: 2.5rem;
+    padding-top: 1.25rem;
+    transition: opacity 150ms;
   }
 
-  :global(body) {
-    margin: 0;
-    padding: 0;
-    font-family:
-      -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-    background: var(--bg-primary);
-    color: var(--text-primary);
-    min-height: 100vh;
+  .stale :global(.hero),
+  .stale .block:not(:last-child),
+  .dim {
+    opacity: 0.55;
   }
 
-  .container {
-    max-width: 1400px;
-    margin: 0 auto;
-    padding: var(--spacing-lg);
-  }
-
-  .card {
-    background: var(--bg-secondary);
-    border: 1px solid var(--border-color);
-    border-radius: 8px;
-    padding: var(--spacing-lg);
-  }
-
-  #transaction-table {
-    scroll-margin-top: var(--spacing-lg);
-  }
-
-  .warning-banner {
+  .bar {
     display: flex;
-    gap: var(--spacing-lg);
-    margin-bottom: var(--spacing-xl);
-    background: rgba(245, 158, 11, 0.1);
-    border-color: #f59e0b;
+    flex-wrap: wrap;
+    gap: 1rem;
+    align-items: center;
   }
 
-  .warning-icon {
-    font-size: 2rem;
+  .boards {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 2.5rem;
   }
 
-  .warning-content {
-    flex: 1;
+  .board-filter label {
+    display: inline-grid;
+    gap: 0.2rem;
+    font-size: var(--step--1);
+    color: var(--text-muted);
   }
 
-  .warning-content h3 {
-    color: #f59e0b;
-    margin: 0 0 var(--spacing-sm) 0;
+  .board-filter select {
+    padding: 0.45rem 0.6rem;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-s);
+    background: var(--surface);
+    color: var(--text);
+    font-size: var(--step-0);
   }
 
-  .warning-content p {
-    color: var(--text-secondary);
-    margin: 0 0 var(--spacing-md) 0;
+  .block {
+    display: grid;
+    gap: 1rem;
   }
 
-  .progress-bar {
-    width: 100%;
-    height: 8px;
-    background: rgba(255, 255, 255, 0.1);
-    border-radius: 4px;
-    overflow: hidden;
-    margin-bottom: var(--spacing-sm);
+  .block > header {
+    display: grid;
+    gap: 0.15rem;
   }
 
-  .progress-fill {
-    height: 100%;
-    background: linear-gradient(90deg, var(--flux-cyan), var(--flux-blue));
-    transition: width 0.3s ease;
+  .block > header p {
+    font-size: var(--step--1);
   }
 
-  .progress-text {
-    color: var(--text-secondary);
-    font-size: 0.875rem;
-    margin: 0;
+  .error {
+    color: var(--bad);
+    font-size: var(--step--1);
   }
 
-  .loading-container,
-  .error-container,
-  .info-container {
-    text-align: center;
-    padding: var(--spacing-xl);
-    color: var(--text-secondary);
-  }
-
-  .loading {
-    display: inline-block;
-    width: 50px;
-    height: 50px;
-    border: 4px solid rgba(6, 182, 212, 0.2);
-    border-top-color: var(--flux-cyan);
-    border-radius: 50%;
-    animation: spin 1s linear infinite;
-    margin-bottom: var(--spacing-md);
-  }
-
-  @keyframes spin {
-    to {
-      transform: rotate(360deg);
-    }
-  }
-
-  .btn {
-    background: var(--flux-cyan);
-    color: white;
-    border: none;
-    padding: var(--spacing-md) var(--spacing-xl);
-    border-radius: 4px;
-    font-weight: 600;
-    cursor: pointer;
-    transition: all 0.2s;
-  }
-
-  .btn:hover {
-    background: var(--flux-blue);
-    transform: translateY(-2px);
-  }
-
-  @media (max-width: 768px) {
-    .container {
-      padding: var(--spacing-md);
+  @media (max-width: 800px) {
+    .boards {
+      grid-template-columns: 1fr;
     }
   }
 </style>

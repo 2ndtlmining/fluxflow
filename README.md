@@ -52,6 +52,13 @@ npm run dev                # API on :3000 + Vite on :5173, both watching
 Open <http://localhost:5173>. `vite dev` proxies `/api` to the API process, so there is
 nothing else to start.
 
+To work on the UI against an API that is already running elsewhere, such as the Compose
+container with real data, point the proxy at it and start only the web server:
+
+```bash
+API_PROXY_TARGET=http://localhost:3000 npm run dev:web
+```
+
 To run the API on its own, without the web server:
 
 ```bash
@@ -230,7 +237,13 @@ fluxflow/
 │   │   ├── shared/                    # Isomorphic code, safe in any bundle
 │   │   │   └── constants.ts           # Periods, labels, block-time helpers
 │   │   ├── client/                    # Browser-only helpers, never imported server-side
-│   │   │   └── api.ts                 # Same-origin /api client
+│   │   │   ├── api.ts                 # Same-origin /api client, abortable, last-answer cache
+│   │   │   ├── urlState.ts            # period + filters <-> query string
+│   │   │   ├── format.ts, csv.ts      # display formatting, CSV export
+│   │   │   ├── endpoints.ts           # typed calls for every data endpoint (docs/api.md)
+│   │   │   ├── pager.ts               # keyset paging, merging buying + selling streams
+│   │   │   ├── live.svelte.ts         # one EventSource on /api/stream; polling fallback
+│   │   │   └── watchlist.ts           # per-browser watchlist (localStorage)
 │   │   ├── server/                    # Server-only; stripped from the client bundle
 │   │   │   ├── config.ts              # zod-validated environment
 │   │   │   ├── logger.ts              # pino, structured, redacted
@@ -240,7 +253,7 @@ fluxflow/
 │   │   │   ├── api/                   # read queries + the /api router
 │   │   │   ├── db/                    # SQLite connection + versioned migrations
 │   │   │   └── ingest/datasource/     # normalised chain shapes, adapters, breaker
-│   │   ├── components/                # Svelte UI
+│   │   ├── ui/                        # Svelte 5 components (balance axis, boards, explorer)
 │   │   └── data/exchanges.json        # legacy labels, superseded by config/labels.json
 │   ├── routes/                        # SvelteKit routes
 │   ├── server.ts                      # entry: /api router + SvelteKit handler, one process
