@@ -70,11 +70,7 @@ export interface CreateServiceOptions {
  *
  * Blockbook is always last, so there is always something to fall back to.
  */
-function buildSources(
-  config: Config,
-  limiter: ReturnType<typeof createLimiter>,
-  log: Logger
-): DataSource[] {
+function buildSources(config: Config, log: Logger): DataSource[] {
   const http = {
     timeoutMs: config.http.timeoutMs,
     retries: config.http.retries,
@@ -87,7 +83,7 @@ function buildSources(
     sources.push(
       new FluxIndexerDataSource({
         baseUrl: config.dataSources.fluxIndexerUrl,
-        limiter,
+        enrichConcurrency: config.sync.concurrency,
         http
       })
     );
@@ -151,7 +147,7 @@ export function createService(options: CreateServiceOptions = {}): Service {
 
   const limiter = createLimiter(config.sync.concurrency);
   const dataSource = new FailoverDataSource({
-    sources: options.sources ?? buildSources(config, limiter, log),
+    sources: options.sources ?? buildSources(config, log),
     config,
     log: log.child({ component: 'datasource' }),
     limiter

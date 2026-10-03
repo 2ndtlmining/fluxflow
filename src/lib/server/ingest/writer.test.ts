@@ -346,6 +346,43 @@ describe('BlockWriter', () => {
       expect(after).toBeLessThan(before);
     });
 
+    it('prunes node rewards and missing heights below the floor too', () => {
+      writer.writeBatch(derive(coinbaseBlock(1), coinbaseBlock(2), coinbaseBlock(3)));
+      writer.writeFailures([
+        { height: 1, error: 'old' },
+        { height: 5, error: 'live' }
+      ]);
+
+      writer.pruneBefore(3);
+
+      // Rewards are keyed by height precisely so retention can prune them, and a missing
+      // height below the floor would otherwise be retried - and re-written - forever.
+      expect(db.prepare<[], { height: number }>(`SELECT height FROM node_rewards`).all()).toEqual([
+        { height: 3 }
+      ]);
+      expect(db.prepare<[], { height: number }>(`SELECT height FROM missing_blocks`).all()).toEqual(
+        [{ height: 5 }]
+      );
+    });
+
+    it('does not rewrite the whole database for a small prune', () => {
+      for (let height = 1; height <= 20; height++) {
+        writer.writeBatch(derive(transferBlock(height)));
+      }
+
+      const statements: string[] = [];
+      const exec = db.exec.bind(db);
+      db.exec = ((sql: string) => {
+        statements.push(sql);
+        return exec(sql);
+      }) as typeof db.exec;
+
+      writer.pruneBefore(10);
+
+      // A full VACUUM copies every page of a multi-GB file while blocking the event loop.
+      expect(statements.some((sql) => /^\s*VACUUM\b/i.test(sql))).toBe(false);
+    });
+
     it('is a no-op when everything is inside the window', () => {
       writer.writeBatch(derive(transferBlock(10)));
 

@@ -158,6 +158,21 @@ describe('createService', () => {
       expect(after.status).toBe(200);
     });
 
+    it('is reported by the sync loop itself, not only by an explicit call', async () => {
+      const port = 38_000 + Math.floor(Math.random() * 1_000);
+      const service = boot(
+        { PORT: String(port), SYNC_ENABLED: '1', SYNC_BATCH_SIZE: '10' },
+        { autoStartSync: false }
+      );
+      await service.listen();
+
+      // Nothing in production calls markSyncSuccess, so without the loop reporting in,
+      // /api/health answered 503 forever while blocks were landing.
+      await service.sync!.runOnce();
+
+      expect((await fetch(`http://127.0.0.1:${port}/api/health`)).status).toBe(200);
+    });
+
     it('exposes the ingestion service when sync is enabled', () => {
       expect(boot({ SYNC_ENABLED: '1' }, { autoStartSync: false }).sync).not.toBeNull();
       expect(boot({ SYNC_ENABLED: '0' }).sync).toBeNull();

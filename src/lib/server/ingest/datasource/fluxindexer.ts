@@ -8,12 +8,11 @@
  *
  * The important fix here is what v1 got wrong: it capped enrichment at
  * `TRANSACTION_FETCH_LIMIT` (50 for this source) and **silently dropped every transfer
- * past that point**. There is no cap now — the shared limiter bounds concurrency instead,
+ * past that point**. There is no cap now — a per-source limiter bounds concurrency instead,
  * which throttles without discarding data (#15).
  */
 
-import { httpJson, type HttpRequestOptions } from '../../http.js';
-import type { Limiter } from '../../http.js';
+import { createLimiter, httpJson, type HttpRequestOptions, type Limiter } from '../../http.js';
 import {
   toSat,
   type DataSource,
@@ -89,21 +88,31 @@ interface IndexerTx {
 
 export interface FluxIndexerOptions {
   readonly baseUrl: string;
-  /** Shared with sync so this source can never exhaust the process's socket budget. */
-  readonly limiter?: Limiter;
+  /**
+   * Transaction lookups in flight per block.
+   *
+   * Deliberately its own limit rather than the service's shared limiter.
+   * `FailoverDataSource` already runs `getBlock` inside a slot of that limiter, so taking a
+   * second slot here for each lookup deadlocks: once every slot is held by an outer
+   * `getBlock`, no lookup can ever start and every sync cycle hangs.
+   */
+  readonly enrichConcurrency?: number;
   readonly http?: Omit<HttpRequestOptions, 'limiter'>;
   /** Refuse a block that would need more enrichments than this, rather than truncating. */
   readonly maxTransactionsPerBlock?: number;
 }
 
 const DEFAULT_MAX_TRANSACTIONS_PER_BLOCK = 5_000;
+const DEFAULT_ENRICH_CONCURRENCY = 8;
 
 export class FluxIndexerDataSource implements DataSource {
   readonly id = 'flux-indexer';
   readonly description: string;
+  private readonly enrichLimiter: Limiter;
 
   constructor(private readonly options: FluxIndexerOptions) {
     this.description = `FluxIndexer (${options.baseUrl})`;
+    this.enrichLimiter = createLimiter(options.enrichConcurrency ?? DEFAULT_ENRICH_CONCURRENCY);
   }
 
   async getTip(): Promise<number> {
@@ -154,7 +163,7 @@ export class FluxIndexerDataSource implements DataSource {
   }
 
   /**
-   * Fetch every wanted transaction, bounded by the shared limiter.
+   * Fetch every wanted transaction, bounded by this source's own limiter.
    *
    * `Promise.allSettled` over the limiter keeps N requests in flight at all times, rather
    * than v1's chunk-of-10 barrier that waited for the slowest request in each group (#5).
@@ -169,7 +178,7 @@ export class FluxIndexerDataSource implements DataSource {
 
       // Without a limiter a 200-transfer block would fire 200 requests at once, which is
       // exactly how a source gets rate-limited into an outage.
-      const raw = await (this.options.limiter ? this.options.limiter.run(load) : load());
+      const raw = await this.enrichLimiter.run(load);
 
       return normaliseTx(raw);
     };
