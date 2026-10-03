@@ -15,7 +15,7 @@
 import fs from 'node:fs';
 import type { Logger } from 'pino';
 import { z } from 'zod';
-import { createLimiter, httpRequest, type HttpRequestOptions } from '../http.js';
+import { createLimiter, HttpError, httpRequest, type HttpRequestOptions } from '../http.js';
 import type { FlowRow } from '../ingest/derive.js';
 
 const SATS_PER_FLUX = 100_000_000;
@@ -56,7 +56,7 @@ const fileSchema = z.object({
 });
 
 export type AlertRule = z.infer<typeof ruleSchema>;
-type Channel = z.infer<typeof channelSchema>;
+export type Channel = z.infer<typeof channelSchema>;
 
 export interface AlertStats {
   readonly enabled: boolean;
@@ -131,7 +131,9 @@ export class AlertService {
       this.lastError = null;
       log.info({ rules: this.rules.length, channels: channels.size }, 'alert rules loaded');
     } catch (error) {
-      this.lastError = `invalid ${path}: ${error instanceof Error ? error.message : String(error)}`;
+      // Never the parser's own message: Node's JSON errors quote the surrounding text, and
+      // that text is where webhook URLs live. Positions and schema paths only.
+      this.lastError = `invalid ${path}: ${describeFileError(error)}`;
       log.error({ path, reason: this.lastError }, 'alert rules not reloaded; keeping previous');
     }
 
@@ -255,9 +257,14 @@ export class AlertService {
       })
       .catch((error: unknown) => {
         this.counters.failed++;
-        this.lastError = `${channelName}: ${error instanceof Error ? error.message : String(error)}`;
+        // Webhook URLs *are* credentials: a Discord URL carries its token in the path and a
+        // Telegram one in `bot<token>`. This text reaches /api/status and the logs, so it is
+        // built from the failure's kind and status only, then scrubbed of every secret the
+        // channel holds in case a transport error quoted one anyway.
+        const reason = scrub(safeReason(error), channelSecrets(channel));
+        this.lastError = `${channelName} (${redactedTarget(channel)}): ${reason}`;
         this.options.log.warn(
-          { channel: channelName, rule: rule.name, reason: this.lastError },
+          { channel: channelName, target: redactedTarget(channel), rule: rule.name, reason },
           'alert delivery failed'
         );
       })
@@ -395,4 +402,75 @@ export function describeFlow(flow: FlowRow): string {
         : `TRANSFER ${amount} FLUX ${short(flow.fromAddress)} -> ${short(flow.toAddress)}`;
 
   return `${what} (block ${flow.height.toLocaleString('en-US')})`;
+}
+
+// ── Secret hygiene ───────────────────────────────────────────────────────────
+
+/** Every value in a channel that would let someone post to it. */
+export function channelSecrets(channel: Channel): string[] {
+  const values =
+    channel.type === 'telegram'
+      ? [channel.botToken, channel.chatId]
+      : [channel.url, ...Object.values(channel.type === 'webhook' ? (channel.headers ?? {}) : {})];
+
+  // The URL-encoded form too: a transport error may quote the URL as it was sent.
+  return values
+    .filter((value) => value.length >= 4)
+    .flatMap((value) => [value, encodeURIComponent(value)]);
+}
+
+/** Replace every occurrence of a secret with a redaction marker. Longest first. */
+export function scrub(text: string, secrets: readonly string[]): string {
+  return [...new Set(secrets)]
+    .sort((a, b) => b.length - a.length)
+    .reduce((out, secret) => out.split(secret).join('[redacted]'), text);
+}
+
+/** What a channel posts to, safe to show: type, host, and the last 4 characters. */
+export function redactedTarget(channel: Channel): string {
+  const tail = (value: string) => `…${value.slice(-4)}`;
+
+  if (channel.type === 'telegram') return `telegram:${tail(channel.botToken)}`;
+
+  try {
+    return `${channel.type}:${new URL(channel.url).host}/${tail(channel.url)}`;
+  } catch {
+    return `${channel.type}:${tail(channel.url)}`;
+  }
+}
+
+/**
+ * A delivery failure described without quoting the request.
+ *
+ * Status and reason for an HTTP answer; the kind of failure for a transport error. The
+ * underlying message is deliberately dropped: fetch and URL errors embed the URL.
+ */
+export function safeReason(error: unknown): string {
+  if (error instanceof HttpError) {
+    if (error.status !== undefined) {
+      return `HTTP ${error.status}${error.options.statusText ? ` ${error.options.statusText}` : ''}`;
+    }
+    if (error.options.timeoutMs !== undefined && /timed out/.test(error.message)) {
+      return `timed out after ${error.options.timeoutMs}ms`;
+    }
+    const cause = error.options.cause;
+    return `request failed (${cause instanceof Error ? cause.name : 'network error'})`;
+  }
+
+  return `delivery failed (${error instanceof Error ? error.name : 'unknown error'})`;
+}
+
+/** An invalid rules file, described by position and schema path, never by its content. */
+function describeFileError(error: unknown): string {
+  if (error instanceof z.ZodError) {
+    return error.issues
+      .slice(0, 5)
+      .map((issue) => `${issue.path.join('.') || '(root)'}: ${issue.code}`)
+      .join('; ');
+  }
+  if (error instanceof SyntaxError) {
+    const position = /position (\d+)/.exec(error.message)?.[1];
+    return position ? `not valid JSON (at position ${position})` : 'not valid JSON';
+  }
+  return 'could not be read';
 }

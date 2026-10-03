@@ -217,4 +217,39 @@ describe('live updates and alerts, end to end', () => {
     });
     expect(response.status).toBe(413);
   });
+
+  it('never exposes a failing webhook URL through /api/status or /api/metrics (security)', async () => {
+    const TOKEN = 'HookTokenThatMustNeverLeak0987654321';
+
+    // A receiver that fails and echoes the URL it was called on, as some servers do.
+    const app = express();
+    app.post(/.*/, (req, res) => {
+      res.status(500).send(`failed for ${req.originalUrl}`);
+    });
+    const receiver = await startTestServer(app);
+    cleanup.push(() => receiver.close());
+
+    const chain = whaleChain(20);
+    const { service, base } = await boot(`${receiver.url}/hook/${TOKEN}`, chain);
+
+    await service.sync!.runOnce();
+    chain.tip = 21;
+    await service.sync!.runOnce();
+
+    // Wait for the delivery (with its retries) to be given up on.
+    const deadline = Date.now() + 15_000;
+    let status: { runtime: { alerts: { failed: number; lastError: string | null } } };
+    do {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      status = (await (await fetch(`${base}/api/status`)).json()) as typeof status;
+    } while (status.runtime.alerts.failed === 0 && Date.now() < deadline);
+
+    expect(status.runtime.alerts.failed).toBe(1);
+    expect(status.runtime.alerts.lastError).toMatch(/HTTP 500/);
+
+    const statusText = await (await fetch(`${base}/api/status`)).text();
+    const metricsText = await (await fetch(`${base}/api/metrics`)).text();
+    expect(statusText).not.toContain(TOKEN);
+    expect(metricsText).not.toContain(TOKEN);
+  }, 20_000);
 });

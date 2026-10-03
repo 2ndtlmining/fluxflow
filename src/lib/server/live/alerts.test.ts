@@ -4,7 +4,8 @@ import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { silentLogger } from '../testkit.js';
 import type { FlowRow } from '../ingest/derive.js';
-import { AlertService, describeFlow } from './alerts.js';
+import pino from 'pino';
+import { AlertService, describeFlow, redactedTarget, scrub } from './alerts.js';
 
 const SATS = 100_000_000;
 const DISCORD = 'https://discord.test/api/webhooks/1/abc';
@@ -253,5 +254,105 @@ describe('AlertService (#32)', () => {
         })
       )
     ).toBe('BUY 1,234.5 FLUX from Kucoin to unknown t1whale…xxxxx (block 3,004,000)');
+  });
+
+  describe('never exposes webhook secrets (security)', () => {
+    const TOKEN = 'SuperSecretWebhookTokenAbc123XYZ';
+    const SECRET_URL = `https://discord.test/api/webhooks/987654321/${TOKEN}`;
+
+    /** An AlertService whose logs are captured, failing every delivery in a given way. */
+    function failing(fail: (url: string) => Response | Promise<Response>, file?: unknown) {
+      const lines: string[] = [];
+      const log = pino({ level: 'trace' }, { write: (line: string) => void lines.push(line) });
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ff-alerts-secret-'));
+      const alertsPath = path.join(dir, 'alerts.json');
+      fs.writeFileSync(
+        alertsPath,
+        JSON.stringify(
+          file ?? {
+            channels: {
+              discord: { type: 'discord', url: 'env:DISCORD_WEBHOOK_URL' },
+              tg: { type: 'telegram', botToken: 'env:TG_TOKEN', chatId: '42' }
+            },
+            rules: [{ name: 'All', channels: ['discord', 'tg'] }]
+          }
+        )
+      );
+
+      const service = new AlertService({
+        path: alertsPath,
+        log,
+        env: { DISCORD_WEBHOOK_URL: SECRET_URL, TG_TOKEN: `123456:${TOKEN}` },
+        http: {
+          fetchImpl: (async (url: string) => fail(url)) as unknown as typeof fetch,
+          sleep: async () => {},
+          retries: 0
+        }
+      });
+      services.push(service);
+      service.reload();
+
+      return { service, lines, alertsPath };
+    }
+
+    const exposed = (service: AlertService, lines: string[]) =>
+      JSON.stringify(service.stats()) + lines.join('\n');
+
+    it('when a transport error quotes the URL', async () => {
+      const { service, lines } = failing((url) => {
+        throw new TypeError(`Failed to parse URL from ${url}`);
+      });
+
+      service.evaluate([flow()]);
+      await service.drain();
+
+      expect(service.stats().failed).toBe(2);
+      expect(exposed(service, lines)).not.toContain(TOKEN);
+      // Still diagnosable: which channel, which host, the last 4 characters, and why.
+      expect(service.stats().lastError).toMatch(/request failed \(TypeError\)/);
+      expect(lines.join('\n')).toContain(`discord:discord.test/…${TOKEN.slice(-4)}`);
+    });
+
+    it('when the server echoes the URL back in an error body', async () => {
+      const { service, lines } = failing(
+        (url) => new Response(`no such webhook: ${url}`, { status: 404, statusText: 'Not Found' })
+      );
+
+      service.evaluate([flow()]);
+      await service.drain();
+
+      expect(service.stats().lastError).toMatch(/HTTP 404/);
+      expect(exposed(service, lines)).not.toContain(TOKEN);
+    });
+
+    it('when an edit breaks the rules file around a secret', () => {
+      const { service, lines, alertsPath } = failing(() => new Response(null, { status: 204 }));
+
+      fs.writeFileSync(alertsPath, `{ "channels": { "d": { "url": "${SECRET_URL}" } `);
+      service.reload();
+
+      expect(service.stats().lastError).toMatch(/not valid JSON/);
+      expect(exposed(service, lines)).not.toContain(TOKEN);
+    });
+
+    it('when the rules file has a schema error next to a secret', () => {
+      const { service, lines } = failing(() => new Response(null, { status: 204 }), {
+        channels: { d: { type: 'discord', url: 42, note: SECRET_URL } },
+        rules: []
+      });
+
+      expect(service.stats().lastError).toMatch(/channels\.d/);
+      expect(exposed(service, lines)).not.toContain(TOKEN);
+    });
+
+    it('redacts a target to type, host and the last 4 characters', () => {
+      expect(redactedTarget({ type: 'discord', url: SECRET_URL })).toBe(
+        `discord:discord.test/…${TOKEN.slice(-4)}`
+      );
+      expect(redactedTarget({ type: 'telegram', botToken: `1:${TOKEN}`, chatId: '1' })).toBe(
+        `telegram:…${TOKEN.slice(-4)}`
+      );
+      expect(scrub(`a ${SECRET_URL} b`, [SECRET_URL])).toBe('a [redacted] b');
+    });
   });
 });
