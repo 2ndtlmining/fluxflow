@@ -21,7 +21,12 @@ import type { SyncService } from '../ingest/sync.js';
 import type { LabelLookup } from '../labels.js';
 import type { FailoverDataSource } from '../ingest/datasource/circuitbreaker.js';
 import type { Db } from '../db/database.js';
+import { z } from 'zod';
 import { serialiseError } from '../logger.js';
+import type { StreamHub } from '../live/stream.js';
+import type { AlertService } from '../live/alerts.js';
+import { createRateLimiter } from './ratelimit.js';
+import { renderMetrics, type EventLoopMonitor } from './metrics.js';
 import { PERIODS, PERIOD_LABELS, isPeriodId, type PeriodId } from '../../shared/constants.js';
 import {
   listFlowEvents,
@@ -40,6 +45,12 @@ export interface ApiDependencies {
   readonly log: Logger;
   /** Absent when ingestion is switched off; the admin endpoints are then not registered. */
   readonly sync?: SyncService;
+  /** Live updates, alerts and runtime telemetry; absent pieces are simply not served. */
+  readonly runtime?: {
+    readonly stream?: StreamHub;
+    readonly alerts?: AlertService;
+    readonly eventLoop?: EventLoopMonitor;
+  };
   /** Read by `/api/health`; kept O(1) so the Docker healthcheck is never the bottleneck. */
   readonly health: {
     startedAt: number;
@@ -58,12 +69,6 @@ const PERIOD_SECONDS: Record<PeriodId, number> = {
 };
 
 /**
- * Validate a `:period` route parameter.
- *
- * The set is closed, so anything else is a 400 rather than a chance to build a query from
- * user input (#21).
- */
-/**
  * How long a leaderboard may be reused across sync cycles.
  *
  * Top buyers and sellers group raw flows by address — ~100 ms for 30 days and several
@@ -75,6 +80,12 @@ function leaderboardStaleness(period: PeriodId): { maxStaleMs: number } {
   return { maxStaleMs: PERIOD_SECONDS[period] > 7 * 86_400 ? 10 * 60_000 : 0 };
 }
 
+/**
+ * Validate a `:period` route parameter.
+ *
+ * The set is closed, so anything else is a 400 rather than a chance to build a query from
+ * user input (#21).
+ */
 function parsePeriod(req: Request, res: Response): PeriodId | null {
   const raw = req.params.period;
 
@@ -90,10 +101,19 @@ function parsePeriod(req: Request, res: Response): PeriodId | null {
 }
 
 export function createApiRouter(deps: ApiDependencies): Router {
-  const { config, db, labels, dataSource, health, sync, log } = deps;
+  const { config, db, labels, dataSource, health, sync, log, runtime } = deps;
   const router = Router();
   // Counts and flow answers change only when a sync cycle commits (#3, #4).
   const cache = new ResponseCache(db);
+
+  // Monitoring and the live stream are exempt: a healthcheck must never be throttled into
+  // reporting the service down, and a stream is one long request, not many (#21).
+  const rateLimiter = createRateLimiter({
+    rps: config.rateLimit.rps,
+    burst: config.rateLimit.burst,
+    exempt: ['/health', '/status', '/metrics', '/stream']
+  });
+  router.use(rateLimiter);
 
   // ── Health ────────────────────────────────────────────────────────────────
   /**
@@ -133,6 +153,11 @@ export function createApiRouter(deps: ApiDependencies): Router {
         ...(reason ? { reason } : {})
       },
       ...(sync ? { ingest: sync.stats } : {}),
+      runtime: {
+        eventLoopDelayMs: runtime?.eventLoop?.snapshot() ?? null,
+        streamClients: runtime?.stream?.size ?? 0,
+        alerts: runtime?.alerts?.stats() ?? null
+      },
       database: {
         blocks: database.blocks,
         flows: database.flows,
@@ -239,14 +264,16 @@ export function createApiRouter(deps: ApiDependencies): Router {
   if (sync) {
     const apiLog = log.child({ component: 'admin' });
 
+    /*
+     * Starts a cycle and answers at once. Waiting for it held the request open for as long
+     * as a full batch takes - minutes against a slow source (#21). Repeated calls are
+     * harmless: `runOnce` joins the cycle already in flight rather than starting another.
+     */
     router.post('/admin/sync', admin, (_req: Request, res: Response) => {
-      void sync.runOnce().then(
-        () => res.json({ success: true, stats: sync.stats }),
-        (error: unknown) => {
-          apiLog.error({ ...serialiseError(error) }, 'manual sync failed');
-          res.status(500).json({ error: 'Sync failed', message: 'see server logs' });
-        }
-      );
+      void sync.runOnce().catch((error: unknown) => {
+        apiLog.error({ ...serialiseError(error) }, 'manual sync failed');
+      });
+      res.status(202).json({ accepted: true, stats: sync.stats });
     });
 
     router.post('/admin/retention', admin, (_req: Request, res: Response) => {
@@ -254,6 +281,42 @@ export function createApiRouter(deps: ApiDependencies): Router {
       res.json({ success: true, prunedBlocks: sync.stats.prunedBlocks });
     });
   }
+
+  if (runtime?.alerts) {
+    const alerts = runtime.alerts;
+    router.post('/admin/alerts/reload', admin, (_req: Request, res: Response) => {
+      res.json(alerts.reload());
+    });
+  }
+
+  // ── Metrics (#24) ─────────────────────────────────────────────────────────
+  router.get('/metrics', (_req: Request, res: Response) => {
+    const pool = dataSource.detailsFor('fluxnode-pool');
+
+    res.type('text/plain; version=0.0.4').send(
+      renderMetrics({
+        db,
+        version: config.version,
+        uptimeSeconds: Math.round((Date.now() - health.startedAt) / 1000),
+        dataVersion: cache.version(),
+        degraded: health.degraded().degraded,
+        ...(sync ? { sync: sync.stats } : {}),
+        sources: dataSource.status(),
+        ...(pool ? { pool } : {}),
+        cache: cache.counters,
+        eventLoop: runtime?.eventLoop?.snapshot() ?? { p50: 0, p99: 0, max: 0 },
+        stream: {
+          clients: runtime?.stream?.size ?? 0,
+          eventsSent: runtime?.stream?.eventsSent ?? 0
+        },
+        alerts: runtime?.alerts?.stats() ?? { sent: 0, failed: 0, suppressed: 0 },
+        rateLimited: rateLimiter.rejected()
+      })
+    );
+  });
+
+  // ── Live stream (#32) ─────────────────────────────────────────────────────
+  if (runtime?.stream) router.get('/stream', runtime.stream.subscribe);
 
   // ── Flow analysis ─────────────────────────────────────────────────────────
   router.get('/flow/:period', (req: Request, res: Response) => {
@@ -323,20 +386,23 @@ export function createApiRouter(deps: ApiDependencies): Router {
     const database = cache.databaseSummary();
     const window = resolvePeriod(db, Math.floor(database.maxTime - PERIOD_SECONDS[period]));
 
-    const cursor = parseCursor(req.query.cursor);
+    const query = parseQuery(eventsQuery, req, res);
+    if (!query) return;
 
-    if (req.query.cursor && !cursor) {
+    const cursor = query.cursor === undefined ? null : parseCursor(query.cursor);
+
+    if (query.cursor !== undefined && !cursor) {
       res.status(400).json({ error: 'Invalid cursor', message: 'Expected height:txid:vout' });
       return;
     }
 
     cache.send(req, res, () => {
       const page = listFlowEvents(db, window, {
-        ...(typeof req.query.type === 'string' ? { flowType: req.query.type } : {}),
-        ...(typeof req.query.kind === 'string' ? { kind: req.query.kind } : {}),
-        ...(typeof req.query.exchange === 'string' ? { exchange: req.query.exchange } : {}),
-        ...(req.query.minAmount ? { minSat: Number(req.query.minAmount) } : {}),
-        limit: Number(req.query.limit) || 50,
+        ...(query.type ? { flowType: query.type } : {}),
+        ...(query.kind ? { kind: query.kind } : {}),
+        ...(query.exchange ? { exchange: query.exchange } : {}),
+        ...(query.minAmount !== undefined ? { minSat: query.minAmount } : {}),
+        limit: query.limit,
         ...(cursor ? { cursor } : {})
       });
 
@@ -347,6 +413,8 @@ export function createApiRouter(deps: ApiDependencies): Router {
   router.get('/flow/:period/buyers', (req: Request, res: Response) => {
     const period = parsePeriod(req, res);
     if (!period) return;
+    const query = parseQuery(leaderboardQuery, req, res);
+    if (!query) return;
 
     const database = cache.databaseSummary();
     const window = resolvePeriod(db, Math.floor(database.maxTime - PERIOD_SECONDS[period]));
@@ -355,7 +423,7 @@ export function createApiRouter(deps: ApiDependencies): Router {
       req,
       res,
       () => ({
-        buyers: topCounterparties(db, window, 'buying', Number(req.query.limit) || 10)
+        buyers: topCounterparties(db, window, 'buying', query.limit)
       }),
       leaderboardStaleness(period)
     );
@@ -364,6 +432,8 @@ export function createApiRouter(deps: ApiDependencies): Router {
   router.get('/flow/:period/sellers', (req: Request, res: Response) => {
     const period = parsePeriod(req, res);
     if (!period) return;
+    const query = parseQuery(leaderboardQuery, req, res);
+    if (!query) return;
 
     const database = cache.databaseSummary();
     const window = resolvePeriod(db, Math.floor(database.maxTime - PERIOD_SECONDS[period]));
@@ -372,7 +442,7 @@ export function createApiRouter(deps: ApiDependencies): Router {
       req,
       res,
       () => ({
-        sellers: topCounterparties(db, window, 'selling', Number(req.query.limit) || 10)
+        sellers: topCounterparties(db, window, 'selling', query.limit)
       }),
       leaderboardStaleness(period)
     );
@@ -469,6 +539,48 @@ function toDirection(flowType: 'buying' | 'selling', summary: ReturnType<typeof 
   };
 }
 
+// ── Query validation (#21) ───────────────────────────────────────────────────
+/*
+ * Every query parameter is parsed against a closed schema. Bad values are a 400 with the
+ * reason, not silently coerced: `Number('abc') || 50` used to turn garbage into a default
+ * and hide the client's bug.
+ */
+const ADDRESS_KINDS = ['exchange', 'foundation', 'node_operator', 'unknown'] as const;
+
+const eventsQuery = z.object({
+  type: z.enum(['buying', 'selling', 'p2p']).optional(),
+  kind: z.enum(ADDRESS_KINDS).optional(),
+  exchange: z.string().min(1).max(64).optional(),
+  minAmount: z.coerce.number().min(0).max(1e10).optional(),
+  limit: z.coerce.number().int().min(1).max(500).default(50),
+  cursor: z.string().max(200).optional()
+});
+
+const leaderboardQuery = z.object({
+  limit: z.coerce.number().int().min(1).max(100).default(10)
+});
+
+function parseQuery<T extends z.ZodTypeAny>(
+  schema: T,
+  req: Request,
+  res: Response
+): z.infer<T> | null {
+  const parsed = schema.safeParse(req.query);
+
+  if (!parsed.success) {
+    res.status(400).json({
+      error: 'Invalid query',
+      issues: parsed.error.issues.map((issue) => ({
+        parameter: issue.path.join('.'),
+        message: issue.message
+      }))
+    });
+    return null;
+  }
+
+  return parsed.data as z.infer<T>;
+}
+
 function parseCursor(value: unknown): { height: number; txid: string; vout: number } | null {
   if (typeof value !== 'string') return null;
 
@@ -508,6 +620,21 @@ export function errorHandler(config: Config, log: Logger) {
 
     if (error instanceof ApiError) {
       res.status(error.status).json({ error: error.code, message: error.message });
+      return;
+    }
+
+    /*
+     * Errors raised by Express middleware describing a bad *request* — body-parser's 413 for
+     * an oversized body, 400 for malformed JSON — carry their status. They are the client's
+     * fault, so they are answered as such rather than logged as a server failure (#21).
+     */
+    const status = (error as { status?: unknown; type?: unknown } | null)?.status;
+    if (typeof status === 'number' && status >= 400 && status < 500) {
+      const type = (error as { type?: unknown }).type;
+      res.status(status).json({
+        error: typeof type === 'string' ? type : 'bad_request',
+        message: error instanceof Error ? error.message : 'Bad request'
+      });
       return;
     }
 

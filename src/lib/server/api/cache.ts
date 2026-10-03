@@ -25,6 +25,8 @@ const DEFAULT_MAX_ENTRIES = 256;
 export class ResponseCache {
   private readonly entries = new Map<string, CacheEntry>();
   private database: { version: number; value: DatabaseSummary } | null = null;
+  /** For `/api/metrics`: how often the cache saved a computation, or a whole body. */
+  readonly counters = { hits: 0, misses: 0, notModified: 0 };
 
   constructor(
     private readonly db: Db,
@@ -80,10 +82,12 @@ export class ResponseCache {
 
     let entry: CacheEntry;
     if (reusable) {
+      this.counters.hits++;
       entry = hit;
       // Re-insert so the Map's insertion order doubles as least-recently-used order.
       this.entries.delete(key);
     } else {
+      this.counters.misses++;
       entry = { version, computedAt: now, body: JSON.stringify(compute()) };
     }
 
@@ -96,6 +100,7 @@ export class ResponseCache {
     res.setHeader('ETag', etag);
 
     if (req.headers['if-none-match'] === etag) {
+      this.counters.notModified++;
       res.status(304).end();
       return;
     }
