@@ -108,6 +108,11 @@ const rawConfigSchema = z
     // ── Runtime ───────────────────────────────────────────────────────────────
     NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
     PORT: z.coerce.number().int().min(1).max(65_535).default(3000),
+    /**
+     * The build that is running: the git SHA baked in by `docker compose build`. Reported by
+     * `/api/health`, so a redeploy can confirm the new code is what actually answers.
+     */
+    APP_VERSION: nonEmpty(z.string()).default('dev'),
     HOST: nonEmpty(z.string()).default('0.0.0.0'),
     /**
      * Only needed when the browser reaches the API from a different origin than the
@@ -234,6 +239,8 @@ export interface Config {
   readonly nodeEnv: 'development' | 'test' | 'production';
   readonly isProduction: boolean;
   readonly isTest: boolean;
+  /** The running build (git SHA in images), or `dev`. */
+  readonly version: string;
 
   readonly host: string;
   readonly port: number;
@@ -308,6 +315,7 @@ function toConfig(raw: RawConfig): Config {
     nodeEnv: raw.NODE_ENV,
     isProduction: raw.NODE_ENV === 'production',
     isTest: raw.NODE_ENV === 'test',
+    version: raw.APP_VERSION,
 
     host: raw.HOST,
     port: raw.PORT,
@@ -410,6 +418,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 export function describeConfig(config: Config): Record<string, unknown> {
   return {
     nodeEnv: config.nodeEnv,
+    version: config.version,
     listen: `${config.host}:${config.port}`,
     origin: config.origin ?? '(same-origin only)',
     databasePath: config.databasePath,

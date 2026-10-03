@@ -114,6 +114,8 @@ describe('api router', () => {
       expect(status).toBe(200);
       expect(body.status).toBe('ok');
       expect(typeof body.uptimeSeconds).toBe('number');
+      // A redeploy checks this to be sure the new build is the one answering.
+      expect(body.version).toBe('dev');
     });
 
     it('is 503 and degraded when sync has never succeeded', async () => {

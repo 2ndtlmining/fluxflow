@@ -51,7 +51,12 @@ FROM node:22-alpine AS runtime
 # (#14): its own SIGTERM handler called process.exit(0) immediately.
 RUN apk add --no-cache libc6-compat tini
 
-ENV NODE_ENV=production \
+# The git SHA of this build, passed by `docker compose build` (deploy/redeploy.sh sets it).
+# `/api/health` reports it, so a redeploy can prove the new code is the code answering.
+ARG GIT_SHA=dev
+LABEL org.opencontainers.image.revision=$GIT_SHA       org.opencontainers.image.source=https://github.com/2ndtlmining/fluxflow
+
+ENV NODE_ENV=production     APP_VERSION=$GIT_SHA \
     HOST=0.0.0.0 \
     PORT=3000 \
     DATABASE_PATH=/app/data/flux-flow.db \
