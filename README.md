@@ -67,29 +67,8 @@ npm start                  # one process, one port
 
 ### Docker
 
-```bash
-cp .env.example .env
-docker compose up -d       # http://localhost:3000
-```
-
-Or directly:
-
-```bash
-docker build -t fluxflow .
-docker run -d --name fluxflow \
-  -p 3000:3000 \
-  -v fluxflow-data:/app/data \
-  -v ./config:/app/config:ro \
-  -e ADMIN_TOKEN=$(openssl rand -hex 32) \
-  fluxflow
-```
-
-**One port serves both the API and the web app.** There is no proxy and no CORS
-configuration: if `/api` works, the app works, from `localhost` or from a server IP.
-
-The database lives on the `/app/data` volume. On `docker stop` the service checkpoints the
-WAL into the main file and closes cleanly, so a plain copy of `flux-flow.db` is a complete
-backup.
+See [Running with Docker Compose](#-running-with-docker-compose) below. It is the supported
+way to run FluxFlow on a server.
 
 ### Configuration
 
@@ -139,6 +118,103 @@ npm run format         # Prettier --write
 ```
 
 CI targets **Node 22 LTS**.
+
+## 🐳 Running with Docker Compose
+
+Everything runs in **one container on one port**. The only state is the SQLite database on
+the `fluxflow-data` Docker volume, so rebuilding, updating or recreating the container never
+touches your data.
+
+### Launching (first time)
+
+```bash
+git clone https://github.com/2ndtlmining/fluxflow.git
+cd fluxflow
+cp .env.example.compose .env
+# Set ADMIN_TOKEN in .env (at least 32 characters): openssl rand -hex 32
+deploy/redeploy.sh
+```
+
+Open `http://<server>:3000` (or the `PORT` set in `.env`).
+
+On first launch the script creates the volume, builds the image and waits until the container
+is healthy. Health turns green once the first batch of blocks is stored, which takes about a
+minute with the FluxNode pool. History back to `RETENTION_DAYS` then fills in the background:
+`GET /api/status` shows progress.
+
+### Updating
+
+```bash
+deploy/redeploy.sh
+```
+
+That one command:
+
+1. checks that `.env` and `ADMIN_TOKEN` are present and that the checkout has no local changes
+2. runs `git pull --ff-only`
+3. **backs up the database** from the running container using SQLite's online backup, which
+   is safe while ingestion is writing
+4. builds an image tagged with the git SHA (`fluxflow:<sha>`) and recreates the container
+5. waits for the Docker healthcheck
+6. checks that `/api/health` reports the new SHA, so you know the new build is what answers
+
+Schema changes are applied automatically at startup by the versioned migrations, and only
+ever move forward.
+
+| Variable           | Default | Effect                                                      |
+| ------------------ | ------- | ----------------------------------------------------------- |
+| `SKIP_PULL=1`      | off     | deploy the checkout as it is                                |
+| `BACKUP_KEEP`      | `3`     | backups kept inside the volume                              |
+| `BACKUP_DIR=/path` | unset   | also copy each backup to this host directory                |
+| `SKIP_BACKUP=1`    | off     | allow a deploy when data exists but no container is running |
+| `HEALTH_TIMEOUT`   | `900`   | seconds to wait for healthy                                 |
+
+### Rolling back
+
+Every build keeps its own `fluxflow:<sha>` image, and the script prints the exact rollback
+command at the end:
+
+```bash
+GIT_SHA=<previous sha> docker compose up -d --no-build
+```
+
+A rollback across a schema migration also needs the matching backup restored (below).
+
+### Where the data lives
+
+| What               | Where                                                                   |
+| ------------------ | ----------------------------------------------------------------------- |
+| Database           | volume `fluxflow-data` → `/app/data/flux-flow.db`                       |
+| Pre-deploy backups | volume `fluxflow-data` → `/app/data/backups/` (newest `BACKUP_KEEP`)    |
+| Address labels     | `./config/labels.json`, mounted read-only, so edits need only a restart |
+| Settings           | `.env` (never committed, never copied into the image)                   |
+
+The volume name is fixed in `docker-compose.yml`, so it does not depend on the folder the repo
+is cloned into. `docker compose down` keeps it. **Only `docker compose down -v` or
+`docker volume rm fluxflow-data` deletes your data.**
+
+Copy a backup to the host:
+
+```bash
+docker compose cp fluxflow:/app/data/backups ./backups
+```
+
+Restore one (stop first, so nothing is writing):
+
+```bash
+docker compose stop
+docker run --rm -v fluxflow-data:/data -v "$PWD/backups:/b" alpine   sh -c 'rm -f /data/flux-flow.db-wal /data/flux-flow.db-shm && cp /b/<backup>.db /data/flux-flow.db && chown 1000:1000 /data/flux-flow.db'
+docker compose start
+```
+
+### Day to day
+
+```bash
+docker compose ps              # health
+docker compose logs -f         # structured JSON logs
+curl localhost:3000/api/status # sync progress, data sources, FluxNode pool
+docker compose restart         # e.g. after editing config/labels.json
+```
 
 ## 📁 Project Structure
 

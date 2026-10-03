@@ -95,6 +95,7 @@ export function createApiRouter(deps: ApiDependencies): Router {
 
     res.status(degraded ? 503 : 200).json({
       status: degraded ? 'degraded' : 'ok',
+      version: config.version,
       uptimeSeconds: Math.round((Date.now() - health.startedAt) / 1000),
       lastSuccessfulSyncAt: health.lastSuccessfulSyncAt,
       ...(reason ? { reason } : {})
