@@ -83,7 +83,10 @@ export interface SyncStats {
   readonly lastCycleAt: number | null;
   readonly lastSuccessAt: number | null;
   readonly blocksPerMinute: number;
+  /** The highest *stored* height (not the network's). */
   readonly tip: number | null;
+  /** The network's tip as last reported by the data source, or null before the first cycle. */
+  readonly networkTip: number | null;
   readonly running: boolean;
 }
 
@@ -126,6 +129,7 @@ export class SyncService {
   private inFlight: Promise<void> | undefined;
   private stopped = true;
   private lastSuccessAt: number | null = null;
+  private networkTip: number | null = null;
   private lastPruneAt = 0;
   private counters = {
     cycles: 0,
@@ -168,6 +172,7 @@ export class SyncService {
       lastSuccessAt: this.lastSuccessAt,
       blocksPerMinute: minutes > 0 ? Number((blocks / minutes).toFixed(1)) : 0,
       tip: this.tip(),
+      networkTip: this.networkTip,
       running: !this.stopped
     };
   }
@@ -280,6 +285,7 @@ export class SyncService {
       await this.checkForReorg();
 
       const tip = await this.options.dataSource.withFailover((source) => source.getTip());
+      this.networkTip = tip;
       const stored = this.tip();
       const { batchSize } = this.options.config.sync;
 

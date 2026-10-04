@@ -9,6 +9,7 @@
   import { apiFetch, isAbort } from '$lib/client/api';
   import { formatCount, timeAgo } from '$lib/client/format';
   import { live } from '$lib/client/live.svelte';
+  import { serverStatus } from '$lib/client/status.svelte';
   import type { Status } from '$lib/client/types';
 
   let status = $state<Status | null>(null);
@@ -19,6 +20,13 @@
     if (offline) return { tone: 'bad', text: 'Server unreachable' };
     if (!status) return { tone: 'idle', text: 'Checking…' };
     if (!status.sync.enabled) return { tone: 'idle', text: 'Sync disabled' };
+    const catchUp = status.sync.catchUp;
+    if (catchUp?.catchingUp) {
+      return {
+        tone: 'busy',
+        text: catchUp.progress === null ? 'Catching up' : `Catching up · ${catchUp.progress}%`
+      };
+    }
     if (status.sync.degraded) return { tone: 'warn', text: status.sync.reason ?? 'Sync delayed' };
     return { tone: 'good', text: live.connected ? 'Live' : 'In sync' };
   });
@@ -35,6 +43,7 @@
   async function refresh(): Promise<void> {
     try {
       status = await apiFetch<Status>('/status');
+      serverStatus.value = status;
       offline = false;
     } catch (error) {
       if (!isAbort(error)) offline = true;
@@ -103,6 +112,22 @@
   }
   .bad .dot {
     background: var(--bad);
+  }
+  .busy .dot {
+    background: var(--brand);
+    animation: pulse 1.4s ease-in-out infinite;
+  }
+
+  @keyframes pulse {
+    50% {
+      opacity: 0.3;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .busy .dot {
+      animation: none;
+    }
   }
 
   .warn-text {

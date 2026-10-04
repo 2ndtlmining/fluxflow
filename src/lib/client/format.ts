@@ -58,6 +58,23 @@ export function timeAgo(unixSeconds: number, now = Date.now()): string {
   return `${Math.floor(hours / 24)}d ago`;
 }
 
+/** A date without the time, e.g. "14 May 2026". */
+export function formatDate(unixSeconds: number): string {
+  return new Date(unixSeconds * 1000).toLocaleDateString(undefined, {
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric'
+  });
+}
+
+/** A rough remaining time: "under a minute", "about 35 min", "about 3 h". */
+export function formatDuration(seconds: number): string {
+  if (seconds < 60) return 'under a minute';
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 90) return `about ${minutes} min`;
+  return `about ${Math.round(minutes / 60)} h`;
+}
+
 /** Absolute local time for a unix timestamp in seconds. */
 export function formatTime(unixSeconds: number): string {
   return new Date(unixSeconds * 1000).toLocaleString(undefined, {

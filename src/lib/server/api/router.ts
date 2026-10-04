@@ -56,6 +56,7 @@ import {
 } from '../labels.js';
 import type { IntelService } from '../intel/service.js';
 import { decideCandidate, listCandidates } from '../intel/clusters.js';
+import { catchUpState } from './catchup.js';
 import { candidateCounts, decideCandidates, reviewCandidates } from '../intel/review.js';
 import { foundationReport } from '../intel/foundation.js';
 import { traceFoundation } from '../intel/destinations.js';
@@ -176,7 +177,15 @@ export function createApiRouter(deps: ApiDependencies): Router {
         oldestHeight: database.minHeight,
         lastSuccessfulSyncAt: health.lastSuccessfulSyncAt,
         degraded,
-        ...(reason ? { reason } : {})
+        ...(reason ? { reason } : {}),
+        catchUp: catchUpState({
+          latestHeight: database.maxHeight,
+          oldestHeight: database.minHeight,
+          latestTime: database.maxTime,
+          oldestTime: database.minTime,
+          tip: sync?.stats.networkTip,
+          blocksPerMinute: sync?.stats.blocksPerMinute
+        })
       },
       ...(sync ? { ingest: sync.stats } : {}),
       runtime: {

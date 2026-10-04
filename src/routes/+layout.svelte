@@ -4,6 +4,7 @@
   import LiveToasts from '$lib/ui/LiveToasts.svelte';
   import SearchBox from '$lib/ui/SearchBox.svelte';
   import StatusBar from '$lib/ui/StatusBar.svelte';
+  import CatchUpBanner from '$lib/ui/CatchUpBanner.svelte';
 
   let { children }: { children: Snippet } = $props();
 
@@ -64,6 +65,8 @@
     </button>
   </div>
 </header>
+
+<CatchUpBanner />
 
 <main id="main">
   {@render children()}
