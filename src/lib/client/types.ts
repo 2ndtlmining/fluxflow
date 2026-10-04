@@ -156,6 +156,39 @@ export interface FoundationMovement {
   readonly wallets: string[];
 }
 
+export interface DestinationTotals {
+  readonly exchange: number;
+  readonly byExchange: Record<string, number>;
+  readonly nodes: number;
+  readonly collateral: {
+    readonly payments: number;
+    readonly amount: number;
+    /** Exactly a collateral amount but not used by a live node; informational. */
+    readonly unconfirmedPayments: number;
+    readonly unconfirmedAmount: number;
+  };
+  readonly returned: number;
+  readonly held: number;
+  readonly untraced: number;
+}
+
+export interface RecipientDestinations extends DestinationTotals {
+  readonly address: string;
+  readonly name: string | null;
+  readonly kind: AddressKind;
+  readonly subLabel: string | null;
+  readonly received: number;
+  readonly hops: number;
+}
+
+/** Where Foundation outflows ended up, followed up to `maxHops` wallets deep. */
+export interface FoundationDestinations extends DestinationTotals {
+  readonly traced: number;
+  readonly maxHops: number;
+  readonly hopBlocks: number;
+  readonly recipients: RecipientDestinations[];
+}
+
 export interface Foundation {
   readonly period: PeriodId;
   readonly wallets: FoundationWallet[];
@@ -170,6 +203,7 @@ export interface Foundation {
   readonly series: { time: number; net: number; balance: number | null }[];
   readonly recent: FoundationMovement[];
   readonly balancesAsOf: number | null;
+  readonly destinations?: FoundationDestinations;
 }
 
 export interface Leaderboard {

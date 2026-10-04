@@ -14,6 +14,8 @@
 
   let { data, period }: Props = $props();
   const t = $derived(data.totals);
+  const d = $derived(data.destinations);
+  const share = (amount: number) => (d && d.traced > 0 ? Math.round((amount / d.traced) * 100) : 0);
 </script>
 
 <section aria-labelledby="foundation-heading" class="panel">
@@ -42,6 +44,12 @@
       <dd class={t.net < 0 ? 'sell' : t.net > 0 ? 'buy' : ''}>{formatSigned(t.net)}</dd>
     </div>
   </dl>
+  {#if d && d.traced > 0}
+    <p class="small">
+      Of what it sent: {share(d.nodes)}% went to nodes, {share(d.exchange)}% to exchanges and
+      {share(d.held)}% is still held, followed up to {d.maxHops} wallets.
+    </p>
+  {/if}
   {#if t.internalTransfers > 0}
     <p class="muted small">
       Not counted above: {formatCount(t.internalTransfers)} moves between Foundation wallets,
