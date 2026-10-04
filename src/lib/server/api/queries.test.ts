@@ -6,7 +6,8 @@ import {
   summariseDatabase,
   summariseFlow,
   summariseUnknowns,
-  openRange
+  openRange,
+  unionOver
 } from './queries.js';
 import { leaderboard } from './wallets.js';
 
@@ -355,7 +356,10 @@ describe('summariseDatabase', () => {
   });
 
   it('counts blocks, flows and gaps', () => {
-    seedFlows(db, [flow({ txid: 'a', height: 10 }), flow({ txid: 'b', height: 12 })]);
+    seedFlows(db, [
+      flow({ txid: 'a', height: 10, time: NOW }),
+      flow({ txid: 'b', height: 12, time: NOW + HOUR })
+    ]);
     db.prepare(`INSERT INTO missing_blocks (height) VALUES (11)`).run();
 
     const summary = summariseDatabase(db);
@@ -365,6 +369,8 @@ describe('summariseDatabase', () => {
     expect(summary.missingBlocks).toBe(1);
     expect(summary.minHeight).toBe(10);
     expect(summary.maxHeight).toBe(12);
+    expect(summary.minTime).toBe(NOW);
+    expect(summary.maxTime).toBe(NOW + HOUR);
   });
 
   it('reports a non-zero database size', () => {
@@ -429,5 +435,42 @@ describe('value handling', () => {
 
     expect(summariseFlow(db, window, 'buying').totalSat).toBe(2.5);
     expect(SATS).toBe(100_000_000);
+  });
+});
+
+describe('unionOver', () => {
+  let db: Db;
+
+  beforeEach(() => {
+    db = createTestDb();
+  });
+
+  afterEach(() => db.close());
+
+  const plan = (sql: string, params: (string | number)[]) =>
+    db
+      .prepare<(string | number)[], { detail: string }>(`EXPLAIN QUERY PLAN ${sql}`)
+      .all(...params)
+      .map((row) => row.detail)
+      .join('\n');
+
+  it('forces a requested index on its own level only', () => {
+    const union = unionOver(
+      [
+        { level: 0, fromBucket: 1, toBucket: 2 },
+        { level: 1, fromBucket: 0, toBucket: 0 }
+      ],
+      'selling',
+      {
+        tables: ['wallet_daily', 'wallet_monthly'],
+        indexes: ['idx_wallet_daily_address'],
+        rollupColumns: 'address, sat',
+        rawColumns: 'from_address AS address, sat',
+        rollupWhere: { sql: 'AND address IN (?)', params: ['t1a'] }
+      }
+    );
+
+    expect(union.sql.match(/INDEXED BY/g)).toHaveLength(1);
+    expect(plan(union.sql, union.params)).toMatch(/wallet_daily USING .*idx_wallet_daily_address/);
   });
 });

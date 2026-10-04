@@ -11,11 +11,14 @@
  * trade again and again, as on the real chain — with one kind per wallet, as a label gives.
  * `uniform` draws every flow's wallet from 50,000 at random instead: a pessimistic case in
  * which nearly every flow is a different wallet, so per-wallet rollups barely compress.
+ *
+ * Set `BENCH_DB=/path/bench.db` to keep the database and reuse it on the next run (the build
+ * takes minutes); a reused database keeps whatever wallet distribution built it.
  */
 
 /* eslint-disable no-console -- a CLI whose output is the result */
 
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { performance } from 'node:perf_hooks';
@@ -39,9 +42,11 @@ const START = 1_740_000_000;
 const EXCHANGES = ['Kucoin', 'Coinex', 'GateIO', 'NonKYC', 'Binance', 'MEXC', 'HTX'];
 const KINDS = ['unknown', 'node_operator', 'foundation'];
 
-const dir = mkdtempSync(join(tmpdir(), 'fluxflow-bench-'));
+const KEEP = process.env.BENCH_DB;
+const REUSE = KEEP !== undefined && existsSync(KEEP);
+const dir = KEEP ? undefined : mkdtempSync(join(tmpdir(), 'fluxflow-bench-'));
 const db = openDatabase({
-  config: createTestConfig({ DATABASE_PATH: join(dir, 'bench.db') }),
+  config: createTestConfig({ DATABASE_PATH: KEEP ?? join(dir!, 'bench.db') }),
   log: { debug: () => {}, info: () => {}, error: () => {} } as never
 });
 migrate(db);
@@ -58,7 +63,6 @@ const random = () => {
 };
 const pick = <T>(items: readonly T[]): T => items[Math.floor(random() * items.length)]!;
 
-console.log(`building ${BLOCKS.toLocaleString()} blocks, ${FLOWS.toLocaleString()} flows...`);
 let started = performance.now();
 
 const insertBlock = db.prepare(
@@ -79,7 +83,10 @@ function drawWallet(): { address: string; kind: string } {
 const perBlock = FLOWS / BLOCKS;
 const CHUNK = 20_000;
 
-for (let from = 1; from <= BLOCKS; from += CHUNK) {
+if (REUSE) console.log(`reusing ${KEEP}`);
+else console.log(`building ${BLOCKS.toLocaleString()} blocks, ${FLOWS.toLocaleString()} flows...`);
+
+for (let from = 1; !REUSE && from <= BLOCKS; from += CHUNK) {
   db.transaction(() => {
     for (let height = from; height < Math.min(from + CHUNK, BLOCKS + 1); height++) {
       const time = START + height * 30;
@@ -148,7 +155,7 @@ const walletRows = db
   )
   .get()!;
 console.log(
-  `wallets: ${UNIFORM ? 'uniform over 50,000' : 'heavy-tailed over 20,000'}; ` +
+  `wallets: ${REUSE ? 'as built' : UNIFORM ? 'uniform over 50,000' : 'heavy-tailed over 20,000'}; ` +
     `wallet_daily ${walletRows.daily.toLocaleString()} rows, ` +
     `wallet_monthly ${walletRows.monthly.toLocaleString()} rows`
 );
@@ -204,4 +211,4 @@ if (whale) time('wallet profile (top seller)', () => walletProfile(db, whale.add
 time('database summary (status)', () => summariseDatabase(db), 2);
 
 db.close();
-rmSync(dir, { recursive: true, force: true });
+if (dir) rmSync(dir, { recursive: true, force: true });
