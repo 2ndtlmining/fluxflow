@@ -278,6 +278,18 @@ describe('SyncService', () => {
       expect(stats.running).toBe(false);
     });
 
+    it("reports the network's tip separately from the highest stored block", async () => {
+      // Six months behind, as on a fresh deployment: catch-up must see the real gap.
+      const source = chainSource({ tip: 1_000_000, fetched: [] });
+      sync = buildSync(db, source, { SYNC_BATCH_SIZE: '50' });
+
+      expect(sync.stats.networkTip).toBeNull();
+      await sync.runOnce();
+
+      expect(sync.stats.networkTip).toBe(1_000_000);
+      expect(sync.stats.tip).toBeLessThan(1_000_000);
+    });
+
     it('counts new blocks as tip-following', async () => {
       const source = chainSource({ tip: 100, fetched: [] });
       sync = buildSync(db, source, { SYNC_BATCH_SIZE: '1000' });

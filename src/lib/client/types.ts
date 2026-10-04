@@ -287,6 +287,16 @@ export interface Status {
     readonly lastSuccessfulSyncAt: number | null;
     readonly degraded: boolean;
     readonly reason?: string;
+    /** Still syncing towards the network tip (a fresh deploy syncs six months first). */
+    readonly catchUp?: {
+      readonly tip: number | null;
+      readonly behindBlocks: number | null;
+      readonly catchingUp: boolean;
+      readonly progress: number | null;
+      readonly dataFrom: number | null;
+      readonly dataAsOf: number | null;
+      readonly etaSeconds: number | null;
+    };
   };
   readonly ingest?: { readonly blocksPerMinute: number; readonly running: boolean };
   readonly database: {
