@@ -338,15 +338,17 @@ the last clustering pass, hop count, the relabel queue length and the last job e
 
 All need `Authorization: Bearer <ADMIN_TOKEN>` and are refused when no token is configured.
 
-| Method | Path                                  | Body / query                                                                             |
-| ------ | ------------------------------------- | ---------------------------------------------------------------------------------------- |
-| POST   | `/api/admin/sync`                     | —                                                                                        |
-| POST   | `/api/admin/retention`                | —                                                                                        |
-| POST   | `/api/admin/intel/run`                | — runs node refresh, clustering, hops and the relabel backlog now                        |
-| GET    | `/api/admin/labels/candidates`        | `?status=pending\|accepted\|rejected&limit=`                                             |
-| POST   | `/api/admin/labels/candidates/decide` | `{address, kind, name, decision: "accepted"\|"rejected"}`                                |
-| POST   | `/api/admin/labels`                   | `{address, kind, name?, subLabel?, note?}` — a manual label; `kind: "unknown"` overrides |
-| DELETE | `/api/admin/labels/:address`          | removes the address's manual labels                                                      |
+| Method | Path                                       | Body / query                                                                                                                                                                                                   |
+| ------ | ------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| POST   | `/api/admin/sync`                          | —                                                                                                                                                                                                              |
+| POST   | `/api/admin/retention`                     | —                                                                                                                                                                                                              |
+| POST   | `/api/admin/intel/run`                     | — runs node refresh, clustering, hops and the relabel backlog now                                                                                                                                              |
+| GET    | `/api/admin/labels/candidates`             | `?status=pending\|accepted\|rejected&limit=`                                                                                                                                                                   |
+| POST   | `/api/admin/labels/candidates/decide`      | `{address, kind, name, decision: "accepted"\|"rejected"}`                                                                                                                                                      |
+| GET    | `/api/admin/labels/review`                 | `?status=pending\|accepted\|rejected` — candidates with activity (sent/received, share to the proposed exchange, first/last seen), `strength` 0–1, the current label, and `counts` per status; strongest first |
+| POST   | `/api/admin/labels/candidates/decide-bulk` | `{decision, candidates: [{address, kind, name}]}` (1–500) — all or nothing (404 + `missing` if any is unknown), one label refresh; answers `decided`, `changedAddresses`, `transactions` to re-derive          |
+| POST   | `/api/admin/labels`                        | `{address, kind, name?, subLabel?, note?}` — a manual label; `kind: "unknown"` overrides                                                                                                                       |
+| DELETE | `/api/admin/labels/:address`               | removes the address's manual labels                                                                                                                                                                            |
 
 ---
 

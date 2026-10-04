@@ -74,7 +74,7 @@
 <footer class="foot muted">
   <p>
     On-chain FLUX moving to and from tracked exchange wallets. Labels are a best effort; an
-    unlabelled wallet may belong to anyone.
+    unlabelled wallet may belong to anyone. <a href="/review">Review proposed labels</a> (admin).
   </p>
 </footer>
 
