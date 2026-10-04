@@ -178,6 +178,9 @@ function walletBreakdown(
     flowType,
     {
       tables: ['wallet_daily'],
+      // Left to itself, SQLite walks the window's whole bucket range (every seller's day, ~1M
+      // rows over 6 months) to keep the leaders' rows: 220 ms instead of 30 ms.
+      indexes: ['idx_wallet_daily_address'],
       rollupColumns: 'address, exchange, sat, count',
       rawColumns: `${ADDRESS} AS address, COALESCE(exchange, '') AS exchange, sat, 1 AS count`,
       rollupWhere: { sql: `AND address IN (${marks})`, params: addresses },
