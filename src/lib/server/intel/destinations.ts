@@ -10,7 +10,8 @@
  *               uses (its transaction is a collateral outpoint on the node list)
  *   returned    came back to a Foundation wallet
  *   held        still in a wallet: not passed on within `hopBlocks` of arriving
- *   untraced    still moving after `maxHops` wallets
+ *   untraced    still moving after `maxHops` wallets, or stopped by a work bound
+ *               ({@link TRACE_LIMITS}: dust, a payment to very many recipients, the step budget)
  *
  * The rules, chosen so that nothing is counted twice and nothing is invented:
  *
@@ -41,6 +42,23 @@ export const DESTINATION_DEFAULTS = {
   hopBlocks: 20_160,
   /** Recipients listed individually. */
   recipients: 15
+} as const;
+
+/**
+ * Work bounds. The walk runs synchronously, and anyone who was ever paid by the Foundation
+ * can shape what it walks: a payment to a thousand addresses, each paying a thousand more,
+ * is a billion steps three hops deep. Whatever a bound stops is counted as `untraced`, so
+ * the totals still add up, and `truncated` says the step budget ran out.
+ */
+export const TRACE_LIMITS = {
+  /** Steps (wallet visits) per trace. */
+  maxSteps: 50_000,
+  /** Recipients of one payment followed individually; the rest are untraced. */
+  maxFanout: 50,
+  /** Value below this is not followed further. */
+  minTraceSat: SATS_PER_FLUX,
+  /** Rows of one wallet's history read for its onward payments. */
+  maxRowsPerAddress: 2_000
 } as const;
 
 /** A Foundation-wide net below this is an internal move plus fee, not an outflow. */
@@ -82,6 +100,8 @@ export interface FoundationDestinations extends DestinationTotals {
   readonly maxHops: number;
   readonly hopBlocks: number;
   readonly recipients: RecipientDestinations[];
+  /** The step budget ran out; what was left is in `untraced`. */
+  readonly truncated: boolean;
 }
 
 interface Delta {
@@ -96,9 +116,63 @@ interface Delta {
 interface Spend {
   height: number;
   remaining: number;
-  /** Where its value went: the wallet's share of each recipient. */
+  /** Where its value went: the wallet's share of each recipient (the largest few). */
   to: { txid: string; address: string; net: number; time: number; sat: number }[];
+  /** The wallet's share of the recipients beyond {@link TRACE_LIMITS.maxFanout}. */
+  overflow: number;
   value: number;
+}
+
+/** A min-heap on (height, insertion order): earliest first, ties first-in, first-out. */
+class HeightQueue<T extends { height: number }> {
+  private readonly items: { item: T; seq: number }[] = [];
+  private seq = 0;
+
+  get size(): number {
+    return this.items.length;
+  }
+
+  push(item: T): void {
+    const items = this.items;
+    items.push({ item, seq: this.seq++ });
+    let i = items.length - 1;
+    while (i > 0) {
+      const parent = (i - 1) >> 1;
+      if (!this.before(items[i]!, items[parent]!)) break;
+      [items[i], items[parent]] = [items[parent]!, items[i]!];
+      i = parent;
+    }
+  }
+
+  pop(): T | undefined {
+    const items = this.items;
+    const top = items[0];
+    const last = items.pop();
+    if (!top || !last) return undefined;
+    if (items.length > 0) {
+      items[0] = last;
+      let i = 0;
+      for (;;) {
+        const left = 2 * i + 1;
+        const right = left + 1;
+        let smallest = i;
+        if (left < items.length && this.before(items[left]!, items[smallest]!)) smallest = left;
+        if (right < items.length && this.before(items[right]!, items[smallest]!)) smallest = right;
+        if (smallest === i) break;
+        [items[i], items[smallest]] = [items[smallest]!, items[i]!];
+        i = smallest;
+      }
+    }
+    return top.item;
+  }
+
+  drain(): T[] {
+    return this.items.splice(0).map((entry) => entry.item);
+  }
+
+  private before(a: { item: T; seq: number }, b: { item: T; seq: number }): boolean {
+    return a.item.height < b.item.height || (a.item.height === b.item.height && a.seq < b.seq);
+  }
 }
 
 class Tally {
@@ -147,6 +221,8 @@ export function traceFoundation(
     recipients?: number;
     /** Collateral transactions of live nodes (`parseCollateralTxids`). */
     collateralTxids?: ReadonlySet<string>;
+    /** Overrides {@link TRACE_LIMITS.maxSteps}. */
+    maxSteps?: number;
   } = {}
 ): FoundationDestinations {
   const maxHops = options.maxHops ?? DESTINATION_DEFAULTS.maxHops;
@@ -157,10 +233,14 @@ export function traceFoundation(
   const byTx = db.prepare<[string], Delta>(
     `SELECT txid, address, height, time, sat_out - sat_in AS net FROM tx_deltas WHERE txid = ?`
   );
-  const ofAddress = db.prepare<[string], Delta>(
+  // Only the part of a wallet's history the walk can reach, and only so much of it.
+  const ofAddress = db.prepare<[string, number, number, number], Delta>(
     `SELECT txid, address, height, time, sat_out - sat_in AS net
-     FROM tx_deltas WHERE address = ? ORDER BY height, txid`
+     FROM tx_deltas WHERE address = ? AND height BETWEEN ? AND ?
+     ORDER BY height, txid LIMIT ?`
   );
+  let reachFrom = Number.POSITIVE_INFINITY;
+  let reachTo = Number.NEGATIVE_INFINITY;
 
   /** Each recipient's share of `funder`'s contribution to a transaction. */
   const split = (rows: Delta[], funder: (row: Delta) => boolean) => {
@@ -183,11 +263,15 @@ export function traceFoundation(
     let list = spends.get(address);
     if (list) return list;
     list = [];
-    for (const own of ofAddress.all(address)) {
+    for (const own of ofAddress.all(address, reachFrom, reachTo, TRACE_LIMITS.maxRowsPerAddress)) {
       if (own.net >= 0) continue;
-      const to = split(byTx.all(own.txid), (row) => row.address === address);
-      const value = to.reduce((sum, part) => sum + part.net, 0);
-      if (value > 0) list.push({ height: own.height, remaining: value, to, value });
+      const parts = split(byTx.all(own.txid), (row) => row.address === address);
+      const value = parts.reduce((sum, part) => sum + part.net, 0);
+      if (value <= 0) continue;
+      parts.sort((a, b) => b.net - a.net);
+      const to = parts.slice(0, TRACE_LIMITS.maxFanout);
+      const overflow = parts.slice(TRACE_LIMITS.maxFanout).reduce((sum, part) => sum + part.net, 0);
+      list.push({ height: own.height, remaining: value, to, overflow, value });
     }
     spends.set(address, list);
     return list;
@@ -219,7 +303,7 @@ export function traceFoundation(
     depth: number;
     root: string;
   }
-  const queue: Item[] = [];
+  const queue = new HeightQueue<Item>();
   const received = new Map<string, number>();
 
   for (const tx of outflowTxs) {
@@ -229,6 +313,8 @@ export function traceFoundation(
       const height = rows[0]!.height;
       queue.push({ ...part, amount: part.net, height, depth: 1, root: part.address });
       received.set(part.address, (received.get(part.address) ?? 0) + part.net);
+      reachFrom = Math.min(reachFrom, height);
+      reachTo = Math.max(reachTo, height + hopBlocks * (maxHops + 1));
     }
   }
 
@@ -250,9 +336,14 @@ export function traceFoundation(
   };
 
   // Earliest first, so first-in, first-out holds across traces sharing a wallet.
-  queue.sort((a, b) => a.height - b.height);
-  while (queue.length > 0) {
-    const item = queue.shift()!;
+  let steps = 0;
+  let truncated = false;
+  for (let item = queue.pop(); item; item = queue.pop()) {
+    if (++steps > (options.maxSteps ?? TRACE_LIMITS.maxSteps)) {
+      truncated = true;
+      for (const rest of [item, ...queue.drain()]) add(rest, (t) => (t.untraced += rest.amount));
+      break;
+    }
     const label = labels.labelOf(item.address, item.time);
 
     if (label?.kind === 'exchange') {
@@ -292,7 +383,7 @@ export function traceFoundation(
 
     // Pass the value on through this wallet's later payments.
     let left = item.amount;
-    const next: Item[] = [];
+    let unfollowed = 0;
     for (const spend of spendsOf(item.address)) {
       if (left <= 0) break;
       if (spend.height < item.height || spend.remaining <= 0) continue;
@@ -301,10 +392,16 @@ export function traceFoundation(
       const used = Math.min(left, spend.remaining);
       spend.remaining -= used;
       left -= used;
+      unfollowed += (used * spend.overflow) / spend.value;
       for (const part of spend.to) {
         const amount = (used * part.net) / spend.value;
         if (amount <= 0) continue;
-        next.push({
+        if (amount < TRACE_LIMITS.minTraceSat) {
+          unfollowed += amount;
+          continue;
+        }
+        // Children are never earlier than their parent, so the order still holds.
+        queue.push({
           txid: part.txid,
           address: part.address,
           amount,
@@ -317,13 +414,7 @@ export function traceFoundation(
       }
     }
     if (left > 0) add(item, (t) => (t.held += left));
-
-    for (const child of next) {
-      // Keep the queue in height order; children are never earlier than their parent.
-      let index = queue.length;
-      while (index > 0 && queue[index - 1]!.height > child.height) index--;
-      queue.splice(index, 0, child);
-    }
+    if (unfollowed > 0) add(item, (t) => (t.untraced += unfollowed));
   }
 
   const recipients = [...received]
@@ -348,6 +439,7 @@ export function traceFoundation(
     maxHops,
     hopBlocks,
     ...total.toJson(),
-    recipients
+    recipients,
+    truncated
   };
 }

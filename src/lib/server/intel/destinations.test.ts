@@ -269,6 +269,47 @@ describe('Foundation destinations (#31)', () => {
     expect(result.held).toBeCloseTo(20_000, 6);
   });
 
+  it('stays bounded when a recipient fans out to very many wallets, and still adds up', () => {
+    const fanout = Array.from(
+      { length: 400 },
+      (_, i) => [`t1fan${String(i).padStart(3, '0')}`, 2.5] as [string, number]
+    );
+    writeChain(db, labels, [
+      pay(10, 'wage', FOUND, 1_000.01, [['t1spray', 1_000]]),
+      pay(20, 'spray', 't1spray', 1_000, fanout),
+      // Every one of them sprays again: 400 x 400 wallets if nothing bounded the walk.
+      ...fanout.map(([address], i) =>
+        pay(30 + i, `again${i}`, address, 2.5, [
+          [`${address}a`, 1.2],
+          [`${address}b`, 1.2]
+        ])
+      )
+    ]);
+
+    const result = traceFoundation(db, labels, ALL);
+    const accounted =
+      result.exchange + result.nodes + result.returned + result.held + result.untraced;
+
+    expect(result.truncated).toBe(false);
+    // 50 recipients followed; the other 350 (875 FLUX) are untraced, as is the dust below.
+    expect(result.untraced).toBeGreaterThanOrEqual(875 - 1e-6);
+    expect(accounted).toBeCloseTo(result.traced, 4);
+  });
+
+  it('gives up after its step budget and says so, without losing value', () => {
+    writeChain(db, labels, [
+      pay(10, 'wage', FOUND, 1_000.01, [['t1hop1', 1_000]]),
+      pay(20, 'h2', 't1hop1', 1_000, [['t1hop2', 999.99]]),
+      pay(30, 'h3', 't1hop2', 999.99, [['t1hop3', 999.98]])
+    ]);
+
+    const result = traceFoundation(db, labels, ALL, { maxSteps: 2 });
+
+    expect(result.truncated).toBe(true);
+    // Two wallets visited; what reached the third (999.98 after fees) is untraced.
+    expect(result.untraced).toBeCloseTo(999.98, 6);
+  });
+
   it('stops following value that sat longer than the hop window', () => {
     writeChain(db, labels, [
       pay(10, 'wage', FOUND, 100.01, [['t1gina', 100]]),

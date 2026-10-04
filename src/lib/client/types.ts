@@ -187,6 +187,8 @@ export interface FoundationDestinations extends DestinationTotals {
   readonly maxHops: number;
   readonly hopBlocks: number;
   readonly recipients: RecipientDestinations[];
+  /** The trace hit its work budget; the remainder is in `untraced`. */
+  readonly truncated?: boolean;
 }
 
 export interface Foundation {
