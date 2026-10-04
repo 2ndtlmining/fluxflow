@@ -43,7 +43,7 @@ const CHAIN: SimpleTx[] = [
     ]
   },
   // The operator sells to Kucoin; the retired operator too; two deposit addresses are swept
-  // (the sale is attributed to the smaller funder, DEPOSIT).
+  // (each deposit address is credited with its share of the sale: 40% and 60%).
   { height: 10, txid: 's1', inputs: [[OPERATOR, 500]], outputs: [[KUCOIN, 499.9]] },
   { height: 11, txid: 's2', inputs: [[RETIRED, 200]], outputs: [[KUCOIN, 199.9]] },
   {

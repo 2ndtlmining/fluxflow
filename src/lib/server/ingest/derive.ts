@@ -175,8 +175,11 @@ export function deriveFlows(
  *
  * Shared by ingestion and by re-derivation after a label change (`intel/relabel.ts`), which
  * rebuilds the deltas from `tx_deltas`. The deltas are sorted by address first, so both
- * paths produce identical rows — including which funder wins a tie and which `vout` a
- * recipient gets — whatever order they arrived in.
+ * paths produce identical rows — including how a rounding satoshi is shared and which `vout`
+ * each row gets — whatever order they arrived in.
+ *
+ * Each recipient yields one row per funder, carrying that funder's share of the output
+ * ({@link splitByFunder}).
  *
  * A transfer between two Foundation wallets produces no flow at all: moving money between
  * its own wallets is neither buying nor selling, and counted as p2p it dwarfed every real
@@ -209,53 +212,90 @@ export function flowsFromDeltas(
   const rows: FlowRow[] = [];
   let vout = 0;
 
-  for (const recipient of recipients) {
-    const from = pickFunder(funders, recipient, kindOf);
-    if (!from) continue;
+  const payers = capFunders(funders, recipients.length);
+  const toKinds = recipients.map((recipient) => kindOf(recipient.address));
+  const fromKinds = payers.map((funder) => kindOf(funder.address));
 
-    const fromKind = kindOf(from.address);
-    const toKind = kindOf(recipient.address);
-    if (fromKind === 'foundation' && toKind === 'foundation') continue;
+  recipients.forEach((recipient, r) => {
+    const toKind = toKinds[r]!;
+    const shares = splitByFunder(recipient.sat, payers);
 
-    rows.push({
-      txid,
-      vout: vout++,
-      height,
-      time,
-      fromAddress: from.address,
-      fromKind,
-      toAddress: recipient.address,
-      toKind,
-      exchange: exchangeName(from, recipient, resolve, time),
-      flowType: classifyFlow(fromKind, toKind),
-      sat: recipient.sat
+    payers.forEach((from, f) => {
+      const sat = shares[f]!;
+      const fromKind = fromKinds[f]!;
+      if (sat <= 0 || (fromKind === 'foundation' && toKind === 'foundation')) return;
+
+      rows.push({
+        txid,
+        vout: vout++,
+        height,
+        time,
+        fromAddress: from.address,
+        fromKind,
+        toAddress: recipient.address,
+        toKind,
+        exchange: exchangeName(from, recipient, resolve, time),
+        flowType: classifyFlow(fromKind, toKind),
+        sat
+      });
     });
-  }
+  });
 
   return rows;
 }
 
+/** Above this many funder × recipient pairs, the smallest funders are folded away. */
+export const MAX_FLOWS_PER_TX = 5_000;
+
 /**
- * Choose the funder for a recipient.
+ * Keep at most enough funders that one transaction yields {@link MAX_FLOWS_PER_TX} rows.
  *
- * Prefer a funder we can *name*. An exchange consolidating its own deposits together with a
- * stranger's coins should be attributed to the exchange, not to the stranger — and "the
- * address we happen to list first" is not an attribution rule.
+ * Real transactions stay far below it (the largest seen is a 500-input consolidation into
+ * one output). Beyond it the largest funders are kept, in their original order, and the
+ * dropped funders' share is spread over them in proportion: a bounded, documented
+ * approximation instead of an unbounded number of rows.
  */
-function pickFunder(
-  funders: { address: string; sat: number }[],
-  recipient: { address: string; sat: number },
-  kindOf: (address: string) => AddressKind
-): { address: string; sat: number } | null {
-  if (funders.length === 0) return null;
+function capFunders<T extends { sat: number }>(funders: readonly T[], recipients: number): T[] {
+  const keep = Math.max(1, Math.floor(MAX_FLOWS_PER_TX / recipients));
+  if (funders.length <= keep) return [...funders];
 
-  const named = funders.filter((funder) => kindOf(funder.address) !== 'unknown');
-  const pool = named.length > 0 ? named : funders;
+  const kept = new Set([...funders].sort((a, b) => b.sat - a.sat).slice(0, keep));
+  return funders.filter((funder) => kept.has(funder));
+}
 
-  // Smallest sufficient funder: the most specific explanation for this output.
-  const sufficient = pool.filter((funder) => funder.sat >= recipient.sat);
+/**
+ * Split one recipient's amount across the transaction's funders by their share of the input.
+ *
+ * Every input pays into every output in the same proportion, so a funder that put in 40% of
+ * the value is credited with 40% of each output — and the fee falls on everyone alike.
+ * Choosing one funder per output instead credited a GateIO sweep of ten deposit addresses
+ * (53,488 FLUX) entirely to the address that put in 2.85 FLUX.
+ *
+ * Exact in integers: BigInt products (sat × sat overflows a double) and largest-remainder
+ * rounding, ties to the earlier funder, so the shares always sum to `sat` exactly.
+ */
+export function splitByFunder(sat: number, funders: readonly { sat: number }[]): number[] {
+  if (funders.length === 1) return [sat];
 
-  return [...(sufficient.length > 0 ? sufficient : pool)].sort((a, b) => a.sat - b.sat)[0] ?? null;
+  const total = funders.reduce((sum, funder) => sum + BigInt(funder.sat), 0n);
+  if (total <= 0n) return funders.map(() => 0);
+
+  const amount = BigInt(sat);
+  const shares = funders.map((funder) => (amount * BigInt(funder.sat)) / total);
+  const remainders = funders.map((funder, index) => ({
+    index,
+    rest: (amount * BigInt(funder.sat)) % total
+  }));
+
+  let left = Number(amount - shares.reduce((sum, share) => sum + share, 0n));
+  remainders.sort((a, b) => (b.rest > a.rest ? 1 : b.rest < a.rest ? -1 : a.index - b.index));
+  for (const { index } of remainders) {
+    if (left <= 0) break;
+    shares[index]! += 1n;
+    left--;
+  }
+
+  return shares.map(Number);
 }
 
 /**

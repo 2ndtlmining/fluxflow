@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { classifyFlow, deriveBlock, deriveFlows, type Resolver } from './derive.js';
+import {
+  classifyFlow,
+  deriveBlock,
+  deriveFlows,
+  MAX_FLOWS_PER_TX,
+  type Resolver
+} from './derive.js';
 import type { NormalisedBlock, NormalisedTx } from './datasource/types.js';
 
 const SATS = 100_000_000;
@@ -144,29 +150,132 @@ describe('deriveFlows', () => {
     expect(new Set(flows.map((flow) => flow.vout)).size).toBe(3);
   });
 
-  it('attributes a consolidation to the named funder, not the stranger', () => {
-    // An exchange consolidating its own deposit with a stranger's coins is still an
-    // exchange withdrawal; v1 used "whichever input address came first".
+  it('splits a consolidation between its funders: the exchange part is buying, the rest p2p', () => {
     const tx = transfer(
       'tx1',
       [input('t1stranger', 5 * SATS, 0), input(EXCHANGE, 5 * SATS, 1)],
       [output('t1destination', 10 * SATS)]
     );
 
-    expect(deriveFlows(tx, 1_000, NOW, KEEP)[0]).toMatchObject({
-      fromAddress: EXCHANGE,
-      flowType: 'buying'
-    });
+    const flows = deriveFlows(tx, 1_000, NOW, KEEP);
+
+    expect(flows.map((f) => [f.fromAddress, f.flowType, f.sat])).toEqual([
+      [EXCHANGE, 'buying', 5 * SATS],
+      ['t1stranger', 'p2p', 5 * SATS]
+    ]);
   });
 
-  it('picks the smallest sufficient funder when several are known', () => {
+  it('credits each deposit address of a sweep with its own share, not one with all of it', () => {
+    // Shape of GateIO sweep de60f1c9…: ten deposit addresses into one hot wallet. One funder
+    // per output credited all 53,488 FLUX to the address that put in 2.85.
+    const deposits: [string, number][] = [
+      ['t1dep01', 25_000],
+      ['t1dep02', 14_909],
+      ['t1dep03', 11_221],
+      ['t1dep04', 1_296.45],
+      ['t1dep05', 485.31],
+      ['t1dep06', 437.39],
+      ['t1dep07', 125.85],
+      ['t1dep08', 6.62],
+      ['t1dep09', 4.11],
+      ['t1dep10', 2.85]
+    ];
+    const paid = deposits.reduce((sum, [, flux]) => sum + Math.round(flux * SATS), 0);
+    const fee = 1_000;
+    const tx = transfer(
+      'sweep',
+      deposits.map(([address, flux], vout) => input(address, Math.round(flux * SATS), vout)),
+      [output(EXCHANGE, paid - fee)]
+    );
+
+    const flows = deriveFlows(tx, 1_000, NOW, KEEP);
+    const credit = new Map(flows.map((flow) => [flow.fromAddress, flow.sat]));
+
+    expect(flows).toHaveLength(10);
+    expect(flows.every((flow) => flow.flowType === 'selling' && flow.exchange === 'Coinex')).toBe(
+      true
+    );
+    // Exactly the output, to the satoshi.
+    expect(flows.reduce((sum, flow) => sum + flow.sat, 0)).toBe(paid - fee);
+    // Each address within a satoshi of its share of the fee-reduced amount.
+    for (const [address, flux] of deposits) {
+      const exact = (Math.round(flux * SATS) * (paid - fee)) / paid;
+      expect(Math.abs(credit.get(address)! - exact)).toBeLessThanOrEqual(1);
+    }
+    expect(credit.get('t1dep10')! / SATS).toBeCloseTo(2.85, 4);
+  });
+
+  it('shares every output between funders in the same proportion', () => {
+    const tx = transfer(
+      'tx1',
+      [input('t1a', 30 * SATS, 0), input('t1b', 10 * SATS, 1)],
+      [output('t1x', 20 * SATS, 0), output(EXCHANGE, 20 * SATS, 1)]
+    );
+
+    const flows = deriveFlows(tx, 1_000, NOW, KEEP);
+    const row = (from: string, to: string) =>
+      flows.find((flow) => flow.fromAddress === from && flow.toAddress === to)!.sat;
+
+    expect(row('t1a', 't1x')).toBe(15 * SATS);
+    expect(row('t1b', 't1x')).toBe(5 * SATS);
+    expect(row('t1a', EXCHANGE)).toBe(15 * SATS);
+    expect(row('t1b', EXCHANGE)).toBe(5 * SATS);
+    expect(new Set(flows.map((flow) => flow.vout)).size).toBe(flows.length);
+  });
+
+  it('does not depend on the order inputs and outputs arrive in', () => {
+    const ins = [input('t1b', 7 * SATS, 0), input('t1a', 3 * SATS + 7, 1), input('t1c', 11, 2)];
+    const outs = [output('t1y', 4 * SATS, 0), output('t1x', 6 * SATS - 1_000, 1)];
+
+    const one = deriveFlows(transfer('tx1', ins, outs), 1_000, NOW, KEEP);
+    const two = deriveFlows(
+      transfer('tx1', [...ins].reverse(), [...outs].reverse()),
+      1_000,
+      NOW,
+      KEEP
+    );
+
+    expect(two).toEqual(one);
+  });
+
+  it('keeps a recipient total exact however awkward the proportions', () => {
+    const tx = transfer(
+      'tx1',
+      [input('t1a', 1, 0), input('t1b', 1, 1), input('t1c', 1, 2)],
+      [output('t1x', 2, 0)]
+    );
+
+    const flows = deriveFlows(tx, 1_000, NOW, KEEP);
+
+    // 2 sat over three equal funders: two get 1, one gets nothing and has no row.
+    expect(flows.map((flow) => flow.sat)).toEqual([1, 1]);
+  });
+
+  it('bounds the rows of a huge many-to-many transaction', () => {
+    const ins = Array.from({ length: 300 }, (_, i) =>
+      input(`t1in${String(i).padStart(3, '0')}`, (i + 1) * SATS, i)
+    );
+    const outs = Array.from({ length: 50 }, (_, i) =>
+      output(`t1out${String(i).padStart(2, '0')}`, SATS, i)
+    );
+
+    const flows = deriveFlows(transfer('big', ins, outs), 1_000, NOW, KEEP);
+
+    expect(flows.length).toBeLessThanOrEqual(MAX_FLOWS_PER_TX);
+    // Every output still fully accounted for, by the largest funders.
+    expect(flows.reduce((sum, flow) => sum + flow.sat, 0)).toBe(50 * SATS);
+    expect(flows.some((flow) => flow.fromAddress === 't1in299')).toBe(true);
+    expect(flows.some((flow) => flow.fromAddress === 't1in000')).toBe(false);
+  });
+
+  it('collapses several inputs from one address into one funder', () => {
     const tx = transfer(
       'tx1',
       [input(EXCHANGE, 100 * SATS, 0), input(EXCHANGE, 2 * SATS, 1)],
       [output('t1destination', 2 * SATS)]
     );
 
-    expect(deriveFlows(tx, 1_000, NOW, KEEP)[0]!.sat).toBe(2 * SATS);
+    expect(deriveFlows(tx, 1_000, NOW, KEEP).map((flow) => flow.sat)).toEqual([2 * SATS]);
   });
 
   it('ignores a wallet paying itself', () => {
