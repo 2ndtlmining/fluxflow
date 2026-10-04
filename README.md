@@ -365,6 +365,11 @@ All endpoints are same-origin. There is no CORS layer unless `ORIGIN` is set exp
 | GET    | `/api/flow/:period/hops`       | exchange hops (withdraw → re-deposit)         |
 | GET    | `/api/foundation?period=`      | Foundation wallets, flows, balance history    |
 | GET    | `/api/intel/status`            | labels by source, node list, clustering       |
+| GET    | `/api/stream`                  | Server-Sent Events: `sync` and `flow` (live)  |
+| GET    | `/api/metrics`                 | Prometheus text format                        |
+| POST   | `/api/admin/sync`              | admin: start a cycle now (answers 202)        |
+| POST   | `/api/admin/retention`         | admin: prune past the retention window now    |
+| POST   | `/api/admin/alerts/reload`     | admin: re-read `config/alerts.json`           |
 
 `period` is one of `24H`, `7D`, `30D`, `90D`, `6M`. Windows are resolved from block **time**
 rather than a block count, so "Today" means today even if block times drift.
@@ -376,6 +381,41 @@ syncs are served from memory, or answered `304`. Full request and response shape
 `/api/flow/:period` returns aggregates only. Events are served a page at a time by
 `/events`, because shipping a whole period to the browser took 28 seconds and then crashed
 in `JSON.stringify` at six months.
+
+Admin endpoints need `Authorization: Bearer $ADMIN_TOKEN` and are refused outright when no
+token is configured.
+
+**Limits.** Every query parameter is validated: a bad `limit`, `type` or `kind` is a `400`
+naming the parameter, not a silent default. Clients are rate limited per IP
+(`API_RATE_LIMIT_RPS` sustained, `API_RATE_LIMIT_BURST` burst; `0` disables), except
+health, status, metrics and the stream. Request bodies over 64 KB are refused with `413`,
+and a request must arrive within 30 s. Behind a reverse proxy set `TRUST_PROXY=1` so the
+limiter sees real client IPs.
+
+### Live updates (`/api/stream`)
+
+After each committed sync cycle the server sends `event: sync` with the new tip and data
+version (the same version the API's ETags carry, so a refetch is a cheap `304` when nothing
+you show changed). New flows of at least `LIVE_FLOW_MIN_FLUX` from tip-following arrive as
+`event: flow`. Backfilled history never does.
+
+```js
+const events = new EventSource('/api/stream');
+events.addEventListener('sync', (e) => refresh(JSON.parse(e.data)));
+events.addEventListener('flow', (e) => toast(JSON.parse(e.data)));
+```
+
+At most `LIVE_MAX_CLIENTS` subscribers; beyond that the stream answers `503` and clients
+should fall back to polling.
+
+### Metrics (`/api/metrics`)
+
+Prometheus text format, cheap enough to scrape every 15 s. Highlights:
+`fluxflow_chain_height`, `fluxflow_sync_blocks_total{phase}`,
+`fluxflow_sync_blocks_per_minute`, `fluxflow_source_active{source}`,
+`fluxflow_pool_nodes{state}`, `fluxflow_api_cache_total{outcome}`,
+`fluxflow_event_loop_delay_seconds{quantile}`, `fluxflow_alerts_total{outcome}`.
+`/api/status` carries the event-loop delay too, under `runtime`.
 
 ---
 
@@ -416,6 +456,40 @@ curl -H "Authorization: Bearer $ADMIN_TOKEN" -H 'content-type: application/json'
 A manual label (`POST /api/admin/labels`) beats every other source; `"kind": "unknown"`
 removes a wrong label. `npm run precision -- <copy of the db>` runs the whole pass on a
 database file and prints how often each heuristic agrees with independent ground truth.
+
+### Alerts (`config/alerts.json`)
+
+Whale and watchlist alerts to Discord, Telegram or any webhook. Copy
+[`config/alerts.example.json`](config/alerts.example.json) to `config/alerts.json` (or point
+`ALERTS_PATH` elsewhere); without the file, alerts are off.
+
+```json
+{
+  "channels": {
+    "discord": { "type": "discord", "url": "env:DISCORD_WEBHOOK_URL" }
+  },
+  "rules": [
+    {
+      "name": "Whale sell to an exchange",
+      "minFlux": 25000,
+      "flowTypes": ["selling"],
+      "channels": ["discord"],
+      "cooldownSeconds": 300
+    }
+  ]
+}
+```
+
+- **Matching:** `minFlux`, `flowTypes`, `exchanges`, `kinds` (the counterparty, e.g.
+  `node_operator`) and `addresses` (either side) — every condition given must hold.
+- **Secrets:** `"env:NAME"` reads a value from the environment, so webhook URLs and bot
+  tokens stay out of the file. A channel whose variable is unset is disabled with a warning.
+- **Noise control:** each flow alerts once per rule, `cooldownSeconds` suppresses repeats,
+  and one batch sends at most 5 alerts per rule plus a `(+N more)` note. Only recent
+  tip-following flows are checked; backfill never alerts.
+- **Delivery** runs in the background with retries, never delaying ingestion.
+- The file is re-read when it changes (or `POST /api/admin/alerts/reload`); an invalid edit
+  keeps the previous rules and is reported in `/api/status`.
 
 ## 🎨 Theming
 
