@@ -40,7 +40,7 @@ export interface Candidate {
   readonly address: string;
   readonly kind: 'exchange';
   readonly name: string;
-  readonly method: 'common_input' | 'sweep';
+  readonly method: 'common_input' | 'sweep' | 'forwarder';
   readonly confidence: number;
   readonly evidence: Record<string, unknown>;
 }
