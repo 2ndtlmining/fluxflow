@@ -302,11 +302,32 @@ describe('api router', () => {
       expect((await get('/api/flow/24H/events?exchange=Nope')).body.events).toHaveLength(0);
     });
 
-    it('clamps a hostile page size', async () => {
+    it('rejects a hostile page size with the reason, rather than guessing (#21)', async () => {
       await boot();
       seed();
 
-      expect((await get('/api/flow/24H/events?limit=100000')).body.events).toHaveLength(2);
+      const { status, body } = await get('/api/flow/24H/events?limit=100000');
+
+      expect(status).toBe(400);
+      expect(body.issues).toEqual([expect.objectContaining({ parameter: 'limit' })]);
+    });
+
+    it('rejects unknown filter values instead of ignoring them (#21)', async () => {
+      await boot();
+
+      expect((await get('/api/flow/24H/events?type=dumping')).status).toBe(400);
+      expect((await get('/api/flow/24H/events?kind=whale')).status).toBe(400);
+      expect((await get('/api/flow/24H/events?minAmount=-5')).status).toBe(400);
+      expect((await get('/api/flow/24H/buyers?limit=0')).status).toBe(400);
+      expect((await get('/api/flow/24H/sellers?limit=abc')).status).toBe(400);
+    });
+
+    it('accepts valid filters', async () => {
+      await boot();
+      seed();
+
+      const { status } = await get('/api/flow/24H/events?type=buying&kind=node_operator&limit=10');
+      expect(status).toBe(200);
     });
   });
 
