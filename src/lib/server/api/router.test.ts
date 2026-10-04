@@ -302,11 +302,32 @@ describe('api router', () => {
       expect((await get('/api/flow/24H/events?exchange=Nope')).body.events).toHaveLength(0);
     });
 
-    it('clamps a hostile page size', async () => {
+    it('rejects a hostile page size with the reason, rather than guessing (#21)', async () => {
       await boot();
       seed();
 
-      expect((await get('/api/flow/24H/events?limit=100000')).body.events).toHaveLength(2);
+      const { status, body } = await get('/api/flow/24H/events?limit=100000');
+
+      expect(status).toBe(400);
+      expect(body.issues).toEqual([expect.objectContaining({ parameter: 'limit' })]);
+    });
+
+    it('rejects unknown filter values instead of ignoring them (#21)', async () => {
+      await boot();
+
+      expect((await get('/api/flow/24H/events?type=dumping')).status).toBe(400);
+      expect((await get('/api/flow/24H/events?kind=whale')).status).toBe(400);
+      expect((await get('/api/flow/24H/events?minAmount=-5')).status).toBe(400);
+      expect((await get('/api/flow/24H/buyers?limit=0')).status).toBe(400);
+      expect((await get('/api/flow/24H/sellers?limit=abc')).status).toBe(400);
+    });
+
+    it('accepts valid filters', async () => {
+      await boot();
+      seed();
+
+      const { status } = await get('/api/flow/24H/events?type=buying&kind=node_operator&limit=10');
+      expect(status).toBe(200);
     });
   });
 
@@ -335,6 +356,133 @@ describe('api router', () => {
       await boot();
 
       expect((await get('/api/flow/nope/buyers')).status).toBe(400);
+    });
+  });
+
+  describe('wallets, leaderboards and series (#28, #29, #30)', () => {
+    const WHALE = 't1WhaLe'.padEnd(35, 'A');
+    const KUCOIN = 't1Kuc'.padEnd(35, 'B');
+
+    function seedWallet(): void {
+      seedFlows(db, [
+        {
+          txid: 'w1',
+          height: 20,
+          time: NOW - 3_600,
+          fromAddress: KUCOIN,
+          fromKind: 'exchange',
+          toAddress: WHALE,
+          toKind: 'unknown',
+          flowType: 'buying',
+          exchange: 'Kucoin',
+          amountFlux: 500
+        },
+        {
+          txid: 'w2',
+          height: 21,
+          time: NOW,
+          fromAddress: WHALE,
+          fromKind: 'unknown',
+          toAddress: KUCOIN,
+          toKind: 'exchange',
+          flowType: 'selling',
+          exchange: 'Kucoin',
+          amountFlux: 200
+        }
+      ]);
+    }
+
+    it('ranks sellers with breakdown, previous period and name', async () => {
+      await boot();
+      seedWallet();
+
+      const { status, body } = await get('/api/flow/24H/sellers');
+      const [first] = body.sellers as Record<string, unknown>[];
+
+      expect(status).toBe(200);
+      expect(body.total).toBe(200);
+      expect(first).toMatchObject({
+        rank: 1,
+        address: WHALE,
+        total: 200,
+        share: 1,
+        previousTotal: 0,
+        change: 200,
+        exchanges: [{ name: 'Kucoin', total: 200, count: 1 }]
+      });
+      expect(first).toHaveProperty('name');
+    });
+
+    it('rejects an unknown leaderboard kind', async () => {
+      await boot();
+      expect((await get('/api/flow/24H/buyers?kind=everyone')).status).toBe(400);
+    });
+
+    it('adds previous-period deltas and per-type totals to the summary', async () => {
+      await boot();
+      seedWallet();
+
+      const { body } = await get('/api/flow/24H');
+      expect(body.previousPeriod).toMatchObject({ buying: { total: 0 }, selling: { total: 0 } });
+      expect(body.byType).toMatchObject({ buying: { unknown: 500 }, selling: { unknown: 200 } });
+    });
+
+    it('serves an hourly net-flow series whose buckets sum to the period', async () => {
+      await boot();
+      seedWallet();
+
+      const { body } = await get('/api/flow/24H/series');
+      const points = body.points as { buying: number; selling: number; cumulativeNet: number }[];
+
+      expect(body.bucketSeconds).toBe(3_600);
+      expect(points.reduce((sum, point) => sum + point.buying, 0)).toBe(500);
+      expect(points.reduce((sum, point) => sum + point.selling, 0)).toBe(200);
+      expect(points.at(-1)!.cumulativeNet).toBe(300);
+      expect((await get('/api/flow/24H/series?kind=nope')).status).toBe(400);
+    });
+
+    it('serves a wallet profile with recent events', async () => {
+      await boot();
+      seedWallet();
+
+      const { status, body } = await get(`/api/wallets/${WHALE}`);
+
+      expect(status).toBe(200);
+      expect(body.totals).toMatchObject({ bought: 500, sold: 200, net: 300 });
+      expect((body.recent as { events: unknown[] }).events).toHaveLength(2);
+    });
+
+    it('answers 400 for a malformed address and 404 for an unknown one', async () => {
+      await boot();
+
+      expect((await get('/api/wallets/not-an-address')).status).toBe(400);
+      expect((await get(`/api/wallets/${'t1Nobody'.padEnd(35, 'C')}`)).status).toBe(404);
+    });
+
+    it('pages wallet events and validates the cursor', async () => {
+      await boot();
+      seedWallet();
+
+      const first = await get(`/api/wallets/${WHALE}/events?limit=1`);
+      expect(first.body.events).toHaveLength(1);
+
+      const second = await get(
+        `/api/wallets/${WHALE}/events?limit=1&cursor=${String(first.body.nextCursor)}`
+      );
+      expect((second.body.events as { txid: string }[])[0]!.txid).toBe('w1');
+      expect((await get(`/api/wallets/${WHALE}/events?cursor=bad`)).status).toBe(400);
+    });
+
+    it('searches by address prefix, and bounds the query', async () => {
+      await boot();
+      seedWallet();
+
+      const { body } = await get('/api/search?q=t1WhaL');
+      expect(body.results).toContainEqual(
+        expect.objectContaining({ type: 'wallet', address: WHALE })
+      );
+      expect((await get('/api/wallets/search?q=x')).status).toBe(400);
+      expect((await get(`/api/wallets/search?q=${'a'.repeat(65)}`)).status).toBe(400);
     });
   });
 

@@ -191,6 +191,12 @@ const rawConfigSchema = z
     // ── Classification ────────────────────────────────────────────────────────
     LABELS_PATH: nonEmpty(z.string()).default('./config/labels.json'),
     NODE_REFRESH_SECONDS: z.coerce.number().int().min(60).max(86_400).default(600),
+    /** Address intelligence: node operators, clustering, exchange hops (#18-#20). */
+    INTEL_ENABLED: boolFlag.default(true),
+    /** How often clustering and candidate detection run. */
+    INTEL_CLUSTER_SECONDS: z.coerce.number().int().min(60).max(86_400).default(1_800),
+    /** A withdrawal re-deposited within this many blocks is an exchange hop (240 ≈ 2 h). */
+    INTEL_HOP_MAX_BLOCKS: z.coerce.number().int().min(1).max(20_000).default(240),
 
     // ── Outbound HTTP ─────────────────────────────────────────────────────────
     HTTP_TIMEOUT_MS: z.coerce.number().int().positive().default(15_000),
@@ -203,8 +209,28 @@ const rawConfigSchema = z
       .default('info'),
     LOG_PRETTY: boolFlag.default(false),
 
+    // ── Live updates & alerts (#32) ───────────────────────────────────────────
+    /** Alert rules and delivery channels. A missing file means alerts are off. */
+    ALERTS_PATH: nonEmpty(z.string()).default('./config/alerts.json'),
+    /** Flows at or above this many FLUX are pushed to `/api/stream` as `flow` events. */
+    LIVE_FLOW_MIN_FLUX: z.coerce.number().min(0).default(1_000),
+    /** Concurrent `/api/stream` subscribers; each holds a socket open. */
+    LIVE_MAX_CLIENTS: z.coerce.number().int().min(0).max(10_000).default(100),
+
     // ── Security ──────────────────────────────────────────────────────────────
-    ADMIN_TOKEN: optionalToken
+    ADMIN_TOKEN: optionalToken,
+    /**
+     * Per-client request rate on `/api`, as a token bucket: `API_RATE_LIMIT_RPS` sustained,
+     * bursts up to `API_RATE_LIMIT_BURST`. 0 disables. Health, status, metrics and the stream
+     * are exempt so monitoring never trips it (#21).
+     */
+    API_RATE_LIMIT_RPS: z.coerce.number().min(0).max(10_000).default(10),
+    API_RATE_LIMIT_BURST: z.coerce.number().int().min(1).max(100_000).default(60),
+    /**
+     * Behind a reverse proxy, client IPs arrive in `X-Forwarded-For`. Only trust it when a
+     * proxy you run sets it — otherwise any client could pick its own rate-limit bucket.
+     */
+    TRUST_PROXY: boolFlag.default(false)
   })
   .superRefine((config, ctx) => {
     if (config.NODE_ENV !== 'production') return;
@@ -304,6 +330,24 @@ export interface Config {
 
   readonly labelsPath: string;
   readonly nodeRefreshSeconds: number;
+  readonly intel: {
+    readonly enabled: boolean;
+    readonly clusterSeconds: number;
+    readonly hopMaxBlocks: number;
+  };
+
+  readonly live: {
+    readonly alertsPath: string;
+    readonly flowMinSat: number;
+    readonly maxClients: number;
+  };
+
+  readonly rateLimit: {
+    /** 0 = disabled. */
+    readonly rps: number;
+    readonly burst: number;
+    readonly trustProxy: boolean;
+  };
 
   readonly http: {
     readonly timeoutMs: number;
@@ -371,6 +415,23 @@ function toConfig(raw: RawConfig): Config {
 
     labelsPath: raw.LABELS_PATH,
     nodeRefreshSeconds: raw.NODE_REFRESH_SECONDS,
+    intel: {
+      enabled: raw.INTEL_ENABLED,
+      clusterSeconds: raw.INTEL_CLUSTER_SECONDS,
+      hopMaxBlocks: raw.INTEL_HOP_MAX_BLOCKS
+    },
+
+    live: {
+      alertsPath: raw.ALERTS_PATH,
+      flowMinSat: Math.round(raw.LIVE_FLOW_MIN_FLUX * 100_000_000),
+      maxClients: raw.LIVE_MAX_CLIENTS
+    },
+
+    rateLimit: {
+      rps: raw.API_RATE_LIMIT_RPS,
+      burst: raw.API_RATE_LIMIT_BURST,
+      trustProxy: raw.TRUST_PROXY
+    },
 
     http: {
       timeoutMs: raw.HTTP_TIMEOUT_MS,
@@ -446,6 +507,8 @@ export function describeConfig(config: Config): Record<string, unknown> {
     },
     sync: config.sync,
     labelsPath: config.labelsPath,
+    live: config.live,
+    rateLimit: config.rateLimit,
     http: config.http,
     log: config.log,
     adminToken: config.adminToken ? `(set, ${config.adminToken.length} chars)` : '(not set)'

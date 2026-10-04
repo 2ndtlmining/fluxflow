@@ -20,7 +20,13 @@ import { OwnNodeDataSource } from './ingest/datasource/ownnode.js';
 import { FailoverDataSource } from './ingest/datasource/circuitbreaker.js';
 import type { DataSource } from './ingest/datasource/types.js';
 import { SyncService } from './ingest/sync.js';
+import { IntelService } from './intel/service.js';
 import { createApiRouter, errorHandler } from './api/router.js';
+import { EventLoopMonitor } from './api/metrics.js';
+import { dataVersion } from './api/queries.js';
+import { StreamHub } from './live/stream.js';
+import { AlertService } from './live/alerts.js';
+import type { FlowRow } from './ingest/derive.js';
 
 /** How long a graceful shutdown may take before the process exits anyway. */
 const SHUTDOWN_DEADLINE_MS = 10_000;
@@ -37,6 +43,8 @@ export interface Service {
   readonly dataSource: FailoverDataSource;
   /** Absent when `SYNC_ENABLED=0`. */
   readonly sync: SyncService | null;
+  /** Address intelligence; absent when `INTEL_ENABLED=0`. */
+  readonly intel: IntelService | null;
   listen(): Promise<Server>;
   close(): Promise<void>;
   /** Record a successful sync cycle, which `/api/health` reads to decide if we are stale. */
@@ -56,6 +64,8 @@ export interface CreateServiceOptions {
    * then drive `service.sync.runOnce()` themselves, rather than racing a real poll.
    */
   readonly autoStartSync?: boolean;
+  /** Tests switch the intelligence timers off; jobs can still be run by hand. */
+  readonly autoStartIntel?: boolean;
 }
 
 /**
@@ -195,6 +205,65 @@ export function createService(options: CreateServiceOptions = {}): Service {
     }
   };
 
+  // ── Live updates & alerts (#32) ────────────────────────────────────────────
+  const eventLoop = new EventLoopMonitor();
+  const stream = new StreamHub({ maxClients: config.live.maxClients });
+  const alerts = new AlertService({
+    path: config.live.alertsPath,
+    log: log.child({ component: 'alerts' }),
+    http: { timeoutMs: config.http.timeoutMs }
+  });
+  alerts.reload();
+  alerts.watch();
+
+  /*
+   * After every committed batch: tell stream subscribers the data changed, and push new
+   * flows to the stream and the alert rules.
+   *
+   * Only flows from tip-following, and only recent ones. A backfill, or a forward pass
+   * catching up after downtime, writes hours or months of history; announcing each of those
+   * as if it had just happened would bury the one alert that matters.
+   */
+  const LIVE_WINDOW_SECONDS = 60 * 60;
+  const onCommit = (event: {
+    phase: string;
+    blocks: readonly { flows: readonly FlowRow[]; time: number }[];
+  }) => {
+    stream.publish({
+      type: 'sync',
+      height: sync?.tip() ?? null,
+      dataVersion: dataVersion(database.db)
+    });
+
+    if (event.phase !== 'forward') return;
+
+    const cutoff = Date.now() / 1000 - LIVE_WINDOW_SECONDS;
+    const fresh = event.blocks
+      .filter((block) => block.time >= cutoff)
+      .flatMap((block) => block.flows);
+    if (fresh.length === 0) return;
+
+    for (const flow of fresh) {
+      if (flow.sat < config.live.flowMinSat) continue;
+      stream.publish({
+        type: 'flow',
+        txid: flow.txid,
+        vout: flow.vout,
+        height: flow.height,
+        time: flow.time,
+        flowType: flow.flowType,
+        fromAddress: flow.fromAddress,
+        fromKind: flow.fromKind,
+        toAddress: flow.toAddress,
+        toKind: flow.toKind,
+        exchange: flow.exchange,
+        amount: flow.sat / 100_000_000
+      });
+    }
+
+    alerts.evaluate(fresh);
+  };
+
   const sync = config.syncEnabled
     ? new SyncService({
         config,
@@ -205,11 +274,31 @@ export function createService(options: CreateServiceOptions = {}): Service {
         limiter,
         onSuccess: (at) => {
           health.lastSuccessfulSyncAt = at;
-        }
+        },
+        onCommit
       })
     : null;
 
   if (sync && options.autoStartSync !== false) sync.start();
+
+  // Labels, node operators, clustering and hops (#18-#20, #31). Re-derives flows inside the
+  // sync loop's exclusive section, so a relabel and a sync batch never interleave.
+  const intel = config.intel.enabled
+    ? new IntelService({
+        config,
+        db: database.db,
+        labels,
+        log: log.child({ component: 'intel' }),
+        sync,
+        http: {
+          timeoutMs: config.http.timeoutMs,
+          retries: config.http.retries,
+          retryBaseMs: config.http.retryBaseMs
+        }
+      })
+    : null;
+
+  if (intel && options.autoStartIntel !== false) intel.start();
 
   const app = express();
 
@@ -226,6 +315,9 @@ export function createService(options: CreateServiceOptions = {}): Service {
   }
 
   app.disable('x-powered-by');
+  // Only behind a proxy the operator runs: otherwise X-Forwarded-For is client-controlled and
+  // anyone could choose their own rate-limit bucket (#21).
+  if (config.rateLimit.trustProxy) app.set('trust proxy', true);
   app.use('/api', express.json({ limit: '64kb' }));
   app.use(
     '/api',
@@ -236,7 +328,9 @@ export function createService(options: CreateServiceOptions = {}): Service {
       dataSource,
       log: log.child({ component: 'api' }),
       health,
-      ...(sync ? { sync } : {})
+      runtime: { stream, alerts, eventLoop },
+      ...(sync ? { sync } : {}),
+      ...(intel ? { intel } : {})
     })
   );
   app.use('/api', errorHandler(config, log.child({ component: 'api' })));
@@ -252,12 +346,19 @@ export function createService(options: CreateServiceOptions = {}): Service {
     labels,
     dataSource,
     sync,
+    intel,
 
     async listen(): Promise<Server> {
       if (server) return server;
 
       server = await new Promise<Server>((resolve, reject) => {
         const created = createServer(app);
+
+        // No request may take more than 30 s to *arrive* (#21): a slow-loris client cannot
+        // hold a socket indefinitely. Responses are unaffected, so the live stream, which
+        // is one long response, still works.
+        created.requestTimeout = 30_000;
+        created.headersTimeout = 20_000;
 
         const onError = (error: Error) => {
           log.error(
@@ -297,7 +398,13 @@ export function createService(options: CreateServiceOptions = {}): Service {
 
       // Stop the loop before closing the database, otherwise an in-flight cycle would try
       // to commit against a closed handle.
+      intel?.stop();
       await sync?.stop();
+
+      // Streams never end on their own, so `server.close()` would wait for them forever.
+      stream.close();
+      alerts.close();
+      eventLoop.close();
 
       if (server) {
         await new Promise<void>((resolve) => {
@@ -310,6 +417,11 @@ export function createService(options: CreateServiceOptions = {}): Service {
 
       await sync?.drain();
       await limiter.drain();
+      // Give queued alerts a moment to go out; never let a dead webhook block shutdown.
+      await Promise.race([
+        alerts.drain(),
+        new Promise((resolve) => setTimeout(resolve, 5_000).unref())
+      ]);
       database.close();
 
       clearTimeout(deadline);

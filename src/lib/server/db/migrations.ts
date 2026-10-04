@@ -321,8 +321,264 @@ const rollups: Migration = {
   }
 };
 
+/**
+ * Per-wallet rollup levels (#28, #30): daily, and 30-day buckets aligned to the epoch.
+ *
+ * Leaderboards group by address, so their cost is "distinct wallets per bucket × buckets".
+ * Daily buckets alone made a 6-month leaderboard group ~180 days of wallets; 30-day buckets
+ * cut that to six, with daily (and raw) only at the edges — see `api/ranges.ts`.
+ */
+export const WALLET_LEVELS = {
+  wallet_daily: 86_400,
+  wallet_monthly: 30 * 86_400
+} as const;
+
+/**
+ * The wallet a flow is about: who withdrew from an exchange (buying) or deposited to one
+ * (selling).
+ *
+ * p2p flows — wallet to wallet, and exchange to exchange — have no such side and are not
+ * rolled up per wallet: a leaderboard of "who is buying or selling" is about exchange
+ * flows, and a wallet profile reads its p2p history from raw `flows` through the address
+ * indexes instead.
+ */
+const walletSide = (row: 'NEW' | 'OLD') => ({
+  address: `CASE ${row}.flow_type WHEN 'buying' THEN ${row}.to_address ELSE ${row}.from_address END`,
+  kind: `CASE ${row}.flow_type WHEN 'buying' THEN ${row}.to_kind ELSE ${row}.from_kind END`
+});
+
+const walletKeys = (row: 'NEW' | 'OLD') => {
+  const side = walletSide(row);
+  return {
+    wallet_daily: {
+      columns: 'flow_type, bucket, address, kind, exchange',
+      values: `${row}.flow_type, ${row}.time / ${WALLET_LEVELS.wallet_daily}, ${side.address},
+               ${side.kind}, COALESCE(${row}.exchange, '')`,
+      where: `flow_type = ${row}.flow_type AND bucket = ${row}.time / ${WALLET_LEVELS.wallet_daily}
+              AND address = ${side.address} AND kind = ${side.kind}
+              AND exchange = COALESCE(${row}.exchange, '')`
+    },
+    wallet_monthly: {
+      columns: 'flow_type, bucket, address, kind',
+      values: `${row}.flow_type, ${row}.time / ${WALLET_LEVELS.wallet_monthly}, ${side.address},
+               ${side.kind}`,
+      where: `flow_type = ${row}.flow_type AND bucket = ${row}.time / ${WALLET_LEVELS.wallet_monthly}
+              AND address = ${side.address} AND kind = ${side.kind}`
+    }
+  };
+};
+
+const addToWallets = (row: 'NEW' | 'OLD') =>
+  Object.entries(walletKeys(row))
+    .map(
+      ([table, key]) => `
+  INSERT INTO ${table} (${key.columns}, sat, count)
+  VALUES (${key.values}, ${row}.sat, 1)
+  ON CONFLICT (${key.columns}) DO UPDATE SET sat = sat + excluded.sat, count = count + 1;`
+    )
+    .join('');
+
+const subtractFromWallets = (row: 'NEW' | 'OLD') =>
+  Object.entries(walletKeys(row))
+    .map(
+      ([table, key]) => `
+  UPDATE ${table} SET sat = sat - ${row}.sat, count = count - 1 WHERE ${key.where};
+  DELETE FROM ${table} WHERE ${key.where} AND count <= 0;`
+    )
+    .join('');
+
+const exchangeFlow = (row: 'NEW' | 'OLD') => `${row}.flow_type IN ('buying', 'selling')`;
+
+/**
+ * Migration 3 — per-wallet rollups for leaderboards and wallet profiles (#28, #30).
+ *
+ * Same contract as migration 2: maintained by triggers on `flows`, so inserts, upserts
+ * (relabels), reorg deletes and updates keep them exact in the same transaction, and they
+ * outlive retention via {@link ROLLUP_RETAIN_KEY}.
+ *
+ * `kind` is part of the key so a relabel moves a wallet's totals rather than mixing two
+ * kinds into one row; `exchange` is in the daily key only, for per-exchange breakdowns.
+ */
+const walletRollups: Migration = {
+  version: 3,
+  name: 'wallet_rollups',
+  up: (db) => {
+    db.exec(`
+      CREATE TABLE wallet_daily (
+        flow_type TEXT    NOT NULL,
+        bucket    INTEGER NOT NULL,
+        address   TEXT    NOT NULL,
+        kind      TEXT    NOT NULL,
+        exchange  TEXT    NOT NULL DEFAULT '',
+        sat       INTEGER NOT NULL,
+        count     INTEGER NOT NULL,
+        PRIMARY KEY (flow_type, bucket, address, kind, exchange)
+      ) WITHOUT ROWID;
+
+      CREATE TABLE wallet_monthly (
+        flow_type TEXT    NOT NULL,
+        bucket    INTEGER NOT NULL,
+        address   TEXT    NOT NULL,
+        kind      TEXT    NOT NULL,
+        sat       INTEGER NOT NULL,
+        count     INTEGER NOT NULL,
+        PRIMARY KEY (flow_type, bucket, address, kind)
+      ) WITHOUT ROWID;
+    `);
+
+    // One wallet's history (profile, leader breakdowns, previous-period deltas), and
+    // address-prefix search.
+    db.exec(`CREATE INDEX idx_wallet_daily_address ON wallet_daily(address, flow_type, bucket);`);
+
+    // A wallet's p2p totals. The plain address indexes made a busy wallet's profile fetch
+    // every one of its rows just to read flow_type (~250 ms for 60k flows); these partial,
+    // covering indexes hold only p2p rows and the amount.
+    db.exec(`
+      CREATE INDEX idx_flows_p2p_in ON flows(to_address, sat) WHERE flow_type = 'p2p';
+      CREATE INDEX idx_flows_p2p_out ON flows(from_address, sat) WHERE flow_type = 'p2p';
+    `);
+
+    db.exec(`
+      CREATE TRIGGER flows_wallet_insert AFTER INSERT ON flows
+      WHEN ${exchangeFlow('NEW')}
+      BEGIN ${addToWallets('NEW')} END;
+
+      CREATE TRIGGER flows_wallet_update_old AFTER UPDATE ON flows
+      WHEN ${exchangeFlow('OLD')}
+      BEGIN ${subtractFromWallets('OLD')} END;
+
+      CREATE TRIGGER flows_wallet_update_new AFTER UPDATE ON flows
+      WHEN ${exchangeFlow('NEW')}
+      BEGIN ${addToWallets('NEW')} END;
+
+      CREATE TRIGGER flows_wallet_delete AFTER DELETE ON flows
+      WHEN ${exchangeFlow('OLD')}
+        AND NOT EXISTS (SELECT 1 FROM sync_state WHERE key = '${ROLLUP_RETAIN_KEY}')
+      BEGIN ${subtractFromWallets('OLD')} END;
+    `);
+
+    // Existing flows, so an upgraded database has leaderboards straight away.
+    const side = {
+      address: `CASE flow_type WHEN 'buying' THEN to_address ELSE from_address END`,
+      kind: `CASE flow_type WHEN 'buying' THEN to_kind ELSE from_kind END`
+    };
+    db.exec(`
+      INSERT INTO wallet_daily (flow_type, bucket, address, kind, exchange, sat, count)
+      SELECT flow_type, time / ${WALLET_LEVELS.wallet_daily}, ${side.address}, ${side.kind},
+             COALESCE(exchange, ''), SUM(sat), COUNT(*)
+      FROM flows WHERE flow_type IN ('buying', 'selling')
+      GROUP BY 1, 2, 3, 4, 5;
+
+      INSERT INTO wallet_monthly (flow_type, bucket, address, kind, sat, count)
+      SELECT flow_type, time / ${WALLET_LEVELS.wallet_monthly}, ${side.address}, ${side.kind},
+             SUM(sat), COUNT(*)
+      FROM flows WHERE flow_type IN ('buying', 'selling')
+      GROUP BY 1, 2, 3, 4;
+    `);
+  }
+};
+
+/**
+ * Migration 4 — address intelligence (#18, #19, #20, #31).
+ *
+ * - `label_candidates`: labels proposed by clustering and sweep detection. Never applied to
+ *   flows until a human accepts one, which turns it into an `address_labels` row with
+ *   `source = 'accepted'` (#20).
+ * - `address_clusters`: common-input-ownership clusters, rebuilt on every clustering pass.
+ * - `exchange_hops`: a withdrawal from one exchange matched to a deposit into another (or
+ *   the same) by the same wallet shortly after. Kept so headline buy/sell can be shown with
+ *   and without them; history, like the rollups, so retention does not erase it.
+ * - `relabel_queue`: addresses whose effective label changed. Their flows are re-derived in
+ *   bounded batches so totals follow the label, not the label at sync time (#18).
+ *
+ * Seeds the queue with every labelled address, so the new derivation rules (Foundation
+ * internal transfers produce no flow; funder choice is order-independent) apply to flows
+ * already stored.
+ */
+const intelligence: Migration = {
+  version: 4,
+  name: 'address_intelligence',
+  up: (db) => {
+    db.exec(`
+      CREATE TABLE label_candidates (
+        address    TEXT    NOT NULL,
+        kind       TEXT    NOT NULL,
+        name       TEXT    NOT NULL DEFAULT '',
+        method     TEXT    NOT NULL,
+        confidence REAL    NOT NULL,
+        evidence   TEXT,
+        status     TEXT    NOT NULL DEFAULT 'pending',
+        created_at INTEGER NOT NULL DEFAULT (${now}),
+        decided_at INTEGER,
+        PRIMARY KEY (address, kind, name),
+        CHECK (status IN ('pending', 'accepted', 'rejected')),
+        CHECK (confidence >= 0 AND confidence <= 1)
+      ) WITHOUT ROWID;
+      CREATE INDEX idx_candidates_status ON label_candidates(status, confidence DESC);
+
+      CREATE TABLE address_clusters (
+        address    TEXT    PRIMARY KEY,
+        cluster_id TEXT    NOT NULL,
+        size       INTEGER NOT NULL
+      ) WITHOUT ROWID;
+      CREATE INDEX idx_clusters_id ON address_clusters(cluster_id);
+
+      CREATE TABLE exchange_hops (
+        buy_txid      TEXT    NOT NULL,
+        buy_vout      INTEGER NOT NULL,
+        sell_txid     TEXT    NOT NULL,
+        sell_vout     INTEGER NOT NULL,
+        address       TEXT    NOT NULL,
+        from_exchange TEXT    NOT NULL,
+        to_exchange   TEXT    NOT NULL,
+        buy_sat       INTEGER NOT NULL,
+        sell_sat      INTEGER NOT NULL,
+        buy_height    INTEGER NOT NULL,
+        sell_height   INTEGER NOT NULL,
+        buy_time      INTEGER NOT NULL,
+        sell_time     INTEGER NOT NULL,
+        PRIMARY KEY (buy_txid, buy_vout)
+      ) WITHOUT ROWID;
+      CREATE UNIQUE INDEX idx_hops_sell ON exchange_hops(sell_txid, sell_vout);
+      CREATE INDEX idx_hops_buy_time ON exchange_hops(buy_time);
+      CREATE INDEX idx_hops_sell_time ON exchange_hops(sell_time);
+      CREATE INDEX idx_hops_height ON exchange_hops(sell_height);
+
+      CREATE TABLE relabel_queue (
+        address   TEXT    PRIMARY KEY,
+        reason    TEXT,
+        queued_at INTEGER NOT NULL DEFAULT (${now})
+      ) WITHOUT ROWID;
+    `);
+
+    // A hop whose leg is removed (reorg rollback, relabel re-derivation) no longer exists.
+    // Retention keeps them, like the rollups: they are history, not raw data.
+    db.exec(`
+      CREATE TRIGGER flows_hop_cleanup AFTER DELETE ON flows
+      WHEN NOT EXISTS (SELECT 1 FROM sync_state WHERE key = '${ROLLUP_RETAIN_KEY}')
+      BEGIN
+        DELETE FROM exchange_hops WHERE buy_txid = OLD.txid AND buy_vout = OLD.vout;
+        DELETE FROM exchange_hops WHERE sell_txid = OLD.txid AND sell_vout = OLD.vout;
+      END;
+    `);
+
+    // No extra index for re-derivation: a wallet's transfers are found through
+    // tx_deltas(address, height), and one transaction's flows through the (txid, vout) key.
+
+    db.exec(`
+      INSERT OR IGNORE INTO relabel_queue (address, reason)
+      SELECT DISTINCT address, 'migration 4' FROM address_labels;
+    `);
+  }
+};
+
 /** Every migration, in ascending version order. Append only — never edit a shipped one. */
-export const MIGRATIONS: readonly Migration[] = [initialSchema, rollups];
+export const MIGRATIONS: readonly Migration[] = [
+  initialSchema,
+  rollups,
+  walletRollups,
+  intelligence
+];
 
 /** The version a fresh database ends up at. */
 export const LATEST_SCHEMA_VERSION = MIGRATIONS.reduce(
