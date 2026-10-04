@@ -33,10 +33,24 @@ Real-time exchange flow analysis dashboard for the Flux blockchain network. Trac
 
 ### Classification
 
-- **Exchanges**: Configurable list of exchange addresses (Binance, KuCoin, etc.)
-- **Foundation**: Flux Foundation official addresses
-- **Node Operators**: Dynamic list fetched from Flux API (includes node count and tiers)
-- **Unknown**: All other addresses
+Every label lives in `address_labels` with a **source**, a **confidence** and its
+**evidence** (#18, #19). Only labels at _likely_ or above change how a flow is counted;
+weaker ones are shown on the wallet page and nowhere else.
+
+| Kind          | How we know                                                                                            | Confidence         |
+| ------------- | ------------------------------------------------------------------------------------------------------ | ------------------ |
+| Exchange      | `config/labels.json`, or a clustering candidate a human accepted                                       | confirmed / likely |
+| Foundation    | `config/labels.json`, with named sub-wallets                                                           | confirmed          |
+| Node operator | payment address on the current deterministic node list                                                 | confirmed          |
+| Node operator | received coinbase rewards in stored blocks, no longer on the list (valid 30 days past its last reward) | likely             |
+| Node operator | wallet fed ≥ 80% by node payout addresses (reward forwarding)                                          | likely / possible  |
+| Unknown       | everything else                                                                                        | —                  |
+
+When a label changes, the address's flows are re-derived from the stored transactions and
+the totals follow (the rollups are maintained by triggers, so they stay exact). Transfers
+between Foundation wallets produce no flow. Exchange **hops** — a withdrawal re-deposited by
+the same wallet shortly after — are reported separately, with headline totals also given
+without them.
 
 ## 🚀 Quick Start
 
@@ -361,6 +375,9 @@ All endpoints are same-origin. There is no CORS layer unless `ORIGIN` is set exp
 | GET    | `/api/wallets/:address`        | wallet profile: totals, exchanges, history    |
 | GET    | `/api/wallets/:address/events` | a wallet's flows, keyset-paginated            |
 | GET    | `/api/search?q=`               | address prefix, label name or txid            |
+| GET    | `/api/flow/:period/hops`       | exchange hops (withdraw → re-deposit)         |
+| GET    | `/api/foundation?period=`      | Foundation wallets, flows, balance history    |
+| GET    | `/api/intel/status`            | labels by source, node list, clustering       |
 | GET    | `/api/stream`                  | Server-Sent Events: `sync` and `flow` (live)  |
 | GET    | `/api/metrics`                 | Prometheus text format                        |
 | POST   | `/api/admin/sync`              | admin: start a cycle now (answers 202)        |
@@ -429,12 +446,29 @@ Prometheus text format, cheap enough to scrape every 15 s. Highlights:
 }
 ```
 
-Mounted at `/app/config/labels.json` in the container, so this file can be edited on a live
-server without rebuilding. It is loaded into the `address_labels` table on startup, and
-`labels.reload()` re-reads it without a restart.
+Foundation sub-wallets go under `foundation.wallets` as `{ "name": "Treasury",
+"addresses": [...] }`; the name becomes the wallet's `subLabel`.
 
-Coverage is thin — only a handful of exchanges are known. Addresses discovered by
-clustering are proposed as candidates and need a human to add them here.
+Mounted at `/app/config/labels.json` in the container and **watched**: an edit is applied
+within a few seconds, without a restart, and the affected flows are re-derived. Removing an
+address from the file removes its label.
+
+### Growing exchange coverage (#20)
+
+Clustering (addresses spent together share an owner) and sweep detection (deposit
+addresses consolidated into a known hot wallet) propose **candidates**. They change no total
+until accepted:
+
+```bash
+curl -H "Authorization: Bearer $ADMIN_TOKEN" localhost:3000/api/admin/labels/candidates?status=pending
+curl -H "Authorization: Bearer $ADMIN_TOKEN" -H 'content-type: application/json' \
+  -d '{"address":"t1...","kind":"exchange","name":"Kucoin","decision":"accepted"}' \
+  localhost:3000/api/admin/labels/candidates/decide
+```
+
+A manual label (`POST /api/admin/labels`) beats every other source; `"kind": "unknown"`
+removes a wrong label. `npm run precision -- <copy of the db>` runs the whole pass on a
+database file and prints how often each heuristic agrees with independent ground truth.
 
 ### Alerts (`config/alerts.json`)
 

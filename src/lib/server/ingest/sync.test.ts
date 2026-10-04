@@ -11,11 +11,25 @@ const SATS = 100_000_000;
 const NOW = 1_756_000_000;
 const EXCHANGE = 't1coinex1';
 
+const STATS = {
+  exchanges: 1,
+  foundation: 0,
+  nodeOperators: 0,
+  total: 1,
+  bySource: { config: 1 },
+  source: 'test',
+  loadedAt: 0
+};
+
 const LABELS: LabelLookup = {
   kindOf: (address) => (address === EXCHANGE ? 'exchange' : 'unknown'),
   nameOf: (address) => (address === EXCHANGE ? 'Coinex' : null),
-  reload: () => ({ exchanges: 1, foundation: 0, total: 1, source: 'test', loadedAt: 0 }),
-  stats: () => ({ exchanges: 1, foundation: 0, total: 1, source: 'test', loadedAt: 0 }),
+  labelOf: () => null,
+  allLabels: () => [],
+  addressesOf: () => [],
+  refresh: () => [],
+  reload: () => STATS,
+  stats: () => STATS,
   entries: () => new Map()
 };
 

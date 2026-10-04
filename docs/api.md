@@ -241,10 +241,112 @@ At most `limit` results (1–25, default 10).
 
 ---
 
+## Intelligence (#18–#20, #31)
+
+Labels carry a confidence: `confirmed` (≥ 0.95), `likely` (≥ 0.7), `possible` (≥ 0.45),
+`candidate`. Only `likely` and above change how flows are counted.
+
+### Additions to existing responses
+
+- `GET /api/flow/:period` adds `exchangeHops: {count, buyingExcluded, sellingExcluded}` and
+  `adjusted: {buying, selling, netFlow}` — the headline totals without exchange hops.
+- `GET /api/flow/:period/{buyers,sellers}` rows add `name`, `confidence`, `level`,
+  `labelSource`. `?minConfidence=` (`confirmed` | `likely` | `possible` | a number 0–1) keeps
+  only wallets labelled at least that surely; anything else is `400`.
+- `GET /api/wallets/:address` adds `label` (the one that classifies its flows, or `null`),
+  `labels[]` (every label on record with `source`, `confidence`, `level`, `applied`,
+  `validFrom`, `validTo`, `evidence`), `cluster: {clusterId, size, sample[]} | null` and
+  `candidates[]`.
+
+### `GET /api/flow/:period/hops`
+
+```json
+{
+  "period": "7D",
+  "summary": { "count": 9, "buyingExcluded": 237340.2, "sellingExcluded": 237340.2 },
+  "hops": [
+    {
+      "address": "t1…",
+      "fromExchange": "Coinex",
+      "toExchange": "Kucoin",
+      "withdrawn": 7866,
+      "amount": 7860,
+      "blocksApart": 13,
+      "buyTxid": "…",
+      "sellTxid": "…",
+      "sellHeight": 2988264,
+      "sellTime": 1790000000
+    }
+  ]
+}
+```
+
+A withdrawal re-deposited by the same wallet within `INTEL_HOP_MAX_BLOCKS` (default 240)
+blocks, for 97–100% of the amount.
+
+### `GET /api/foundation?period=30D`
+
+```json
+{
+  "period": "30D",
+  "wallets": [
+    {
+      "address": "t1…",
+      "name": "Flux Foundation",
+      "subLabel": "Treasury",
+      "balance": 1200000,
+      "inflow": 0,
+      "outflow": 50000,
+      "net": -50000
+    }
+  ],
+  "totals": {
+    "balance": 1200000,
+    "inflow": 0,
+    "outflow": 50000,
+    "net": -50000,
+    "internalTransfers": 3,
+    "internalVolume": 2077207
+  },
+  "series": [{ "time": 1790035200, "net": -50000, "balance": 1200000 }],
+  "recent": [
+    {
+      "txid": "…",
+      "height": 3001000,
+      "time": 1790040000,
+      "amount": -50000,
+      "counterparty": "t1…",
+      "counterpartyName": "Kucoin",
+      "counterpartyKind": "exchange",
+      "wallets": ["t1…"]
+    }
+  ],
+  "balancesAsOf": 1790040000000
+}
+```
+
+Movements are netted across all Foundation wallets per transaction, so internal moves are
+counted as `internalTransfers`, not as outflow plus inflow. `balance` needs `FLUX_NODE_URL`
+(the node's address index); without it balances and the balance series are `null`.
+
+### `GET /api/intel/status`
+
+Label counts by kind and source, the node list (size, source, time), node-operator counts,
+the last clustering pass, hop count, the relabel queue length and the last job error.
+
 ## Admin
 
-`POST /api/admin/sync` and `POST /api/admin/retention` need `Authorization: Bearer <ADMIN_TOKEN>`.
-They are refused when no token is configured.
+All need `Authorization: Bearer <ADMIN_TOKEN>` and are refused when no token is configured.
+
+| Method | Path                                  | Body / query                                                                             |
+| ------ | ------------------------------------- | ---------------------------------------------------------------------------------------- |
+| POST   | `/api/admin/sync`                     | —                                                                                        |
+| POST   | `/api/admin/retention`                | —                                                                                        |
+| POST   | `/api/admin/intel/run`                | — runs node refresh, clustering, hops and the relabel backlog now                        |
+| GET    | `/api/admin/labels/candidates`        | `?status=pending\|accepted\|rejected&limit=`                                             |
+| POST   | `/api/admin/labels/candidates/decide` | `{address, kind, name, decision: "accepted"\|"rejected"}`                                |
+| POST   | `/api/admin/labels`                   | `{address, kind, name?, subLabel?, note?}` — a manual label; `kind: "unknown"` overrides |
+| DELETE | `/api/admin/labels/:address`          | removes the address's manual labels                                                      |
 
 ---
 
