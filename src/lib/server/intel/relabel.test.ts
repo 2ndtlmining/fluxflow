@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createTestDb, silentLogger, SATS, type Db } from '../testkit.js';
 import { replaceSourceLabels, type LabelLookup } from '../labels.js';
+import { MIGRATIONS } from '../db/migrations.js';
 import { Relabeler } from './relabel.js';
 import { labelBook, rollupMismatches, writeChain, type SimpleTx } from './testchain.js';
 
@@ -144,6 +145,50 @@ describe('re-derivation after a label change (#18)', () => {
       db.prepare(`SELECT COUNT(*) AS n FROM flows WHERE exchange = 'KuCoin (renamed)'`).get()
     ).toEqual({ n: 32 }); // the 30 withdrawals, w1, and the sweep into the hot wallet
     expect(rollupMismatches(db)).toEqual([]);
+  });
+});
+
+describe('upgrading to split funders (migration 5)', () => {
+  it('re-derives a sweep stored the old way into one row per funder, with zero drift', () => {
+    const db = createTestDb();
+    const labels = labelBook(db, LABELS);
+    writeChain(db, labels, [
+      {
+        height: 1,
+        txid: 'sweep',
+        inputs: [
+          ['t1depA', 40],
+          ['t1depB', 60]
+        ],
+        outputs: [[KUCOIN, 99.9]]
+      }
+    ]);
+
+    // As a pre-upgrade database stored it: the whole sweep credited to the smaller funder.
+    db.prepare(`DELETE FROM flows WHERE txid = 'sweep'`).run();
+    db.prepare(
+      `INSERT INTO flows (txid, vout, height, time, from_address, from_kind, to_address, to_kind,
+                          exchange, flow_type, sat)
+       SELECT 'sweep', 0, height, time, 't1depA', 'unknown', ?, 'exchange', 'Kucoin', 'selling', ?
+       FROM blocks WHERE height = 1`
+    ).run(KUCOIN, Math.round(99.9 * SATS));
+    db.prepare(`DELETE FROM relabel_queue`).run();
+
+    MIGRATIONS.find((migration) => migration.version === 5)!.up(db);
+    expect(db.prepare(`SELECT address FROM relabel_queue`).all()).toEqual([{ address: 't1depA' }]);
+
+    new Relabeler(db, labels, silentLogger()).run({ budgetMs: 1_000 });
+
+    expect(
+      db
+        .prepare(`SELECT from_address AS seller, sat FROM flows WHERE txid = 'sweep' ORDER BY 1`)
+        .all()
+    ).toEqual([
+      { seller: 't1depA', sat: Math.round(99.9 * SATS * 0.4) },
+      { seller: 't1depB', sat: Math.round(99.9 * SATS * 0.6) }
+    ]);
+    expect(rollupMismatches(db)).toEqual([]);
+    db.close();
   });
 });
 

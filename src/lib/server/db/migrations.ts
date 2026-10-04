@@ -572,12 +572,40 @@ const intelligence: Migration = {
   }
 };
 
+/**
+ * Migration 5 — split multi-funder transactions between their funders.
+ *
+ * Flows used to credit each output to a single funder, so a sweep of ten deposit addresses
+ * became one sale by whichever address put in least. Derivation now splits every output
+ * across all funders by their share of the input. Stored transactions with two or more
+ * funders are re-derived through the relabel queue: one funder per transaction is enough,
+ * since re-derivation rewrites every transfer that address took part in, and the rollup
+ * triggers move the totals in the same write.
+ *
+ * Only the raw window can be corrected: rollups past retention keep the old attribution.
+ */
+const splitFunders: Migration = {
+  version: 5,
+  name: 'rederive_split_funders',
+  up: (db) => {
+    db.exec(`
+      INSERT OR IGNORE INTO relabel_queue (address, reason)
+      SELECT MIN(address), 'migration 5: split funders'
+      FROM tx_deltas
+      WHERE sat_in > sat_out
+      GROUP BY txid
+      HAVING COUNT(*) >= 2;
+    `);
+  }
+};
+
 /** Every migration, in ascending version order. Append only — never edit a shipped one. */
 export const MIGRATIONS: readonly Migration[] = [
   initialSchema,
   rollups,
   walletRollups,
-  intelligence
+  intelligence,
+  splitFunders
 ];
 
 /** The version a fresh database ends up at. */
