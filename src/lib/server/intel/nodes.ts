@@ -11,10 +11,10 @@
  *  - **`node_rewards` — likely.** The address received coinbase rewards in blocks we stored
  *    but is not on the list now: it ran nodes and stopped. Valid until 30 days after its last
  *    reward, so a sale long after it shut its nodes down is not "node operator selling".
- *  - **`forwarding` — likely or possible.** One hop: an address whose inbound value comes
- *    mostly from node payout addresses — the wallet operators sweep rewards into before
- *    selling. Conservative thresholds; `possible` is shown with evidence but never changes a
- *    flow.
+ *  - **`forwarding` — likely or possible.** Up to two hops from node payout addresses: a
+ *    wallet whose inbound value is nearly all node money (operators sweep rewards into one
+ *    before selling), or that sends nearly all its value to node addresses (buying FLUX to
+ *    stand nodes up). `possible` is shown with evidence but never changes a flow.
  *
  * Excluded: an address paid in at least half of all blocks. That is a protocol payout (a
  * development fund paid every block), not a node — the live data has exactly one, paid in
@@ -23,7 +23,7 @@
 
 import type { Db } from '../db/database.js';
 import { httpJson, type HttpRequestOptions } from '../http.js';
-import { CONFIDENCE, type LabelInput } from '../labels.js';
+import { APPLY_MIN_CONFIDENCE, CONFIDENCE, type LabelInput } from '../labels.js';
 import type { AddressKind } from '../ingest/datasource/types.js';
 
 /** After its last reward, an address stays a node operator for this long. */
@@ -32,11 +32,27 @@ export const NODE_GRACE_SECONDS = 30 * 86_400;
 /** Paid in at least this share of all stored blocks: a protocol payout, not a node. */
 export const PROTOCOL_PAYOUT_SHARE = 0.5;
 
-/** Forwarding thresholds. */
+/**
+ * Forwarding thresholds.
+ *
+ * "Likely" needs nearly all of a wallet's inbound to be node money and none of it bought on
+ * an exchange, but no longer a transfer count: operators sweep weekly or monthly, so three
+ * transfers inside the raw window left 67 of 74 forwarding wallets at "possible" — never
+ * applied — and node operators showed no selling at all.
+ */
 export const FORWARDING = {
-  likelyShare: 0.8,
-  likelyTransfers: 3,
-  possibleShare: 0.5
+  likelyShare: 0.9,
+  /** Minimum node money before a wallet is "likely" (dust says nothing). */
+  likelyMinFlux: 100,
+  possibleShare: 0.5,
+  /** Rounds: node → W1 is round 1, W1 → W2 round 2. */
+  rounds: 2,
+  /** Confidence per round; both at or above "likely" so they apply. */
+  confidence: [CONFIDENCE.likely - 0.05, CONFIDENCE.likely - 0.08],
+  /** Node funding: share of a wallet's outflow that goes to node operators. */
+  fundingShare: 0.9,
+  /** At least one Cumulus collateral. */
+  fundingMinFlux: 1_000
 } as const;
 
 export interface NodeListEntry {
@@ -261,10 +277,19 @@ export function computeNodeOperatorLabels(
     });
   }
 
-  const operators = new Set([
-    ...(nodeList ?? []).map((row) => row.address),
-    ...nodeRewards.map((row) => row.address)
-  ]);
+  // Without a fresh list, the stored one still stands (its labels are kept, see above): a
+  // failed fetch must not shrink the operator set and wipe every forwarding label with it.
+  const listed = nodeList
+    ? nodeList.map((row) => row.address)
+    : db
+        .prepare<[], { address: string }>(
+          `SELECT address FROM address_labels WHERE source = 'node_list'`
+        )
+        .all()
+        .map((row) => row.address)
+        .filter((address) => !protocol.has(address));
+
+  const operators = new Set([...listed, ...nodeRewards.map((row) => row.address)]);
 
   return {
     nodeList,
@@ -275,11 +300,17 @@ export function computeNodeOperatorLabels(
 }
 
 /**
- * One hop from node payout addresses: wallets that receive mostly operator money.
+ * Wallets that belong to node operators without being on the list: the hops between a node
+ * and an exchange, in either direction.
  *
- * Reads `flows`, which hold every transfer (as buying, selling or p2p) with its net amount,
- * so no external history is needed. An address on the node list or with rewards of its own is
- * already a node operator and is skipped.
+ *  - **Reward forwarding** (node → W → exchange). W receives nearly all its value from node
+ *    operators and never bought on an exchange. Two rounds, so node → W1 → W2 is found
+ *    too: round 2 counts round 1's likely wallets as operators.
+ *  - **Node funding** (exchange → W → node). W sends nearly all its value to node operators,
+ *    at least a collateral's worth: a wallet buying FLUX to stand nodes up.
+ *
+ * Reads `flows`, which hold every transfer with each funder's share (`derive.ts`), so no
+ * external history is needed. Addresses already labelled as something else are skipped.
  */
 function forwardingLabels(
   db: Db,
@@ -288,13 +319,47 @@ function forwardingLabels(
 ): LabelInput[] {
   if (operators.size === 0) return [];
 
-  const rows = db.transaction(() => {
+  const labels = new Map<string, LabelInput>();
+  const known = new Set(operators);
+
+  for (let round = 0; round < FORWARDING.rounds; round++) {
+    const found = forwardingRound(db, known, exclude, round);
+    for (const label of found) {
+      const previous = labels.get(label.address);
+      if (!previous || previous.confidence < label.confidence) labels.set(label.address, label);
+    }
+
+    const likely = found.filter((label) => label.confidence >= APPLY_MIN_CONFIDENCE);
+    if (likely.length === 0) break;
+    for (const label of likely) known.add(label.address);
+  }
+
+  for (const label of fundingLabels(db, operators, exclude)) {
+    const previous = labels.get(label.address);
+    if (!previous || previous.confidence < label.confidence) labels.set(label.address, label);
+  }
+
+  return [...labels.values()];
+}
+
+function withOperators<T>(db: Db, operators: ReadonlySet<string>, read: () => T): T {
+  return db.transaction(() => {
     db.prepare(`CREATE TEMP TABLE IF NOT EXISTS operator_set (address TEXT PRIMARY KEY)`).run();
     db.prepare(`DELETE FROM operator_set`).run();
     const insert = db.prepare(`INSERT OR IGNORE INTO operator_set (address) VALUES (?)`);
     for (const address of operators) insert.run(address);
+    return read();
+  })();
+}
 
-    return db
+function forwardingRound(
+  db: Db,
+  operators: ReadonlySet<string>,
+  exclude: ReadonlySet<string>,
+  round: number
+): LabelInput[] {
+  const rows = withOperators(db, operators, () =>
+    db
       .prepare<
         [],
         {
@@ -303,6 +368,7 @@ function forwardingLabels(
           transfers: number;
           senders: number;
           inbound: number;
+          fromExchanges: number;
         }
       >(
         `WITH fed AS (
@@ -313,11 +379,13 @@ function forwardingLabels(
            GROUP BY f.to_address
          )
          SELECT fed.address, fed.fromNodes, fed.transfers, fed.senders,
-                (SELECT SUM(sat) FROM flows WHERE to_address = fed.address) AS inbound
+                (SELECT SUM(sat) FROM flows WHERE to_address = fed.address) AS inbound,
+                (SELECT COUNT(*) FROM flows
+                 WHERE to_address = fed.address AND from_kind = 'exchange') AS fromExchanges
          FROM fed`
       )
-      .all();
-  })();
+      .all()
+  );
 
   const labels: LabelInput[] = [];
 
@@ -325,22 +393,70 @@ function forwardingLabels(
     if (exclude.has(row.address) || row.inbound <= 0) continue;
 
     const share = row.fromNodes / row.inbound;
-    const likely = share >= FORWARDING.likelyShare && row.transfers >= FORWARDING.likelyTransfers;
+    const likely =
+      share >= FORWARDING.likelyShare &&
+      row.fromNodes >= FORWARDING.likelyMinFlux * 1e8 &&
+      row.fromExchanges === 0;
     if (!likely && share < FORWARDING.possibleShare) continue;
 
     labels.push({
       address: row.address,
       kind: 'node_operator',
-      confidence: likely ? CONFIDENCE.likely - 0.05 : CONFIDENCE.possible,
+      confidence: likely ? FORWARDING.confidence[round]! : CONFIDENCE.possible,
       evidence: {
         method: 'reward_forwarding',
+        hops: round + 1,
         shareFromNodes: Number(share.toFixed(3)),
         transfersFromNodes: row.transfers,
         distinctNodeSenders: row.senders,
-        fluxFromNodes: row.fromNodes / 1e8
+        fluxFromNodes: row.fromNodes / 1e8,
+        boughtOnExchange: row.fromExchanges > 0
       }
     });
   }
 
   return labels;
+}
+
+function fundingLabels(
+  db: Db,
+  operators: ReadonlySet<string>,
+  exclude: ReadonlySet<string>
+): LabelInput[] {
+  const rows = withOperators(db, operators, () =>
+    db
+      .prepare<[number], { address: string; toNodes: number; outbound: number; nodes: number }>(
+        `WITH funds AS (
+           SELECT f.from_address AS address, SUM(f.sat) AS toNodes,
+                  COUNT(DISTINCT f.to_address) AS nodes
+           FROM flows f JOIN operator_set o ON o.address = f.to_address
+           WHERE f.from_address NOT IN (SELECT address FROM operator_set)
+           GROUP BY f.from_address
+           HAVING toNodes >= ?
+         )
+         SELECT funds.address, funds.toNodes, funds.nodes,
+                (SELECT SUM(sat) FROM flows WHERE from_address = funds.address) AS outbound
+         FROM funds`
+      )
+      .all(FORWARDING.fundingMinFlux * 1e8)
+  );
+
+  return rows
+    .filter(
+      (row) =>
+        !exclude.has(row.address) &&
+        row.outbound > 0 &&
+        row.toNodes / row.outbound >= FORWARDING.fundingShare
+    )
+    .map((row) => ({
+      address: row.address,
+      kind: 'node_operator' as AddressKind,
+      confidence: FORWARDING.confidence[0],
+      evidence: {
+        method: 'node_funding',
+        shareToNodes: Number((row.toNodes / row.outbound).toFixed(3)),
+        fluxToNodes: row.toNodes / 1e8,
+        nodeAddresses: row.nodes
+      }
+    }));
 }

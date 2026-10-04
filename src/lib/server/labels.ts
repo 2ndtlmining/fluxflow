@@ -66,6 +66,10 @@ export const SOURCE_PRIORITY = [
   'foundation_intermediary',
   'node_list',
   'node_rewards',
+  // An exchange deposit address found by behaviour (intel/forwarders.ts). Above node
+  // forwarding: "sends everything to one exchange" is stronger evidence than "was paid by
+  // node operators", which a node operator's own deposit address also is.
+  'forwarder',
   'forwarding'
 ] as const;
 
