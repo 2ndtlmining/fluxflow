@@ -29,12 +29,24 @@ import { createRateLimiter } from './ratelimit.js';
 import { renderMetrics, type EventLoopMonitor } from './metrics.js';
 import { PERIODS, PERIOD_LABELS, isPeriodId, type PeriodId } from '../../shared/constants.js';
 import {
+  flowSeries,
   listFlowEvents,
+  openRange,
+  previousRange,
   resolvePeriod,
   summariseFlow,
-  summariseUnknowns,
-  topCounterparties
+  summariseFlowRange,
+  summariseUnknowns
 } from './queries.js';
+import {
+  ADDRESS_PATTERN,
+  LEADERBOARD_KINDS,
+  leaderboard,
+  search,
+  walletEvents,
+  walletProfile,
+  type LeaderboardKind
+} from './wallets.js';
 import { ResponseCache } from './cache.js';
 
 export interface ApiDependencies {
@@ -69,23 +81,23 @@ const PERIOD_SECONDS: Record<PeriodId, number> = {
 };
 
 /**
- * How long a leaderboard may be reused across sync cycles.
- *
- * Top buyers and sellers group raw flows by address — ~100 ms for 30 days and several
- * hundred for 6 months on a full database, enough to block the event loop on every cycle.
- * Over a long period the ranking barely moves in a few minutes, so it is recomputed at most
- * every 10 minutes; short periods stay live. Per-wallet rollups (#28) will remove the need.
- */
-function leaderboardStaleness(period: PeriodId): { maxStaleMs: number } {
-  return { maxStaleMs: PERIOD_SECONDS[period] > 7 * 86_400 ? 10 * 60_000 : 0 };
-}
-
-/**
  * Validate a `:period` route parameter.
  *
  * The set is closed, so anything else is a 400 rather than a chance to build a query from
  * user input (#21).
  */
+/**
+ * How long a long-period leaderboard may be reused across sync cycles.
+ *
+ * Even on the per-wallet rollups, an exact top-N must group every wallet active in the
+ * window: on a synthetic 6-month database with ~19,000 distinct sellers that is ~110 ms
+ * (30 days: ~50 ms). Over a long period the ranking barely moves in a few minutes, so it is
+ * recomputed at most every 10 minutes instead of on every sync; 7 days and shorter stay live.
+ */
+function leaderboardStaleness(period: PeriodId): { maxStaleMs: number } {
+  return { maxStaleMs: PERIOD_SECONDS[period] > 7 * 86_400 ? 10 * 60_000 : 0 };
+}
+
 function parsePeriod(req: Request, res: Response): PeriodId | null {
   const raw = req.params.period;
 
@@ -348,6 +360,11 @@ export function createApiRouter(deps: ApiDependencies): Router {
     const buying = summariseFlow(db, window, 'buying');
     const selling = summariseFlow(db, window, 'selling');
 
+    // The equally long window just before this one, for "vs previous period" deltas (#28).
+    const before = previousRange(openRange(window));
+    const previousBuying = summariseFlowRange(db, before, 'buying');
+    const previousSelling = summariseFlowRange(db, before, 'selling');
+
     const complete = database.blocks >= requiredBlocks;
 
     return {
@@ -369,7 +386,16 @@ export function createApiRouter(deps: ApiDependencies): Router {
       buying: toDirection('buying', buying),
       selling: toDirection('selling', selling),
       p2p: { total: 0, count: 0 },
-      netFlow: buying.totalSat - selling.totalSat
+      netFlow: buying.totalSat - selling.totalSat,
+      previousPeriod: {
+        from: before.fromTime,
+        to: before.toTime,
+        buying: { total: previousBuying.totalSat, count: previousBuying.count },
+        selling: { total: previousSelling.totalSat, count: previousSelling.count },
+        netFlow: previousBuying.totalSat - previousSelling.totalSat,
+        byKind: { buying: previousBuying.byKind, selling: previousSelling.byKind }
+      },
+      byType: { buying: buying.byKind, selling: selling.byKind }
     };
   }
 
@@ -410,43 +436,162 @@ export function createApiRouter(deps: ApiDependencies): Router {
     });
   });
 
-  router.get('/flow/:period/buyers', (req: Request, res: Response) => {
+  /**
+   * Leaderboards: who withdrew from (buyers) or deposited to (sellers) exchanges (#28).
+   *
+   * Served from the per-wallet rollups; see {@link leaderboardStaleness} for long periods.
+   * `?kind=` narrows to one counterparty type.
+   */
+  const leaderboardRoute =
+    (flowType: 'buying' | 'selling', key: 'buyers' | 'sellers') =>
+    (req: Request, res: Response) => {
+      const period = parsePeriod(req, res);
+      if (!period) return;
+      const query = parseQuery(leaderboardQuery, req, res);
+      if (!query) return;
+
+      const kind = req.query.kind;
+      if (kind !== undefined && !LEADERBOARD_KINDS.includes(kind as LeaderboardKind)) {
+        res.status(400).json({
+          error: 'Invalid kind',
+          message: `kind must be one of: ${LEADERBOARD_KINDS.join(', ')}`
+        });
+        return;
+      }
+
+      cache.send(
+        req,
+        res,
+        () => {
+          const window = periodWindow(period);
+          const board = leaderboard(db, openRange(window), flowType, {
+            limit: query.limit,
+            ...(kind ? { kind: kind as LeaderboardKind } : {})
+          });
+
+          return {
+            period,
+            flowType,
+            total: board.total,
+            [key]: board.leaders.map((leader) => ({
+              ...leader,
+              name: labels.nameOf(leader.address)
+            }))
+          };
+        },
+        leaderboardStaleness(period)
+      );
+    };
+
+  router.get('/flow/:period/buyers', leaderboardRoute('buying', 'buyers'));
+  router.get('/flow/:period/sellers', leaderboardRoute('selling', 'sellers'));
+
+  /**
+   * Net flow over time (#29): hourly buckets up to 7 days, daily beyond, from the rollups.
+   * `?exchange=` and `?kind=` filter both directions.
+   */
+  router.get('/flow/:period/series', (req: Request, res: Response) => {
     const period = parsePeriod(req, res);
     if (!period) return;
-    const query = parseQuery(leaderboardQuery, req, res);
-    if (!query) return;
 
-    const database = cache.databaseSummary();
-    const window = resolvePeriod(db, Math.floor(database.maxTime - PERIOD_SECONDS[period]));
+    const exchange = optionalText(req.query.exchange, 64);
+    const kind = req.query.kind;
+    if (exchange === null || (kind !== undefined && !SERIES_KINDS.includes(String(kind)))) {
+      res.status(400).json({ error: 'Invalid filter', message: 'Check exchange and kind' });
+      return;
+    }
 
-    cache.send(
-      req,
-      res,
-      () => ({
-        buyers: topCounterparties(db, window, 'buying', query.limit)
-      }),
-      leaderboardStaleness(period)
-    );
+    cache.send(req, res, () => {
+      const bucketSeconds = PERIOD_SECONDS[period] <= 7 * 86_400 ? 3_600 : 86_400;
+      return {
+        period,
+        bucketSeconds,
+        points: flowSeries(db, periodWindow(period), {
+          bucketSeconds,
+          ...(exchange ? { exchange } : {}),
+          ...(kind ? { kind: String(kind) } : {})
+        })
+      };
+    });
   });
 
-  router.get('/flow/:period/sellers', (req: Request, res: Response) => {
-    const period = parsePeriod(req, res);
-    if (!period) return;
-    const query = parseQuery(leaderboardQuery, req, res);
-    if (!query) return;
+  // ── Wallets (#30) ─────────────────────────────────────────────────────────
+  const searchRoute = (req: Request, res: Response) => {
+    const q = optionalText(req.query.q, 64);
+    if (!q || q.trim().length < 2) {
+      res.status(400).json({ error: 'Invalid query', message: 'q must be 2-64 characters' });
+      return;
+    }
 
-    const database = cache.databaseSummary();
-    const window = resolvePeriod(db, Math.floor(database.maxTime - PERIOD_SECONDS[period]));
+    cache.send(req, res, () => ({
+      query: q,
+      results: search(db, q, Number(req.query.limit) || 10).map((result) =>
+        result.type === 'wallet'
+          ? {
+              ...result,
+              name: result.name ?? labels.nameOf(result.address),
+              kind: labels.kindOf(result.address)
+            }
+          : result
+      )
+    }));
+  };
 
-    cache.send(
-      req,
-      res,
-      () => ({
-        sellers: topCounterparties(db, window, 'selling', query.limit)
-      }),
-      leaderboardStaleness(period)
-    );
+  // Registered before `/wallets/:address`, which would otherwise capture "search".
+  router.get('/wallets/search', searchRoute);
+  router.get('/search', searchRoute);
+
+  router.get('/wallets/:address', (req: Request, res: Response) => {
+    const address = parseAddress(req, res);
+    if (!address) return;
+
+    const profile = walletProfile(db, address);
+    if (!profile) {
+      res.status(404).json({ error: 'Not found', message: 'No stored activity for this address' });
+      return;
+    }
+
+    cache.send(req, res, () => ({
+      ...profile,
+      kind: labels.kindOf(address),
+      name: labels.nameOf(address),
+      recent: walletEvents(db, address, { limit: 20 })
+    }));
   });
+
+  router.get('/wallets/:address/events', (req: Request, res: Response) => {
+    const address = parseAddress(req, res);
+    if (!address) return;
+
+    const cursor = parseCursor(req.query.cursor);
+    if (req.query.cursor && !cursor) {
+      res.status(400).json({ error: 'Invalid cursor', message: 'Expected height:txid:vout' });
+      return;
+    }
+
+    const type = req.query.type;
+    if (type !== undefined && !['buying', 'selling', 'p2p'].includes(String(type))) {
+      res
+        .status(400)
+        .json({ error: 'Invalid type', message: 'type must be buying, selling or p2p' });
+      return;
+    }
+
+    cache.send(req, res, () => ({
+      address,
+      ...walletEvents(db, address, {
+        limit: Number(req.query.limit) || 50,
+        ...(cursor ? { cursor } : {}),
+        ...(type ? { flowType: String(type) } : {})
+      })
+    }));
+  });
+
+  /** A period's window, ending at the newest stored block. */
+  function periodWindow(period: PeriodId) {
+    const database = cache.databaseSummary();
+    return resolvePeriod(db, Math.floor(database.maxTime - PERIOD_SECONDS[period]));
+  }
 
   // ── Compatibility shims ───────────────────────────────────────────────────
   // The v1 dashboard and its components still call these. The v2 intelligence worker
@@ -537,6 +682,32 @@ function toDirection(flowType: 'buying' | 'selling', summary: ReturnType<typeof 
     // Retained for the transaction drill-down, which reads `events` off this payload.
     events: [] as unknown[]
   };
+}
+
+/** Counterparty kinds the series can be filtered by (the exchange side is implied). */
+const SERIES_KINDS: readonly string[] = ['unknown', 'node_operator', 'foundation', 'exchange'];
+
+/**
+ * A bounded optional text query parameter: `undefined` when absent, `null` when present
+ * but not a short plain string (repeated parameters arrive as arrays).
+ */
+function optionalText(value: unknown, maxLength: number): string | undefined | null {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'string' || value.length === 0 || value.length > maxLength) return null;
+  return value;
+}
+
+/** Validate an `:address` route parameter (#21): anything else is a 400, never a query. */
+function parseAddress(req: Request, res: Response): string | null {
+  const address = req.params.address;
+  if (typeof address !== 'string' || !ADDRESS_PATTERN.test(address)) {
+    res.status(400).json({
+      error: 'Invalid address',
+      message: 'Expected a FLUX transparent address (t1… or t3…, 35 characters)'
+    });
+    return null;
+  }
+  return address;
 }
 
 // ── Query validation (#21) ───────────────────────────────────────────────────

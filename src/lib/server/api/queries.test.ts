@@ -6,8 +6,9 @@ import {
   summariseDatabase,
   summariseFlow,
   summariseUnknowns,
-  topCounterparties
+  openRange
 } from './queries.js';
+import { leaderboard } from './wallets.js';
 
 const NOW = 1_756_000_000;
 const HOUR = 60 * 60;
@@ -170,7 +171,7 @@ describe('summariseFlow', () => {
   });
 });
 
-describe('topCounterparties', () => {
+describe('leaderboard', () => {
   let db: Db;
   let window: ReturnType<typeof resolvePeriod>;
 
@@ -197,31 +198,31 @@ describe('topCounterparties', () => {
   afterEach(() => db.close());
 
   it('orders by total descending', () => {
-    const top = topCounterparties(db, window, 'buying', 5);
+    const top = leaderboard(db, openRange(window), 'buying', { limit: 5 }).leaders;
 
     expect(top[0]!.address).toBe('t1buyer4');
     expect(top[0]!.total).toBe(30);
   });
 
   it('aggregates several events per address', () => {
-    const top = topCounterparties(db, window, 'buying', 5);
+    const top = leaderboard(db, openRange(window), 'buying', { limit: 5 }).leaders;
 
     expect(top[0]!.count).toBe(6);
   });
 
   it('honours the limit', () => {
-    expect(topCounterparties(db, window, 'buying', 2)).toHaveLength(2);
+    expect(leaderboard(db, openRange(window), 'buying', { limit: 2 }).leaders).toHaveLength(2);
   });
 
   it('clamps a hostile limit instead of trusting it', () => {
-    expect(topCounterparties(db, window, 'buying', 10_000)).toHaveLength(5);
-    expect(topCounterparties(db, window, 'buying', -1)).toHaveLength(1);
+    expect(leaderboard(db, openRange(window), 'buying', { limit: 10_000 }).leaders).toHaveLength(5);
+    expect(leaderboard(db, openRange(window), 'buying', { limit: -1 }).leaders).toHaveLength(1);
   });
 
   it('lists the exchanges an address traded through', () => {
-    const top = topCounterparties(db, window, 'buying', 5);
+    const top = leaderboard(db, openRange(window), 'buying', { limit: 5 }).leaders;
 
-    expect(top[0]!.exchanges).toEqual(['Kucoin']);
+    expect(top[0]!.exchanges).toEqual([{ name: 'Kucoin', total: 30, count: 6 }]);
   });
 });
 
