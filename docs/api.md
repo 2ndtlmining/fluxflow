@@ -321,13 +321,72 @@ blocks, for 97–100% of the amount.
       "wallets": ["t1…"]
     }
   ],
-  "balancesAsOf": 1790040000000
+  "balancesAsOf": 1790040000000,
+  "destinations": {
+    "traced": 50000,
+    "maxHops": 3,
+    "hopBlocks": 20160,
+    "exchange": 12000,
+    "byExchange": { "Kucoin": 12000 },
+    "nodes": 30000,
+    "collateral": {
+      "payments": 2,
+      "amount": 25000,
+      "unconfirmedPayments": 1,
+      "unconfirmedAmount": 1000
+    },
+    "returned": 0,
+    "held": 8000,
+    "untraced": 0,
+    "recipients": [
+      {
+        "address": "t1…",
+        "name": null,
+        "kind": "unknown",
+        "subLabel": null,
+        "received": 20000,
+        "hops": 2,
+        "exchange": 12000,
+        "byExchange": { "Kucoin": 12000 },
+        "nodes": 0,
+        "collateral": {
+          "payments": 0,
+          "amount": 0,
+          "unconfirmedPayments": 0,
+          "unconfirmedAmount": 0
+        },
+        "returned": 0,
+        "held": 8000,
+        "untraced": 0
+      }
+    ]
+  }
 }
 ```
 
 Movements are netted across all Foundation wallets per transaction, so internal moves are
 counted as `internalTransfers`, not as outflow plus inflow. `balance` needs `FLUX_NODE_URL`
 (the node's address index); without it balances and the balance series are `null`.
+
+`destinations` follows every outflow forward, up to `maxHops` wallets, and says where the
+value ended: `exchange` (by name), `nodes` (a node operator address, or the collateral of a
+node on the current node list), `returned` (back to a Foundation wallet), `held` (not passed
+on within `hopBlocks`) and `untraced` (still moving after `maxHops` wallets). These five add
+up to `traced`. Value is capped (a wallet passes on at most what was traced into it,
+first-in first-out) and split by contribution in transactions with several funders.
+`collateral.unconfirmed*` counts payments of exactly 1,000, 12,500 or 40,000 FLUX that no
+running node uses; they are informational and their value is still followed. `recipients`
+lists the largest direct recipients; `hops: 2` means the value ended at the recipient's
+recipient.
+
+Wallets that receive Foundation money and pass it on as node collateral are labelled
+`foundation` (source `foundation_intermediary`, subLabel `Pays node collateral (detected)`),
+so payments to them are internal and their payments are the Foundation's outflows. Wallets
+that pass Foundation money on elsewhere are recorded at `possible` confidence only and never
+change a total.
+
+The report is cached per data version, label change and balance snapshot, and recomputed in
+the background once a minute; a stale copy is served for up to five minutes meanwhile.
 
 ### `GET /api/intel/status`
 

@@ -10,6 +10,9 @@
  *                 (`clusters.ts`); candidates change nothing until accepted
  *   hops          every minute, incrementally (`hops.ts`)
  *   balances      Foundation balances from your own node, when configured (`foundation.ts`)
+ *   foundation    with the node list: Foundation intermediaries (`intermediaries.ts`); the
+ *                 report and its traced destinations (`destinations.ts`) are cached per data
+ *                 version and recomputed in the background, off the request path
  *   relabel       whenever the queue is not empty: re-derives flows in ≤ 50 ms batches,
  *                 inside the sync loop's exclusive section (`relabel.ts`)
  *
@@ -23,11 +26,13 @@ import type { Config } from '../config.js';
 import type { Db } from '../db/database.js';
 import type { HttpRequestOptions } from '../http.js';
 import type { SyncService } from '../ingest/sync.js';
-import { replaceSourceLabels, type LabelLookup } from '../labels.js';
+import { APPLY_MIN_CONFIDENCE, replaceSourceLabels, type LabelLookup } from '../labels.js';
 import { serialiseError } from '../logger.js';
 import { clusterAddresses, storeCandidates, type ClusterResult } from './clusters.js';
 import { fetchBalances, type BalanceSnapshot } from './foundation.js';
 import { detectDepositForwarders } from './forwarders.js';
+import { detectIntermediaries, INTERMEDIARY_SOURCE } from './intermediaries.js';
+import { dataVersion } from '../api/queries.js';
 import { detectHops } from './hops.js';
 import { computeNodeOperatorLabels, fetchNodeList, type NodeList } from './nodes.js';
 import { Relabeler } from './relabel.js';
@@ -36,6 +41,9 @@ const HOP_INTERVAL_MS = 60_000;
 const RELABEL_INTERVAL_MS = 2_000;
 const BALANCE_INTERVAL_MS = 10 * 60_000;
 const LABEL_WATCH_MS = 5_000;
+/** A cached Foundation report is served while its replacement is computed, for this long. */
+const FOUNDATION_STALE_MS = 5 * 60_000;
+const FOUNDATION_REFRESH_MS = 60_000;
 
 export interface IntelStatus {
   readonly enabled: boolean;
@@ -46,6 +54,7 @@ export interface IntelStatus {
     rewards: number;
     forwarding: number;
     protocolPayouts: number;
+    foundationIntermediaries: number;
   } | null;
   readonly clustering: {
     at: number;
@@ -75,13 +84,22 @@ export class IntelService {
   private timers: NodeJS.Timeout[] = [];
   private watching = false;
   private running = new Set<string>();
-  private nodeList: { list: NodeList; source: string; at: number } | null = null;
+  private nodeList: {
+    list: NodeList;
+    source: string;
+    collateralTxids: Set<string>;
+    at: number;
+  } | null = null;
   private nodeCounts: IntelStatus['nodeOperators'] = null;
   private clustering: IntelStatus['clustering'] = null;
   private hops: IntelStatus['hops'] = null;
   private hopHeight = 0;
   private lastError: string | null = null;
   private balances: BalanceSnapshot | null = null;
+  private foundationCache = new Map<
+    string,
+    { key: string; at: number; value: unknown; compute: () => unknown; maxStaleMs: number }
+  >();
 
   constructor(private readonly options: IntelServiceOptions) {
     this.relabeler = new Relabeler(
@@ -105,6 +123,7 @@ export class IntelService {
     every(config.nodeRefreshSeconds * 1000, () => this.refreshNodes());
     every(config.intel.clusterSeconds * 1000, () => this.cluster());
     every(HOP_INTERVAL_MS, () => this.detectHops());
+    every(FOUNDATION_REFRESH_MS, () => this.refreshFoundation());
     if (config.dataSources.fluxNodeUrl) every(BALANCE_INTERVAL_MS, () => this.refreshBalances());
 
     // First runs shortly after boot, not during it.
@@ -150,6 +169,58 @@ export class IntelService {
   /** The latest Foundation balances, or null when no node is configured or none answered. */
   foundationBalances(): BalanceSnapshot | null {
     return this.balances;
+  }
+
+  /**
+   * A Foundation report, computed at most once per data version and label change.
+   *
+   * The report walks Foundation outflows several wallets deep, which is too much work for
+   * every request on a long period. A fresh entry is returned as is; a stale one (data or
+   * labels changed since) is still returned for up to {@link FOUNDATION_STALE_MS} while a
+   * replacement is computed after the response. {@link refreshFoundation} also recomputes
+   * every cached report once a minute, so a request only pays for the first computation of
+   * a period, or one after a long quiet spell.
+   *
+   * `maxStaleMs` lets a long period skip recomputation for a while even when new blocks
+   * arrive, as the leaderboards do: a 6-month picture does not change every 30 seconds.
+   */
+  foundationReport<T>(name: string, compute: () => T, maxStaleMs = 0): T {
+    const key = this.foundationKey();
+    const hit = this.foundationCache.get(name);
+    const age = hit ? Date.now() - hit.at : Number.POSITIVE_INFINITY;
+
+    if (hit && (hit.key === key || age < Math.max(maxStaleMs, FOUNDATION_STALE_MS))) {
+      if (hit.key !== key && age >= maxStaleMs) setImmediate(() => void this.refreshFoundation());
+      return hit.value as T;
+    }
+
+    const value = compute();
+    this.foundationCache.set(name, { key, at: Date.now(), value, compute, maxStaleMs });
+    return value;
+  }
+
+  /** Recompute every cached Foundation report whose data or labels changed. */
+  async refreshFoundation(): Promise<void> {
+    await this.guard('foundation', async () => {
+      for (const [name, entry] of this.foundationCache) {
+        const key = this.foundationKey();
+        if (entry.key === key || Date.now() - entry.at < entry.maxStaleMs) continue;
+        const value = await this.exclusive(entry.compute);
+        this.foundationCache.set(name, { ...entry, key, at: Date.now(), value });
+        // Let requests in between periods.
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+    });
+  }
+
+  private foundationKey(): string {
+    const { db, labels } = this.options;
+    return `${dataVersion(db)}|${labels.stats().loadedAt}|${this.balances?.at ?? 0}`;
+  }
+
+  /** Collateral transactions of the live nodes, from the last node list. */
+  collateralTxids(): ReadonlySet<string> {
+    return this.nodeList?.collateralTxids ?? new Set();
   }
 
   /** The node list last fetched, for the precision report. */
@@ -207,13 +278,24 @@ export class IntelService {
         replaceSourceLabels(db, 'node_rewards', computed.nodeRewards);
         replaceSourceLabels(db, 'forwarding', computed.forwarding);
       });
+      const nodesChanged = labels.refresh('node operators refreshed');
 
-      const changed = labels.refresh('node operators refreshed');
+      // After the node labels: an intermediary is recognised by paying node operators.
+      const intermediaries = await this.exclusive(() => {
+        const rows = detectIntermediaries(db, labels, this.collateralTxids());
+        replaceSourceLabels(db, INTERMEDIARY_SOURCE, rows);
+        return rows;
+      });
+
+      const changed = [...nodesChanged, ...labels.refresh('foundation intermediaries refreshed')];
       this.nodeCounts = {
         list: computed.nodeList?.length ?? this.nodeCounts?.list ?? 0,
         rewards: computed.nodeRewards.length,
         forwarding: computed.forwarding.length,
-        protocolPayouts: computed.protocolPayouts.length
+        protocolPayouts: computed.protocolPayouts.length,
+        foundationIntermediaries: intermediaries.filter(
+          (row) => row.confidence >= APPLY_MIN_CONFIDENCE
+        ).length
       };
 
       log.info(

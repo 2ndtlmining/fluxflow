@@ -58,6 +58,7 @@ import type { IntelService } from '../intel/service.js';
 import { decideCandidate, listCandidates } from '../intel/clusters.js';
 import { candidateCounts, decideCandidates, reviewCandidates } from '../intel/review.js';
 import { foundationReport } from '../intel/foundation.js';
+import { traceFoundation } from '../intel/destinations.js';
 import { listHops, summariseHops } from '../intel/hops.js';
 
 export interface ApiDependencies {
@@ -301,8 +302,10 @@ export function createApiRouter(deps: ApiDependencies): Router {
   });
 
   /**
-   * The Foundation's wallets (#31). Not response-cached: balances refresh on their own
-   * schedule, and the report reads only the Foundation's few addresses.
+   * The Foundation's wallets (#31) and where its money went next. Not response-cached here:
+   * balances refresh on their own schedule, so the intelligence service caches the report
+   * per data version, label change and balance snapshot instead, and recomputes it in the
+   * background (the destination trace walks several wallets deep).
    */
   router.get('/foundation', (req: Request, res: Response) => {
     const raw = typeof req.query.period === 'string' ? req.query.period.toUpperCase() : '30D';
@@ -311,11 +314,19 @@ export function createApiRouter(deps: ApiDependencies): Router {
       return;
     }
 
-    const window = periodWindow(raw);
-    res.json({
-      period: raw,
-      ...foundationReport(db, labels, window, intel?.foundationBalances() ?? null)
-    });
+    const compute = () => {
+      const window = periodWindow(raw);
+      return {
+        period: raw,
+        ...foundationReport(db, labels, window, intel?.foundationBalances() ?? null),
+        destinations: traceFoundation(db, labels, window, {
+          collateralTxids: intel?.collateralTxids() ?? new Set()
+        })
+      };
+    };
+    res.json(
+      intel ? intel.foundationReport(raw, compute, leaderboardStaleness(raw).maxStaleMs) : compute()
+    );
   });
 
   // ── Admin ─────────────────────────────────────────────────────────────────

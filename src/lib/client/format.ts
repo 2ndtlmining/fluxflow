@@ -102,7 +102,8 @@ const SOURCE_TEXT: Record<string, string> = {
   cluster: 'Spends together with a labelled wallet (shared inputs)',
   config: "Listed in FluxFlow's address labels",
   manual: 'Labelled by hand',
-  deposit: 'Forwards everything it receives to one exchange (a deposit address)'
+  deposit: 'Forwards everything it receives to one exchange (a deposit address)',
+  foundation_intermediary: 'Receives Foundation money and pays it on as node collateral'
 };
 
 /** Plain-language reason for a label, from its source. */

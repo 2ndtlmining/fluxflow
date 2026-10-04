@@ -61,6 +61,9 @@ export const SOURCE_PRIORITY = [
   'manual',
   'config',
   'accepted',
+  // Above the node-operator inferences: a wallet that pays node collateral for the Foundation
+  // also "funds node operators", and the Foundation is the more specific explanation.
+  'foundation_intermediary',
   'node_list',
   'node_rewards',
   // An exchange deposit address found by behaviour (intel/forwarders.ts). Above node

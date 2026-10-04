@@ -100,6 +100,40 @@ export function parseNodeList(payload: unknown): Map<string, NodeListEntry> {
 }
 
 /**
+ * The transactions that created a live node's collateral, from the same node-list payload.
+ *
+ * Each entry names its collateral outpoint (`txhash`, or `collateral: "COutPoint(txid, n)"`).
+ * A payment in one of these transactions, of exactly a collateral amount, is node collateral
+ * for certain rather than a round number that happens to match (#31).
+ */
+export function parseCollateralTxids(payload: unknown): Set<string> {
+  const txids = new Set<string>();
+
+  const visit = (value: unknown): void => {
+    if (Array.isArray(value)) {
+      for (const entry of value) visit(entry);
+      return;
+    }
+    if (value === null || typeof value !== 'object') return;
+
+    const record = value as Record<string, unknown>;
+    for (const [key, nested] of Object.entries(record)) {
+      if (/^(data|nodes?|flux_?nodes?|result)$/i.test(key)) visit(nested);
+    }
+
+    const fromOutpoint =
+      typeof record.collateral === 'string'
+        ? /COutPoint\(([0-9a-f]{64})/i.exec(record.collateral)?.[1]
+        : undefined;
+    const txid = typeof record.txhash === 'string' ? record.txhash : fromOutpoint;
+    if (txid && /^[0-9a-f]{64}$/i.test(txid)) txids.add(txid.toLowerCase());
+  };
+
+  visit(payload);
+  return txids;
+}
+
+/**
  * Fetch the current node list: your own node first, the explorer otherwise.
  * @returns `null` when neither answers — callers then keep the list they had.
  */
@@ -107,7 +141,7 @@ export async function fetchNodeList(options: {
   readonly ownNodeUrl?: string | undefined;
   readonly explorerUrl: string;
   readonly http?: Partial<HttpRequestOptions>;
-}): Promise<{ list: NodeList; source: string } | null> {
+}): Promise<{ list: NodeList; source: string; collateralTxids: Set<string> } | null> {
   const attempts = [
     ...(options.ownNodeUrl
       ? [
@@ -129,7 +163,9 @@ export async function fetchNodeList(options: {
       });
       const list = parseNodeList(payload);
       // An empty or reshaped answer says nothing about the nodes; do not replace a list with it.
-      if (list.size > 0) return { list, source: attempt.source };
+      if (list.size > 0) {
+        return { list, source: attempt.source, collateralTxids: parseCollateralTxids(payload) };
+      }
     } catch {
       // Try the next source.
     }

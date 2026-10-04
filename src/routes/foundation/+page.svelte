@@ -1,7 +1,8 @@
 <!--
   Flux Foundation (#31): every Foundation wallet, its balance and movements in the period,
-  the balance over time, and the latest transfers in or out. Moves between Foundation wallets
-  are netted per transaction, so they never show up as outflow plus inflow.
+  where the money it sent went next, the balance over time, and the latest transfers in or
+  out. Moves between Foundation wallets are netted per transaction, so they never show up as
+  outflow plus inflow.
 -->
 <script lang="ts">
   import { page } from '$app/state';
@@ -87,6 +88,25 @@
   });
 
   const now = Date.now();
+
+  // Where outflows ended up, largest first; the shares always add up to what was sent.
+  const destinations = $derived(data?.destinations);
+  const segments = $derived.by(() => {
+    const d = destinations;
+    if (!d || d.traced <= 0) return [];
+    return [
+      { key: 'nodes', label: 'Nodes', amount: d.nodes },
+      { key: 'exchange', label: 'Exchanges', amount: d.exchange },
+      { key: 'held', label: 'Still held', amount: d.held },
+      { key: 'returned', label: 'Back to the Foundation', amount: d.returned },
+      { key: 'untraced', label: `Still moving after ${d.maxHops} wallets`, amount: d.untraced }
+    ]
+      .filter((segment) => segment.amount > 0)
+      .map((segment) => ({ ...segment, share: segment.amount / d.traced }))
+      .sort((a, b) => b.amount - a.amount);
+  });
+  const percent = (share: number) =>
+    share > 0 && share < 0.01 ? '<1%' : `${Math.round(share * 100)}%`;
 </script>
 
 <svelte:head>
@@ -148,6 +168,92 @@
       </p>
     {/if}
 
+    {#if destinations && segments.length > 0}
+      <section aria-labelledby="destinations-heading" class="block">
+        <h2 id="destinations-heading">Where the money went</h2>
+        <p class="muted small">
+          {formatFlux(destinations.traced)} FLUX left the Foundation this period. Each payment is followed
+          through up to {destinations.maxHops} wallets; money that stayed put for about
+          {Math.round(destinations.hopBlocks / 2_880)} days counts as still held.
+        </p>
+        <div
+          class="bar"
+          role="img"
+          aria-label={segments.map((s) => `${s.label} ${percent(s.share)}`).join(', ')}
+        >
+          {#each segments as segment (segment.key)}
+            <span class="seg {segment.key}" style="flex-grow: {segment.share}"></span>
+          {/each}
+        </div>
+        <ul class="legend">
+          {#each segments as segment (segment.key)}
+            <li>
+              <span class="swatch {segment.key}" aria-hidden="true"></span>
+              {segment.label}
+              <strong>{formatFlux(segment.amount)}</strong>
+              <span class="muted">{percent(segment.share)}</span>
+            </li>
+          {/each}
+        </ul>
+        {#if Object.keys(destinations.byExchange).length > 0}
+          <p class="small">
+            Exchanges:
+            {Object.entries(destinations.byExchange)
+              .map(([name, amount]) => `${name} ${formatFlux(amount)}`)
+              .join(', ')}
+          </p>
+        {/if}
+        {#if destinations.collateral.payments > 0 || destinations.collateral.unconfirmedPayments > 0}
+          <p class="muted small">
+            {#if destinations.collateral.payments > 0}
+              {formatCount(destinations.collateral.payments)} payments, {formatFlux(
+                destinations.collateral.amount
+              )} FLUX, are the collateral of nodes running now.
+            {/if}
+            {#if destinations.collateral.unconfirmedPayments > 0}
+              {formatCount(destinations.collateral.unconfirmedPayments)} more were exactly a collateral
+              amount but no running node uses them, so they are followed like any other payment.
+            {/if}
+          </p>
+        {/if}
+
+        {#if destinations.recipients.length > 0}
+          <table class="recipients">
+            <caption class="visually-hidden">
+              Largest recipients of Foundation money and where it went next
+            </caption>
+            <thead>
+              <tr>
+                <th scope="col">Paid to</th>
+                <th scope="col" class="num">Received</th>
+                <th scope="col" class="num">Nodes</th>
+                <th scope="col" class="num">Exchanges</th>
+                <th scope="col" class="num">Held</th>
+              </tr>
+            </thead>
+            <tbody>
+              {#each destinations.recipients as recipient (recipient.address)}
+                <tr>
+                  <td>
+                    <a href="/wallet/{recipient.address}" class:mono={!recipient.name}>
+                      {recipient.name ?? shortAddress(recipient.address)}
+                    </a>
+                    <span class="muted small">{kindLabel(recipient.kind)}</span>
+                  </td>
+                  <td class="num">{formatFlux(recipient.received)}</td>
+                  <td class="num">{recipient.nodes ? formatFlux(recipient.nodes) : ''}</td>
+                  <td class="num sell"
+                    >{recipient.exchange ? formatFlux(recipient.exchange) : ''}</td
+                  >
+                  <td class="num muted">{recipient.held ? formatFlux(recipient.held) : ''}</td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        {/if}
+      </section>
+    {/if}
+
     {#if line}
       <section aria-labelledby="balance-heading" class="block">
         <h2 id="balance-heading">Balance over the period</h2>
@@ -172,7 +278,7 @@
 
     <section aria-labelledby="wallets-heading" class="block">
       <h2 id="wallets-heading">Wallets</h2>
-      <table>
+      <table class="wallets">
         <caption class="visually-hidden">Foundation wallets, largest balance first</caption>
         <thead>
           <tr>
@@ -353,11 +459,68 @@
     color: var(--bad);
   }
 
+  .bar {
+    display: flex;
+    height: 0.9rem;
+    overflow: hidden;
+    border-radius: var(--radius-s, 4px);
+    background: var(--line);
+  }
+
+  .seg {
+    flex-basis: 0;
+    min-width: 2px;
+  }
+
+  .legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem 1.25rem;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    font-size: var(--step--1);
+  }
+
+  .legend li {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+  }
+
+  .swatch {
+    width: 0.75rem;
+    height: 0.75rem;
+    border-radius: 2px;
+  }
+
+  .nodes {
+    background: var(--brand);
+  }
+
+  .exchange {
+    background: var(--sell);
+  }
+
+  .held {
+    background: var(--text-muted);
+  }
+
+  .returned {
+    background: var(--buy);
+  }
+
+  .untraced {
+    background: var(--warn);
+  }
+
   @media (max-width: 640px) {
-    th:nth-child(3),
-    td:nth-child(3),
-    th:nth-child(4),
-    td:nth-child(4) {
+    .wallets th:nth-child(3),
+    .wallets td:nth-child(3),
+    .wallets th:nth-child(4),
+    .wallets td:nth-child(4),
+    .recipients th:nth-child(5),
+    .recipients td:nth-child(5) {
       display: none;
     }
 
