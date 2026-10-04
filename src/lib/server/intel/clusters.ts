@@ -358,6 +358,54 @@ export function listCandidates(
     }));
 }
 
+export interface CandidateKey {
+  readonly address: string;
+  readonly kind: string;
+  readonly name: string;
+}
+
+/**
+ * Record one decision and its label, without refreshing the label book. Callers run it
+ * inside a transaction and refresh once afterwards: {@link decideCandidate} for one, the
+ * review's bulk decide (`review.ts`) for any number.
+ *
+ * @returns false when there is no such candidate.
+ */
+export function applyDecision(
+  db: Db,
+  key: CandidateKey,
+  decision: 'accepted' | 'rejected'
+): boolean {
+  const updated = db
+    .prepare(
+      `UPDATE label_candidates
+       SET status = ?, decided_at = CAST(strftime('%s','now') AS INTEGER)
+       WHERE address = ? AND kind = ? AND name = ?`
+    )
+    .run(decision, key.address, key.kind, key.name).changes;
+  if (updated === 0) return false;
+
+  if (decision === 'accepted') {
+    db.prepare(
+      `INSERT INTO address_labels (address, kind, name, source, confidence, evidence, updated_at)
+       SELECT address, kind, name, 'accepted', 0.9,
+              json_object('method', method, 'evidence', json(evidence)),
+              CAST(strftime('%s','now') AS INTEGER)
+       FROM label_candidates WHERE address = ? AND kind = ? AND name = ?
+       ON CONFLICT (address, kind, source) DO UPDATE SET
+         name = excluded.name, confidence = excluded.confidence,
+         evidence = excluded.evidence, updated_at = excluded.updated_at`
+    ).run(key.address, key.kind, key.name);
+  } else {
+    db.prepare(
+      `DELETE FROM address_labels
+       WHERE address = ? AND kind = ? AND source = 'accepted' AND name = ?`
+    ).run(key.address, key.kind, key.name);
+  }
+
+  return true;
+}
+
 /**
  * Accept or reject a candidate. Accepting writes an `accepted` label (confidence 0.9) and
  * refreshes the label book, which queues the address for re-derivation; rejecting removes any
@@ -368,40 +416,10 @@ export function listCandidates(
 export function decideCandidate(
   db: Db,
   labels: LabelLookup,
-  key: { address: string; kind: string; name: string },
+  key: CandidateKey,
   decision: 'accepted' | 'rejected'
 ): boolean {
-  const changed = db.transaction(() => {
-    const updated = db
-      .prepare(
-        `UPDATE label_candidates
-         SET status = ?, decided_at = CAST(strftime('%s','now') AS INTEGER)
-         WHERE address = ? AND kind = ? AND name = ?`
-      )
-      .run(decision, key.address, key.kind, key.name).changes;
-    if (updated === 0) return false;
-
-    if (decision === 'accepted') {
-      db.prepare(
-        `INSERT INTO address_labels (address, kind, name, source, confidence, evidence, updated_at)
-         SELECT address, kind, name, 'accepted', 0.9,
-                json_object('method', method, 'evidence', json(evidence)),
-                CAST(strftime('%s','now') AS INTEGER)
-         FROM label_candidates WHERE address = ? AND kind = ? AND name = ?
-         ON CONFLICT (address, kind, source) DO UPDATE SET
-           name = excluded.name, confidence = excluded.confidence,
-           evidence = excluded.evidence, updated_at = excluded.updated_at`
-      ).run(key.address, key.kind, key.name);
-    } else {
-      db.prepare(
-        `DELETE FROM address_labels
-         WHERE address = ? AND kind = ? AND source = 'accepted' AND name = ?`
-      ).run(key.address, key.kind, key.name);
-    }
-
-    return true;
-  })();
-
+  const changed = db.transaction(() => applyDecision(db, key, decision))();
   if (changed) labels.refresh(`candidate ${decision}`);
   return changed;
 }

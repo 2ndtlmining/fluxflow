@@ -56,6 +56,7 @@ import {
 } from '../labels.js';
 import type { IntelService } from '../intel/service.js';
 import { decideCandidate, listCandidates } from '../intel/clusters.js';
+import { candidateCounts, decideCandidates, reviewCandidates } from '../intel/review.js';
 import { foundationReport } from '../intel/foundation.js';
 import { listHops, summariseHops } from '../intel/hops.js';
 
@@ -366,6 +367,49 @@ export function createApiRouter(deps: ApiDependencies): Router {
       return;
     }
     res.json({ success: true, decision, queued: intel?.status().relabelQueue ?? null });
+  });
+
+  /** Candidates with what each address actually did, strongest evidence first (#20). */
+  router.get('/admin/labels/review', admin, (req: Request, res: Response) => {
+    const query = parseQuery(reviewQuery, req, res);
+    if (!query) return;
+
+    res.json({
+      status: query.status,
+      counts: candidateCounts(db),
+      candidates: reviewCandidates(db, labels, { status: query.status, limit: query.limit })
+    });
+  });
+
+  /** Decide many candidates at once: all or nothing, one label refresh. */
+  router.post('/admin/labels/candidates/decide-bulk', admin, (req: Request, res: Response) => {
+    const body = z
+      .object({
+        decision: z.enum(['accepted', 'rejected']),
+        candidates: z.array(candidateKey).min(1).max(500)
+      })
+      .safeParse(req.body);
+    if (!body.success) {
+      res.status(400).json({ error: 'Invalid body', issues: body.error.issues });
+      return;
+    }
+
+    const result = decideCandidates(db, labels, body.data.candidates, body.data.decision);
+    if (result.missing.length > 0) {
+      res.status(404).json({
+        error: 'No such candidate',
+        message: 'Nothing was decided: some candidates do not exist',
+        missing: result.missing
+      });
+      return;
+    }
+
+    res.json({
+      success: true,
+      decision: body.data.decision,
+      ...result,
+      queued: intel?.status().relabelQueue ?? null
+    });
   });
 
   /** A manual label beats every other source; `kind: "unknown"` overrides a wrong label. */
@@ -958,6 +1002,11 @@ const eventsQuery = z.object({
 
 const leaderboardQuery = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(10)
+});
+
+const reviewQuery = z.object({
+  status: z.enum(['pending', 'accepted', 'rejected']).default('pending'),
+  limit: z.coerce.number().int().min(1).max(500).default(500)
 });
 
 function parseQuery<T extends z.ZodTypeAny>(

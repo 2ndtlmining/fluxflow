@@ -457,7 +457,9 @@ address from the file removes its label.
 
 Clustering (addresses spent together share an owner) and sweep detection (deposit
 addresses consolidated into a known hot wallet) propose **candidates**. They change no total
-until accepted:
+until accepted. The easiest way is the **Label review** page at `/review` (linked in the
+footer): enter `ADMIN_TOKEN` once per browser tab, then accept or reject whole groups (one
+exchange, one method) with the evidence for each address beside it. Or with curl:
 
 ```bash
 curl -H "Authorization: Bearer $ADMIN_TOKEN" localhost:3000/api/admin/labels/candidates?status=pending

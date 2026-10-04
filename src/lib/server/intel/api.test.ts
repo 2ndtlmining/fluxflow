@@ -219,6 +219,142 @@ describe('intelligence API', () => {
     ).toBe(400);
   });
 
+  describe('candidate review (#20)', () => {
+    const DEPOSIT_2 = 't1Dep2aaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+    const key = (address: string) => ({ address, kind: 'exchange', name: 'Kucoin' });
+    const sellingByUnknown = async () =>
+      (await get('/api/flow/30D')).body.byType!.selling.unknown ?? 0;
+    const statusOf = (address: string) =>
+      db
+        .prepare<[string], { status: string }>(
+          `SELECT status FROM label_candidates WHERE address = ?`
+        )
+        .get(address)?.status;
+
+    beforeEach(async () => {
+      await intel.runAll();
+    });
+
+    it('is admin only', async () => {
+      expect((await send('GET', '/api/admin/labels/review', undefined, '')).status).toBe(401);
+      expect(
+        (
+          await send(
+            'POST',
+            '/api/admin/labels/candidates/decide-bulk',
+            { decision: 'accepted', candidates: [key(DEPOSIT)] },
+            'wrong'.repeat(8)
+          )
+        ).status
+      ).toBe(401);
+      expect(statusOf(DEPOSIT)).toBe('pending');
+    });
+
+    it('shows what each candidate did, strongest first', async () => {
+      const review = await send('GET', '/api/admin/labels/review');
+      expect(review.status).toBe(200);
+      expect(review.body).toMatchObject({ status: 'pending', counts: { pending: 2 } });
+
+      const candidates = review.body.candidates as (Row & {
+        activity: { sent: Row & { exchanges: Row[] }; received: Row };
+      })[];
+      expect(candidates.map((c) => c.address).sort()).toEqual([DEPOSIT, DEPOSIT_2].sort());
+      for (const c of candidates) {
+        expect(c).toMatchObject({ method: 'sweep', name: 'Kucoin', currentLabel: null });
+        expect(c.strength).toBeGreaterThan(0);
+        expect(c.strength).toBeLessThanOrEqual(1);
+        expect(c.activity).toMatchObject({ txs: 1, firstSeen: expect.any(Number) });
+      }
+      // Whatever the sweep credits each input, it all went to the proposed exchange.
+      const credited = candidates.filter((c) => (c.activity.sent.flux as number) > 0);
+      expect(credited.length).toBeGreaterThan(0);
+      for (const c of credited) {
+        expect(c.activity.sent.toClaimedShare).toBe(1);
+        expect(c.activity.sent.exchanges[0]).toMatchObject({ name: 'Kucoin' });
+      }
+
+      expect((await send('GET', '/api/admin/labels/review?status=maybe')).status).toBe(400);
+    });
+
+    it('accepts a group in one go, re-derives its flows, and rejecting restores them', async () => {
+      const before = await sellingByUnknown();
+      expect(before).toBeGreaterThan(0);
+
+      const accepted = await send('POST', '/api/admin/labels/candidates/decide-bulk', {
+        decision: 'accepted',
+        candidates: [key(DEPOSIT), key(DEPOSIT_2)]
+      });
+      expect(accepted.status).toBe(200);
+      expect(accepted.body).toMatchObject({
+        success: true,
+        decided: 2,
+        changedAddresses: 2,
+        transactions: 1
+      });
+      await intel.relabel(Number.POSITIVE_INFINITY);
+
+      // The sweep is now the exchange moving its own coins, not a sale.
+      expect(await sellingByUnknown()).toBe(0);
+      expect(labels.kindOf(DEPOSIT)).toBe('exchange');
+      expect(labels.kindOf(DEPOSIT_2)).toBe('exchange');
+      expect(rollupMismatches(db)).toEqual([]);
+      expect((await send('GET', '/api/admin/labels/review')).body.counts).toMatchObject({
+        pending: 0,
+        accepted: 2
+      });
+
+      // Idempotent: the same decision again changes nothing.
+      const again = await send('POST', '/api/admin/labels/candidates/decide-bulk', {
+        decision: 'accepted',
+        candidates: [key(DEPOSIT), key(DEPOSIT_2)]
+      });
+      expect(again.body).toMatchObject({ decided: 2, changedAddresses: 0, transactions: 0 });
+
+      const rejected = await send('POST', '/api/admin/labels/candidates/decide-bulk', {
+        decision: 'rejected',
+        candidates: [key(DEPOSIT), key(DEPOSIT_2)]
+      });
+      expect(rejected.body).toMatchObject({ decided: 2, changedAddresses: 2 });
+      await intel.relabel(Number.POSITIVE_INFINITY);
+
+      expect(await sellingByUnknown()).toBeCloseTo(before, 6);
+      expect(labels.kindOf(DEPOSIT)).toBe('unknown');
+      expect(rollupMismatches(db)).toEqual([]);
+    });
+
+    it('decides all or nothing', async () => {
+      const unknown = { ...key('t1Nopeaaaaaaaaaaaaaaaaaaaaaaaaaaaaa') };
+      const response = await send('POST', '/api/admin/labels/candidates/decide-bulk', {
+        decision: 'accepted',
+        candidates: [key(DEPOSIT), unknown]
+      });
+      expect(response.status).toBe(404);
+      expect(response.body.missing).toEqual([unknown]);
+
+      // The valid one was not decided either.
+      expect(statusOf(DEPOSIT)).toBe('pending');
+      expect(labels.kindOf(DEPOSIT)).toBe('unknown');
+    });
+
+    it('rejects malformed bulk requests', async () => {
+      const post = (body: unknown) =>
+        send('POST', '/api/admin/labels/candidates/decide-bulk', body);
+      expect((await post({ decision: 'accepted', candidates: [] })).status).toBe(400);
+      expect((await post({ decision: 'maybe', candidates: [key(DEPOSIT)] })).status).toBe(400);
+      expect(
+        (await post({ decision: 'accepted', candidates: [key('not-an-address')] })).status
+      ).toBe(400);
+      expect(
+        (
+          await post({
+            decision: 'accepted',
+            candidates: Array.from({ length: 501 }, () => key(DEPOSIT))
+          })
+        ).status
+      ).toBe(400);
+    });
+  });
+
   it('lets a manual label override, and removes it again', async () => {
     const set = await send('POST', '/api/admin/labels', {
       address: KUCOIN,
