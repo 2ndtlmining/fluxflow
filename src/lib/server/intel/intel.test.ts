@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { createTestDb, type Db } from '../testkit.js';
+import { createTestDb, silentLogger, type Db } from '../testkit.js';
 import { replaceSourceLabels, type LabelLookup } from '../labels.js';
 import { BlockWriter } from '../ingest/writer.js';
 import {
@@ -10,9 +10,11 @@ import {
 } from './nodes.js';
 import { clusterAddresses, decideCandidate, listCandidates, storeCandidates } from './clusters.js';
 import { detectHops, listHops, summariseHops } from './hops.js';
+import { detectDepositForwarders } from './forwarders.js';
 import { foundationReport } from './foundation.js';
 import { precisionReport } from './precision.js';
-import { blockTime, labelBook, writeChain, type SimpleTx } from './testchain.js';
+import { Relabeler } from './relabel.js';
+import { blockTime, labelBook, rollupMismatches, writeChain, type SimpleTx } from './testchain.js';
 
 const KUCOIN = 't1kucoinHot';
 const COINEX = 't1coinexHot';
@@ -101,8 +103,8 @@ describe('node operators (#18, #19)', () => {
       chain.push({
         height: 10 + index,
         txid: `s${index}`,
-        inputs: [[index % 2 ? 't1op1' : 't1op2', 10]],
-        outputs: [['t1sweep', 9.9]]
+        inputs: [[index % 2 ? 't1op1' : 't1op2', 100]],
+        outputs: [['t1sweep', 99.9]]
       });
     }
     // t1mixed: one operator transfer and one bigger one from a stranger -> not labelled.
@@ -119,6 +121,178 @@ describe('node operators (#18, #19)', () => {
     expect(forwarding.map((row) => [row.address, row.confidence >= 0.7])).toEqual([
       ['t1sweep', true]
     ]);
+  });
+
+  it('labels a wallet from a single node payout once it is worth something', () => {
+    // Operators sweep weekly or monthly: one transfer inside the window is the usual case.
+    writeChain(db, labels, [
+      coinbase(1, ['t1op1']),
+      { height: 10, txid: 'one', inputs: [['t1op1', 500]], outputs: [['t1wallet', 499.9]] },
+      { height: 11, txid: 'dust', inputs: [['t1op1', 20]], outputs: [['t1dust', 19.9]] }
+    ]);
+
+    const forwarding = computeNodeOperatorLabels(db, null).forwarding;
+    expect(forwarding.map((row) => [row.address, row.confidence >= 0.7]).sort()).toEqual([
+      ['t1dust', false],
+      ['t1wallet', true]
+    ]);
+  });
+
+  it('follows node money two wallets deep: node -> W1 -> W2 -> exchange', () => {
+    writeChain(db, labels, [
+      coinbase(1, ['t1op1']),
+      { height: 10, txid: 'h1', inputs: [['t1op1', 500]], outputs: [['t1hop1', 499.9]] },
+      { height: 11, txid: 'h2', inputs: [['t1hop1', 499.9]], outputs: [['t1hop2', 499.8]] },
+      { height: 12, txid: 'sell', inputs: [['t1hop2', 499.8]], outputs: [[KUCOIN, 499.7]] }
+    ]);
+
+    const byAddress = new Map(
+      computeNodeOperatorLabels(db, null).forwarding.map((row) => [row.address, row])
+    );
+
+    expect(byAddress.get('t1hop1')).toMatchObject({ evidence: { hops: 1 } });
+    expect(byAddress.get('t1hop2')).toMatchObject({ evidence: { hops: 2 } });
+    expect(byAddress.get('t1hop2')!.confidence).toBeGreaterThanOrEqual(0.7);
+  });
+
+  it('does not claim a wallet that also bought on an exchange', () => {
+    writeChain(db, labels, [
+      coinbase(1, ['t1op1']),
+      { height: 10, txid: 'n', inputs: [['t1op1', 500]], outputs: [['t1trader', 499.9]] },
+      { height: 11, txid: 'b', inputs: [[KUCOIN, 30]], outputs: [['t1trader', 29.9]] }
+    ]);
+
+    const [row] = computeNodeOperatorLabels(db, null).forwarding;
+    expect(row).toMatchObject({ address: 't1trader', evidence: { boughtOnExchange: true } });
+    expect(row!.confidence).toBeLessThan(0.7);
+  });
+
+  it('labels a wallet that buys on an exchange to fund node collateral', () => {
+    writeChain(db, labels, [
+      coinbase(1, ['t1op1', 't1op2']),
+      { height: 10, txid: 'buy', inputs: [[KUCOIN, 40_100]], outputs: [['t1funder', 40_050]] },
+      { height: 11, txid: 'c1', inputs: [['t1funder', 40_000]], outputs: [['t1op2', 40_000]] }
+    ]);
+
+    const funder = computeNodeOperatorLabels(db, null).forwarding.find(
+      (row) => row.address === 't1funder'
+    );
+    expect(funder).toMatchObject({ evidence: { method: 'node_funding', fluxToNodes: 40_000 } });
+    expect(funder!.confidence).toBeGreaterThanOrEqual(0.7);
+  });
+
+  it('keeps using the stored node list when a fresh one cannot be fetched', () => {
+    // t1listed runs nodes but earned no reward inside the stored window.
+    replaceSourceLabels(db, 'node_list', [
+      { address: 't1listed', kind: 'node_operator', confidence: 1 }
+    ]);
+    writeChain(db, labels, [
+      { height: 10, txid: 'f', inputs: [['t1listed', 500]], outputs: [['t1sweeper', 499.9]] }
+    ]);
+
+    const forwarding = computeNodeOperatorLabels(db, null).forwarding;
+    expect(forwarding.map((row) => row.address)).toEqual(['t1sweeper']);
+  });
+});
+
+describe('exchange deposit forwarders', () => {
+  let db: Db;
+  let labels: LabelLookup;
+
+  beforeEach(() => {
+    db = createTestDb();
+    labels = labelBook(db, LABELS);
+  });
+
+  afterEach(() => db.close());
+
+  const deposits = (address: string, count: number, from = 't1customer'): SimpleTx[] =>
+    Array.from({ length: count }, (_, index): SimpleTx[] => [
+      {
+        height: 100 + index * 2,
+        txid: `${address}-in${index}`,
+        inputs: [[`${from}${index % 2}`, 100]],
+        outputs: [[address, 99.9]]
+      },
+      {
+        height: 101 + index * 2,
+        txid: `${address}-out${index}`,
+        inputs: [[address, 99.9]],
+        outputs: [[KUCOIN, 99.8]]
+      }
+    ]).flat();
+
+  const detect = () =>
+    detectDepositForwarders(
+      db,
+      new Map(
+        [...labels.entries().keys()].map((a) => [a, labels.labelOf(a)?.source ?? ''] as const)
+      )
+    );
+
+  it('labels an address that sends every deposit on to one exchange', () => {
+    writeChain(db, labels, deposits('t1deposit', 5));
+
+    const { labels: found, candidates } = detect();
+
+    expect(found).toEqual([
+      expect.objectContaining({
+        address: 't1deposit',
+        kind: 'exchange',
+        name: 'Kucoin',
+        evidence: expect.objectContaining({ outflows: 5, senders: 2 })
+      })
+    ]);
+    expect(candidates).toEqual([]);
+  });
+
+  it('proposes, but does not apply, an address with only a few such outflows', () => {
+    writeChain(db, labels, deposits('t1maybe', 2));
+
+    const { labels: found, candidates } = detect();
+
+    expect(found).toEqual([]);
+    expect(candidates).toEqual([
+      expect.objectContaining({ address: 't1maybe', method: 'forwarder', confidence: 0.5 })
+    ]);
+  });
+
+  it('ignores a wallet that withdrew from an exchange: that is a person moving money', () => {
+    writeChain(db, labels, [
+      { height: 90, txid: 'w', inputs: [[COINEX, 50]], outputs: [['t1hopper', 49.9]] },
+      ...deposits('t1hopper', 5)
+    ]);
+
+    expect(detect().labels).toEqual([]);
+  });
+
+  it('ignores a wallet that keeps most of what it receives', () => {
+    writeChain(db, labels, [
+      { height: 90, txid: 'big', inputs: [['t1rich', 10_000]], outputs: [['t1saver', 9_999]] },
+      ...deposits('t1saver', 5)
+    ]);
+
+    expect(detect().labels).toEqual([]);
+  });
+
+  it('turns the deposits into sales by the depositors, and keeps the label once applied', () => {
+    writeChain(db, labels, deposits('t1deposit', 5));
+    const relabeler = new Relabeler(db, labels, silentLogger());
+
+    replaceSourceLabels(db, 'forwarder', detect().labels);
+    labels.refresh('test');
+    relabeler.run({ budgetMs: 1_000 });
+
+    const sellers = db
+      .prepare(
+        `SELECT DISTINCT from_address AS a FROM flows WHERE flow_type = 'selling' ORDER BY 1`
+      )
+      .all();
+    expect(sellers).toEqual([{ a: 't1customer0' }, { a: 't1customer1' }]);
+    expect(rollupMismatches(db)).toEqual([]);
+
+    // The sweeps are now exchange-internal; the address must still be detected.
+    expect(detect().labels.map((label) => label.address)).toEqual(['t1deposit']);
   });
 });
 

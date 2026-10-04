@@ -27,6 +27,7 @@ import { replaceSourceLabels, type LabelLookup } from '../labels.js';
 import { serialiseError } from '../logger.js';
 import { clusterAddresses, storeCandidates, type ClusterResult } from './clusters.js';
 import { fetchBalances, type BalanceSnapshot } from './foundation.js';
+import { detectDepositForwarders } from './forwarders.js';
 import { detectHops } from './hops.js';
 import { computeNodeOperatorLabels, fetchNodeList, type NodeList } from './nodes.js';
 import { Relabeler } from './relabel.js';
@@ -53,6 +54,8 @@ export interface IntelStatus {
     largest: number;
     candidates: number;
     conflicts: number;
+    /** Deposit addresses labelled by behaviour (`forwarder`). */
+    forwarders: number;
   } | null;
   readonly hops: { at: number; total: number } | null;
   readonly lastError: string | null;
@@ -230,19 +233,38 @@ export class IntelService {
     await this.guard('cluster', async () => {
       const { db, labels, log } = this.options;
       result = await this.exclusive(() => clusterAddresses(db, labels));
-      const stored = await this.exclusive(() => storeCandidates(db, result!.candidates));
+
+      // Deposit addresses by behaviour: strong ones applied, weaker ones for review.
+      const labelled = new Map(
+        [...labels.entries().keys()].map(
+          (address) => [address, labels.labelOf(address)?.source ?? ''] as const
+        )
+      );
+      const forwarders = await this.exclusive(() => detectDepositForwarders(db, labelled));
+      await this.exclusive(() => replaceSourceLabels(db, 'forwarder', forwarders.labels));
+      const changed = labels.refresh('deposit forwarders refreshed');
+
+      const stored = await this.exclusive(() =>
+        storeCandidates(db, [...result!.candidates, ...forwarders.candidates])
+      );
 
       this.clustering = {
         at: Date.now(),
         clusters: result.clusters,
         clusteredAddresses: result.clusteredAddresses,
         largest: result.largest,
-        candidates: result.candidates.length,
-        conflicts: result.conflicts.length
+        candidates: result.candidates.length + forwarders.candidates.length,
+        conflicts: result.conflicts.length,
+        forwarders: forwarders.labels.length
       };
 
       log.info(
-        { ...this.clustering, stored, skippedCoinjoins: result.skippedCoinjoins },
+        {
+          ...this.clustering,
+          stored,
+          labelsChanged: changed.length,
+          skippedCoinjoins: result.skippedCoinjoins
+        },
         'clustering done'
       );
       if (result.conflicts.length > 0) {
