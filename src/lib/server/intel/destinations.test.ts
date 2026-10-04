@@ -166,6 +166,37 @@ describe('Foundation intermediaries (#31)', () => {
     });
   });
 
+  it('is not fooled by a contributor paying node operators from their own savings', () => {
+    // Small wages in, then a far larger collateral payment out of money the wallet already had.
+    replaceSourceLabels(db, 'node_list', [
+      { address: 't1node', kind: 'node_operator', confidence: 1 }
+    ]);
+    labels.refresh('test');
+    writeChain(db, labels, [
+      pay(10, 'w1', FOUND, 600.01, [['t1contrib', 600]]),
+      pay(11, 'w2', FOUND, 800.01, [['t1contrib', 800]]),
+      pay(20, 'c', 't1contrib', 40_000.01, [['t1node', 40_000]])
+    ]);
+
+    expect(detectIntermediaries(db, labels)).toEqual([]);
+  });
+
+  it('does not count inferred node-operator labels as node evidence', () => {
+    replaceSourceLabels(db, 'forwarding', [
+      { address: 't1guess', kind: 'node_operator', confidence: 0.75 }
+    ]);
+    labels.refresh('test');
+    writeChain(db, labels, [
+      pay(10, 'w1', FOUND, 1_000.01, [['t1relay', 1_000]]),
+      pay(11, 'w2', FOUND, 1_000.01, [['t1relay', 1_000]]),
+      pay(20, 'on', 't1relay', 2_000, [['t1guess', 1_999.99]])
+    ]);
+
+    const [row] = detectIntermediaries(db, labels);
+    expect(row).toMatchObject({ address: 't1relay', evidence: { toNodeShare: 0 } });
+    expect(row!.confidence).toBeLessThan(0.7);
+  });
+
   it('does not claim an address that already has another label', () => {
     writeChain(db, labels, [
       pay(10, 'n1', FOUND, 40_000.01, [[NODE, 40_000]]),

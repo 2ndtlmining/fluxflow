@@ -16,9 +16,14 @@
  * applied (`likely`) rule is deliberately narrow:
  *
  *  - at least 95% of what it received came from Foundation wallets, in at least 2 payments;
- *  - it passed at least 90% of that on;
- *  - at least 90% of what it passed on went to node operator addresses, or as collateral
- *    that a live node uses (its transaction is a collateral outpoint on the node list);
+ *  - it passed at least 90% of that on, and not much more (at most 110%): a wallet spending
+ *    far more than the Foundation gave it is spending its own money, like a contributor
+ *    paying from savings, and its payments are not the Foundation's;
+ *  - at least 90% of what it passed on went to *confirmed* node operators (the node list or
+ *    their own rewards), or as collateral that a live node uses (its transaction is a
+ *    collateral outpoint on the node list). Inferred node labels (`forwarding`) do not
+ *    count: they are themselves guesses about where money went, and stacking guesses
+ *    turned two contributors' own spending into Foundation outflow;
  *  - at most 5% went to exchanges.
  *
  * A wallet that matches the first two but sends its money elsewhere — a contributor who
@@ -45,6 +50,8 @@ export const INTERMEDIARY = {
   minShareFromFoundation: 0.95,
   minPayments: 2,
   minPassedOn: 0.9,
+  /** Sending more than this multiple of the Foundation's money is spending one's own. */
+  maxPassThrough: 1.1,
   minToNodes: 0.9,
   maxToExchanges: 0.05
 } as const;
@@ -57,6 +64,9 @@ export const INTERMEDIARY_SUB_LABEL = 'Pays node collateral (detected)';
  * hand label, the config, an accepted candidate, the node list or the wallet's own rewards —
  * is more authoritative and keeps the address out of detection.
  */
+/** Node-operator evidence an intermediary's payments must reach: observed, not inferred. */
+const CONFIRMED_NODE_SOURCES: ReadonlySet<string> = new Set(['node_list', 'node_rewards']);
+
 const OVERRIDABLE_SOURCES: ReadonlySet<string> = new Set([
   INTERMEDIARY_SOURCE,
   'forwarding',
@@ -168,11 +178,13 @@ export function detectIntermediaries(
         for (const row of rows) {
           if (row.net <= 0 || row.address === address) continue;
           const portion = row.net * share;
-          const kind = labels.kindOf(row.address, row.time);
+          const label = labels.labelOf(row.address, row.time);
+          const confirmedNode =
+            label?.kind === 'node_operator' && CONFIRMED_NODE_SOURCES.has(label.source);
           const sized = COLLATERAL_SAT.has(row.net);
           const collateral = sized && collateralTxids.has(row.txid);
-          if (kind === 'exchange') toExchanges += portion;
-          else if (kind === 'node_operator' || collateral) toNodes += portion;
+          if (label?.kind === 'exchange') toExchanges += portion;
+          else if (confirmedNode || collateral) toNodes += portion;
           if (collateral) collateralPayments++;
           if (sized) collateralSized++;
         }
@@ -185,7 +197,8 @@ export function detectIntermediaries(
     if (
       shareFromFoundation < INTERMEDIARY.minShareFromFoundation ||
       payments < INTERMEDIARY.minPayments ||
-      passedOn < INTERMEDIARY.minPassedOn
+      passedOn < INTERMEDIARY.minPassedOn ||
+      outbound > fromFoundation * INTERMEDIARY.maxPassThrough
     ) {
       continue;
     }
