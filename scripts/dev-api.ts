@@ -6,8 +6,8 @@
  * instead — see `src/server.ts`.
  */
 
-import { createService, installSignalHandlers } from '../lib/server/index.js';
-import { fatal } from '../lib/server/logger.js';
+import { createService, installSignalHandlers } from '../src/lib/server/index.js';
+import { fatal } from '../src/lib/server/logger.js';
 
 async function main(): Promise<void> {
   const service = createService();
