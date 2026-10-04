@@ -1,167 +1,129 @@
-# Flux Flow Tracker
+# FluxFlow
 
-Real-time exchange flow analysis dashboard for the Flux blockchain network. Tracks buy/sell pressure by analyzing transactions between exchanges, node operators, foundation, and unknown wallets.
+**Who is moving FLUX on and off exchanges.** FluxFlow reads every block of the Flux chain,
+recognises exchange, node-operator and Flux Foundation wallets, and shows the buying and
+selling pressure that results: how much, through which exchange, by which kind of wallet, and
+who the biggest movers are.
 
-## 🎯 Features
+It runs as one container on one port, keeps its data in one SQLite file on a Docker volume,
+and can read the chain from your own FluxNode.
 
-- **Flow Direction Detection**: buying pressure (funds leaving exchanges) and selling
-  pressure (funds arriving at exchanges)
-- **Wallet Classification**: addresses classified as exchange, node operator, Foundation, or
-  unknown, from a label file that can be corrected without a rebuild
-- **Multiple Time Periods**: Today, This Week, This Month, This Quarter, Last 6 Months
-- **Top Movers**: the largest buyers and sellers in any period
-- **Exchange Breakdown**: per-exchange totals
-- **Persistent**: SQLite in WAL mode, so the API keeps serving reads while ingestion writes
-- **Resilient**: every outbound request is bounded by a timeout; failed heights are retried;
-  data sources fail over and are health-probed back
-- **One process, one port**: the API and the web app are served together, so there is no
-  proxy to misconfigure
+- [What it shows](#what-it-shows)
+- [Quick start](#quick-start)
+- [Configuration](#configuration)
+- [Updating, backups and your data](#updating-backups-and-your-data)
+- [How it works](#how-it-works)
+- [Address intelligence](#address-intelligence)
+- [API](#api)
+- [Config files: labels and alerts](#config-files-labels-and-alerts)
+- [Development](#development)
+- [Troubleshooting](#troubleshooting)
+- [Project structure](#project-structure)
 
-## 📊 What We Track
+---
 
-### Buying Pressure (From Exchanges)
+## What it shows
 
-- Total FLUX moving from exchanges
-- Destinations: Node Operators, Unknown Wallets, Foundation, Exchange-to-Exchange
-- Per-exchange source breakdown
+| Page                   | What you get                                                                                                                                                                                                                                                                                                          |
+| ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Dashboard** `/`      | The net balance for the period (more FLUX onto exchanges than off, or the other way round), the top sellers and buyers, the split by exchange and by kind of wallet, net flow over time, exchange hops, every transfer (filterable, CSV export) and your watchlist. The period is in the URL, so links can be shared. |
+| **Wallet** `/wallet/…` | One address: what it moved to and from each exchange, when, its transfers, and **why it is labelled** the way it is (source, confidence and evidence).                                                                                                                                                                |
+| **Foundation**         | Every Flux Foundation wallet, balances, inflow and outflow, and **where the money went next**: exchanges, node collateral, still held.                                                                                                                                                                                |
+| **Search**             | Address (or prefix), label name or transaction id.                                                                                                                                                                                                                                                                    |
+| **Label review**       | Admin page to accept or reject detected exchange addresses in bulk, with the evidence beside each one.                                                                                                                                                                                                                |
 
-### Selling Pressure (To Exchanges)
+Periods: **24 hours, 7 days, 30 days, 90 days, 6 months**. Each is resolved from block
+_time_, so "24 hours" is the last 24 hours of the chain, not a fixed number of blocks.
 
-- Total FLUX moving to exchanges
-- Sources: Node Operators, Unknown Wallets, Foundation, Exchange-to-Exchange
-- Per-exchange destination breakdown
+A status bar on every page shows whether the data is live, which source it comes from, and,
+on a fresh install, a **Catching up** banner with progress, the date the data reaches so far,
+and an estimate of the time left.
 
-### Classification
+**Example.** On a 7-day window FluxFlow reports something like:
 
-Every label lives in `address_labels` with a **source**, a **confidence** and its
-**evidence** (#18, #19). Only labels at _likely_ or above change how a flow is counted;
-weaker ones are shown on the wallet page and nowhere else.
+> More FLUX went onto exchanges than came off them: **475,178 deposited**, 156,183 withdrawn,
+> net **−318,995**. Kucoin took 382,472 of the deposits, and node operators sold 11,198.
+> The top seller deposited 199,000 FLUX to Kucoin in one transfer, 42% of all selling.
 
-| Kind          | How we know                                                                                            | Confidence         |
-| ------------- | ------------------------------------------------------------------------------------------------------ | ------------------ |
-| Exchange      | `config/labels.json`, or a clustering candidate a human accepted                                       | confirmed / likely |
-| Foundation    | `config/labels.json`, with named sub-wallets                                                           | confirmed          |
-| Node operator | payment address on the current deterministic node list                                                 | confirmed          |
-| Node operator | received coinbase rewards in stored blocks, no longer on the list (valid 30 days past its last reward) | likely             |
-| Node operator | wallet fed ≥ 80% by node payout addresses (reward forwarding)                                          | likely / possible  |
-| Unknown       | everything else                                                                                        | —                  |
+---
 
-When a label changes, the address's flows are re-derived from the stored transactions and
-the totals follow (the rollups are maintained by triggers, so they stay exact). Transfers
-between Foundation wallets produce no flow. Exchange **hops** — a withdrawal re-deposited by
-the same wallet shortly after — are reported separately, with headline totals also given
-without them.
+## Quick start
 
-## 🚀 Quick Start
-
-### Development
-
-```bash
-npm install
-cp .env.example .env       # then edit; LOG_PRETTY=1 for readable logs
-
-npm run dev                # API on :3000 + Vite on :5173, both watching
-```
-
-Open <http://localhost:5173>. `vite dev` proxies `/api` to the API process, so there is
-nothing else to start.
-
-To work on the UI against an API that is already running elsewhere, such as the Compose
-container with real data, point the proxy at it and start only the web server:
-
-```bash
-API_PROXY_TARGET=http://localhost:3000 npm run dev:web
-```
-
-To run the API on its own, without the web server:
-
-```bash
-npm run dev:api            # http://localhost:3000
-```
-
-### Production
-
-```bash
-npm run build:all          # vite build -> build/, tsc -> dist/
-npm start                  # one process, one port
-```
-
-### Docker
-
-See [Running with Docker Compose](#-running-with-docker-compose) below. It is the supported
-way to run FluxFlow on a server.
-
-### Configuration
-
-Everything comes from the environment and is validated **once** at startup by zod. Invalid
-configuration fails the boot with every problem listed at once, rather than surfacing one
-per restart. `ADMIN_TOKEN` is mandatory when `NODE_ENV=production` and must be at least 32
-characters. See [`.env.example`](.env.example) for every variable, or
-[`src/lib/server/config.ts`](src/lib/server/config.ts) for the annotated schema.
-
-```bash
-DATABASE_PATH=/app/data/flux-flow.db
-FLUX_INDEXER_URL=http://your-indexer:42067   # optional; omit to use the FluxNode pool
-SYNC_POLL_SECONDS=30
-ADMIN_TOKEN=$(openssl rand -hex 32)
-```
-
-#### Where the data comes from
-
-With no configuration at all, FluxFlow reads chain data from the **FluxNode pool**: it
-discovers nodes from the public explorer, probes them, keeps the fastest ~15 within two
-blocks of the pool median tip, and spreads every block fetch across them at two concurrent
-requests per node. This is free, needs no indexer, and — unlike the single public Blockbook
-instance — is not rate-limited per IP.
-
-Each FluxNode is an operator's home connection, so the pool is deliberately restrained:
-`User-Agent: FluxFlow/2 (+repo url)`, two requests in flight per node, a random sample rather
-than a sweep, and exponential backoff on any failure. It also does not trust any single node:
-the tip is the **median** across the pool, every 25th block's hash is re-fetched from a
-_different_ node and compared, and a node that disagrees is benched rather than believed.
-
-Set `FLUXNODE_POOL_ENABLED=0` to turn it off. If you run your own indexer or `fluxd`, set
-`FLUX_INDEXER_URL` and it is preferred — the pool stays as the fallback.
-
-Address labels live in [`config/labels.json`](config/labels.json), which is mounted into the
-container — exchanges and Foundation addresses can be corrected without a rebuild.
-
-### Verification
-
-Every change is checked in CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)):
-
-```bash
-npm run verify         # format:check + lint + typecheck:server + test
-npm run check          # svelte-check across components, routes and server code
-npm run test:watch     # Vitest in watch mode
-npm run lint:fix       # ESLint --fix
-npm run format         # Prettier --write
-```
-
-CI targets **Node 22 LTS**.
-
-## 🐳 Running with Docker Compose
-
-Everything runs in **one container on one port**. The only state is the SQLite database on
-the `fluxflow-data` Docker volume, so rebuilding, updating or recreating the container never
-touches your data.
-
-### Launching (first time)
+You need a Linux host (or any machine) with **Docker** and **Docker Compose v2**.
 
 ```bash
 git clone https://github.com/2ndtlmining/fluxflow.git
 cd fluxflow
 cp .env.example.compose .env
-# Set ADMIN_TOKEN in .env (at least 32 characters): openssl rand -hex 32
+openssl rand -hex 32          # paste the output into ADMIN_TOKEN= in .env
 deploy/redeploy.sh
 ```
 
-Open `http://<server>:3000` (or the `PORT` set in `.env`).
+Open `http://<server>:3000` (or the `PORT` you set).
 
-On first launch the script creates the volume, builds the image and waits until the container
-is healthy. Health turns green once the first batch of blocks is stored, which takes about a
-minute with the FluxNode pool. History back to `RETENTION_DAYS` then fills in the background:
-`GET /api/status` shows progress.
+The first start syncs **six months** of history, **oldest first, forward to today**. While it
+does, the figures move with every batch and a banner says how far it has got. From your own
+node on the LAN this took about 35 minutes (13,000–15,000 blocks a minute); from the public
+FluxNode pool expect longer. Once caught up the banner disappears and new blocks arrive about
+every 30 seconds.
+
+### Mandatory and recommended variables
+
+| Variable        | Required?   | Example                       | Why                                                                                                                                          |
+| --------------- | ----------- | ----------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ADMIN_TOKEN`   | **Yes**     | `openssl rand -hex 32` output | Guards the admin endpoints and the Label review page. Production refuses to start without it; at least 32 characters.                        |
+| `FLUX_NODE_URL` | Recommended | `http://192.168.1.50:16127`   | Your own FluxNode's FluxOS API, used first. Fast, trusted, never rate-limited. The node needs the spent/address index (`insightexplorer=1`). |
+| `PORT`          | No (`3000`) | `3999`                        | Host port for the dashboard and API.                                                                                                         |
+
+That is all most installs need. Without `FLUX_NODE_URL`, FluxFlow reads from the public
+FluxNode network instead, which also works, just more slowly.
+
+---
+
+## Configuration
+
+Everything comes from environment variables (`.env` with Docker Compose), validated once at
+startup. An invalid value stops the boot and lists every problem at once. The annotated
+schema is [`src/lib/server/config.ts`](src/lib/server/config.ts); every variable is in
+[`.env.example`](.env.example).
+
+### Where the chain data comes from
+
+Sources are tried in this order; a failing one is skipped by a circuit breaker and
+health-probed until it recovers.
+
+| Order | Source                   | Set with                                | Notes                                                                                                                                                                                                  |
+| ----- | ------------------------ | --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 1     | **Your own FluxNode**    | `FLUX_NODE_URL`                         | Trusted, usually on your LAN. One request returns a whole block with every input's address.                                                                                                            |
+| 2     | Your own FluxIndexer     | `FLUX_INDEXER_URL`                      | Optional.                                                                                                                                                                                              |
+| 3     | **Public FluxNode pool** | on by default (`FLUXNODE_POOL_ENABLED`) | Discovers nodes from the public explorer, keeps the fastest ~15 that have the spent index, two requests in flight per node, tip agreed by median, every 25th block cross-checked against another node. |
+| 4     | Blockbook                | `BLOCKBOOK_URL`                         | Last resort. Rate-limited per IP, so not suitable for a full sync.                                                                                                                                     |
+
+### Commonly changed
+
+| Variable                                      | Default     | Effect                                                                    |
+| --------------------------------------------- | ----------- | ------------------------------------------------------------------------- |
+| `RETENTION_DAYS`                              | `180`       | Detailed history kept. Totals (rollups) are kept beyond it.               |
+| `SYNC_POLL_SECONDS`                           | `30`        | How often to look for new blocks once caught up.                          |
+| `SYNC_BATCH_SIZE`                             | `250`       | Blocks per committed batch.                                               |
+| `SYNC_CONCURRENCY`                            | `16`        | Blocks fetched in parallel.                                               |
+| `LOG_LEVEL`                                   | `info`      | `debug` for detail.                                                       |
+| `TRUST_PROXY`                                 | `0`         | Set `1` behind your own reverse proxy so rate limits see real client IPs. |
+| `ORIGIN`                                      | unset       | Allow one cross-origin client (CORS). Unset means same-origin only.       |
+| `API_RATE_LIMIT_RPS` / `API_RATE_LIMIT_BURST` | `10` / `60` | Per-IP API rate limit; `0` disables.                                      |
+| `LIVE_FLOW_MIN_FLUX`                          | `1000`      | Smallest new flow pushed live to open browsers.                           |
+| `INTEL_ENABLED`                               | `1`         | Node-operator detection, clustering, hops and Foundation tracing.         |
+| `NODE_REFRESH_SECONDS`                        | `600`       | How often the node list (and node-operator labels) is refreshed.          |
+| `INTEL_CLUSTER_SECONDS`                       | `1800`      | How often clustering and deposit-address detection run.                   |
+
+Pool tuning (`FLUXNODE_POOL_SIZE`, `FLUXNODE_MAX_INFLIGHT`, `FLUXNODE_API_PORTS`, …) and
+HTTP timeouts are documented in `.env.example`. With Docker Compose, `NODE_ENV`, `PORT`
+inside the container, `DATABASE_PATH` and `LABELS_PATH` are fixed in
+`docker-compose.yml`; don't set them in `.env`.
+
+---
+
+## Updating, backups and your data
 
 ### Updating
 
@@ -169,320 +131,277 @@ minute with the FluxNode pool. History back to `RETENTION_DAYS` then fills in th
 deploy/redeploy.sh
 ```
 
-That one command:
+That one command checks `.env` and `ADMIN_TOKEN`, runs `git pull --ff-only`, **backs up the
+database** from the running container (SQLite online backup, safe while it writes), builds
+an image tagged with the git SHA, starts it, waits for it to be healthy, and checks that the
+new version is the one answering. Schema migrations run automatically at startup and only
+move forward.
 
-1. checks that `.env` and `ADMIN_TOKEN` are present and that the checkout has no local changes
-2. runs `git pull --ff-only`
-3. **backs up the database** from the running container using SQLite's online backup, which
-   is safe while ingestion is writing
-4. builds an image tagged with the git SHA (`fluxflow:<sha>`) and recreates the container
-5. waits for the Docker healthcheck
-6. checks that `/api/health` reports the new SHA, so you know the new build is what answers
-
-Schema changes are applied automatically at startup by the versioned migrations, and only
-ever move forward.
-
-| Variable           | Default | Effect                                                      |
+| Knob               | Default | Effect                                                      |
 | ------------------ | ------- | ----------------------------------------------------------- |
-| `SKIP_PULL=1`      | off     | deploy the checkout as it is                                |
-| `BACKUP_KEEP`      | `3`     | backups kept inside the volume                              |
-| `BACKUP_DIR=/path` | unset   | also copy each backup to this host directory                |
-| `SKIP_BACKUP=1`    | off     | allow a deploy when data exists but no container is running |
-| `HEALTH_TIMEOUT`   | `900`   | seconds to wait for healthy                                 |
+| `SKIP_PULL=1`      | off     | Deploy the checkout as it is                                |
+| `BACKUP_KEEP`      | `3`     | Backups kept inside the volume                              |
+| `BACKUP_DIR=/path` | unset   | Also copy each backup to this host directory                |
+| `SKIP_BACKUP=1`    | off     | Allow a deploy when data exists but no container is running |
+| `HEALTH_TIMEOUT`   | `900`   | Seconds to wait for healthy                                 |
+
+### Your data survives updates
+
+| What               | Where                                                                 |
+| ------------------ | --------------------------------------------------------------------- |
+| Database           | Docker volume **`fluxflow-data`** → `/app/data/flux-flow.db`          |
+| Pre-deploy backups | same volume → `/app/data/backups/` (the newest `BACKUP_KEEP`)         |
+| Address labels     | `./config/labels.json`, mounted read-only; edits apply within seconds |
+| Settings           | `.env`, never committed and never copied into the image               |
+
+The volume name is fixed, so it doesn't depend on the folder you cloned into. Rebuilds,
+updates, `docker compose down` and `restart` all keep it. **Only `docker compose down -v` or
+`docker volume rm fluxflow-data` deletes your data.** Check it with
+`docker volume inspect fluxflow-data`.
 
 ### Rolling back
 
-Every build keeps its own `fluxflow:<sha>` image, and the script prints the exact rollback
-command at the end:
+Every build keeps its own `fluxflow:<sha>` image, and the script prints the exact command:
 
 ```bash
 GIT_SHA=<previous sha> docker compose up -d --no-build
 ```
 
-A rollback across a schema migration also needs the matching backup restored (below).
-
-### Where the data lives
-
-| What               | Where                                                                   |
-| ------------------ | ----------------------------------------------------------------------- |
-| Database           | volume `fluxflow-data` → `/app/data/flux-flow.db`                       |
-| Pre-deploy backups | volume `fluxflow-data` → `/app/data/backups/` (newest `BACKUP_KEEP`)    |
-| Address labels     | `./config/labels.json`, mounted read-only, so edits need only a restart |
-| Settings           | `.env` (never committed, never copied into the image)                   |
-
-The volume name is fixed in `docker-compose.yml`, so it does not depend on the folder the repo
-is cloned into. `docker compose down` keeps it. **Only `docker compose down -v` or
-`docker volume rm fluxflow-data` deletes your data.**
-
-Copy a backup to the host:
+Rolling back across a schema migration also needs the matching backup restored:
 
 ```bash
-docker compose cp fluxflow:/app/data/backups ./backups
-```
-
-Restore one (stop first, so nothing is writing):
-
-```bash
+docker compose cp fluxflow:/app/data/backups ./backups      # copy backups to the host
 docker compose stop
-docker run --rm -v fluxflow-data:/data -v "$PWD/backups:/b" alpine   sh -c 'rm -f /data/flux-flow.db-wal /data/flux-flow.db-shm && cp /b/<backup>.db /data/flux-flow.db && chown 1000:1000 /data/flux-flow.db'
+docker run --rm -v fluxflow-data:/data -v "$PWD/backups:/b" alpine \
+  sh -c 'rm -f /data/flux-flow.db-wal /data/flux-flow.db-shm && cp /b/<backup>.db /data/flux-flow.db && chown 1000:1000 /data/flux-flow.db'
 docker compose start
 ```
 
 ### Day to day
 
 ```bash
-docker compose ps              # health
-docker compose logs -f         # structured JSON logs
-curl localhost:3000/api/status # sync progress, data sources, FluxNode pool
-docker compose restart         # e.g. after editing config/labels.json
+docker compose ps                    # health
+docker compose logs -f               # structured JSON logs
+curl -s localhost:3000/api/status    # sync progress, data sources, labels
 ```
-
-## 📁 Project Structure
-
-> **v2 rework in progress.** FluxFlow is being rebuilt as a single TypeScript service — see
-> [ADR 0001](docs/adr/0001-typescript-rework.md) and the roadmap in
-> [#36](https://github.com/2ndtlmining/fluxflow/issues/36). Ingestion, the API and the Docker
-> image have landed; the intelligence layer and the UI rework are next.
-
-```
-fluxflow/
-├── src/
-│   ├── lib/
-│   │   ├── shared/                    # Isomorphic code, safe in any bundle
-│   │   │   └── constants.ts           # Periods, labels, block-time helpers
-│   │   ├── client/                    # Browser-only helpers, never imported server-side
-│   │   │   ├── api.ts                 # Same-origin /api client, abortable, last-answer cache
-│   │   │   ├── urlState.ts            # period + filters <-> query string
-│   │   │   ├── format.ts, csv.ts      # display formatting, CSV export
-│   │   │   ├── endpoints.ts           # typed calls for every data endpoint (docs/api.md)
-│   │   │   ├── pager.ts               # keyset paging, merging buying + selling streams
-│   │   │   ├── live.svelte.ts         # one EventSource on /api/stream; polling fallback
-│   │   │   └── watchlist.ts           # per-browser watchlist (localStorage)
-│   │   ├── server/                    # Server-only; stripped from the client bundle
-│   │   │   ├── config.ts              # zod-validated environment
-│   │   │   ├── logger.ts              # pino, structured, redacted
-│   │   │   ├── http.ts                # every outbound call: timeout, retries, limiter
-│   │   │   ├── labels.ts              # exchange / Foundation labels -> address_labels
-│   │   │   ├── index.ts               # service assembly, lifecycle, graceful shutdown
-│   │   │   ├── api/                   # read queries + the /api router
-│   │   │   ├── db/                    # SQLite connection + versioned migrations
-│   │   │   └── ingest/datasource/     # normalised chain shapes, adapters, breaker
-│   │   ├── ui/                        # Svelte 5 components (balance axis, boards, explorer)
-│   │   └── data/exchanges.json        # legacy labels, superseded by config/labels.json
-│   ├── routes/                        # SvelteKit routes
-│   ├── server.ts                      # entry: /api router + SvelteKit handler, one process
-│   ├── app.css
-│   └── app.html
-├── scripts/dev-api.ts                 # API-only entry for `npm run dev`
-├── config/labels.json                 # mounted into the container
-├── docs/adr/                          # architecture decision records
-├── .github/workflows/ci.yml
-├── Dockerfile                         # multi-stage, Node 22, tini, one port
-├── docker-compose.yml
-├── tsconfig.json                      # editor, svelte-check and component typechecking
-├── tsconfig.server.json               # emits the Node server to dist/
-└── package.json
-```
-
-### Where code belongs
-
-| Path          | Runs in          | May import        |
-| ------------- | ---------------- | ----------------- |
-| `$lib/shared` | server + browser | nothing app-bound |
-| `$lib/client` | browser only     | `$lib/shared`     |
-| `$lib/server` | server only      | `$lib/shared`     |
-
-SvelteKit strips `$lib/server` out of the client bundle, which is why configuration and
-credentials belong there rather than in `$lib/shared`.
-
-### Server modules
-
-| Module                      | Responsibility                                                                      | Issues        |
-| --------------------------- | ----------------------------------------------------------------------------------- | ------------- |
-| `server/config.ts`          | zod-validated environment, resolved once at startup                                 | #11           |
-| `server/logger.ts`          | pino structured logging with redaction                                              | #24           |
-| `server/http.ts`            | the only outbound call site: mandatory timeout, retries, shared concurrency limiter | #10, #5       |
-| `server/db/database.ts`     | SQLite connection and pragmas; `DEBUG_SQL` gates SQL logging                        | #6            |
-| `server/db/migrations.ts`   | versioned schema migrations; refuses a legacy v1 database                           | #17           |
-| `server/ingest/datasource/` | normalised chain shapes, FluxNode pool + Blockbook + FluxIndexer, circuit breaker   | #12, #15, #35 |
-| `server/ingest/derive.ts`   | a fetched block → deltas, flows and node rewards. Pure, no I/O                      | #15, #18      |
-| `server/ingest/writer.ts`   | the single writer: one transaction per batch, statements prepared once              | #14, #16      |
-| `server/ingest/sync.ts`     | tip-following, gap repair, reorg rollback, retention                                | #5, #13, #17  |
-| `server/labels.ts`          | `config/labels.json` → `address_labels`, reloadable without a restart               | #18, #20      |
-| `server/api/queries.ts`     | bounded SQL: aggregates in the database, keyset pagination, no full scans           | #2, #3        |
-| `server/api/router.ts`      | the `/api` surface; O(1) health that reports staleness                              | #3, #21       |
-| `server/index.ts`           | service assembly and graceful shutdown                                              | #14, #22      |
-
-## 🔧 How It Works
-
-### Data model
-
-Chain facts are stored once and are never rewritten; everything the dashboard shows is
-derived from them and can be rebuilt.
-
-| Table            | Role                                                                         |
-| ---------------- | ---------------------------------------------------------------------------- |
-| `blocks`         | height, hash, `prev_hash`, time, tx count, and which source it came from     |
-| `tx_deltas`      | per-transfer, per-address satoshi deltas — the unit of analysis              |
-| `node_rewards`   | coinbase-derived, so "was a node operator" is time-accurate                  |
-| `address_labels` | exchange / Foundation / operator labels — mutable, correctable, re-derivable |
-| `flows`          | the derived buy/sell/p2p rows the API reads                                  |
-| `rollup_*`       | hourly and daily totals per direction, counterparty and exchange (triggers)  |
-| `wallet_*`       | daily and 30-day totals per wallet, for leaderboards and profiles (triggers) |
-| `missing_blocks` | heights that failed to fetch, with backoff — retried, never skipped          |
-
-Because labels are separate from facts, correcting an exchange address never rewrites
-history and never invalidates an analysis.
-
-### Flow classification
-
-For each transfer transaction:
-
-1. Collect every input address and every output address.
-2. Collapse to one row per address in `tx_deltas` — a wallet that funded two inputs is one
-   delta, not two.
-3. Ignore `OP_RETURN` and other unspendable outputs: they are not counterparty transfers.
-4. Look up each address in `address_labels`; anything unlabelled is `unknown`.
-5. Direction: funds **from** an exchange to elsewhere = `buying`; funds **to** an exchange
-   from elsewhere = `selling`; everything else = `p2p`.
-
-### Resilience
-
-- Every outbound request has a mandatory timeout, so a hung node cannot stall sync.
-- Failed heights are recorded in `missing_blocks` and retried with backoff.
-- One circuit breaker per data source: failures are counted across all requests, the
-  primary is health-probed and taken back once it recovers, and one bad block cannot
-  demote a healthy source.
-- `docker stop` checkpoints the WAL and closes the database before exit.
-
-## 📡 API Endpoints
-
-All endpoints are same-origin. There is no CORS layer unless `ORIGIN` is set explicitly.
-
-| Method | Path                           | Notes                                         |
-| ------ | ------------------------------ | --------------------------------------------- |
-| GET    | `/api/health`                  | O(1); 503 + `degraded` when sync is stale     |
-| GET    | `/api/status`                  | sync, database, data-source and label summary |
-| GET    | `/api/blocks/status`           | block range and sync progress                 |
-| GET    | `/api/database/stats`          | row counts and database size                  |
-| GET    | `/api/classification/stats`    | label counts                                  |
-| GET    | `/api/unknowns/stats`          | how much is still unlabelled                  |
-| GET    | `/api/flow/:period`            | aggregated totals, no events attached         |
-| GET    | `/api/flow/:period/events`     | keyset-paginated events, filterable           |
-| GET    | `/api/flow/:period/buyers`     | top wallets withdrawing from exchanges        |
-| GET    | `/api/flow/:period/sellers`    | top wallets depositing to exchanges           |
-| GET    | `/api/flow/:period/series`     | buying/selling/net per hour (≤7D) or day      |
-| GET    | `/api/wallets/:address`        | wallet profile: totals, exchanges, history    |
-| GET    | `/api/wallets/:address/events` | a wallet's flows, keyset-paginated            |
-| GET    | `/api/search?q=`               | address prefix, label name or txid            |
-| GET    | `/api/flow/:period/hops`       | exchange hops (withdraw → re-deposit)         |
-| GET    | `/api/foundation?period=`      | Foundation wallets, flows, balance history    |
-| GET    | `/api/intel/status`            | labels by source, node list, clustering       |
-| GET    | `/api/stream`                  | Server-Sent Events: `sync` and `flow` (live)  |
-| GET    | `/api/metrics`                 | Prometheus text format                        |
-| POST   | `/api/admin/sync`              | admin: start a cycle now (answers 202)        |
-| POST   | `/api/admin/retention`         | admin: prune past the retention window now    |
-| POST   | `/api/admin/alerts/reload`     | admin: re-read `config/alerts.json`           |
-
-`period` is one of `24H`, `7D`, `30D`, `90D`, `6M`. Windows are resolved from block **time**
-rather than a block count, so "Today" means today even if block times drift.
-
-Every response carries an `ETag` tied to the stored data's version: repeat requests between
-syncs are served from memory, or answered `304`. Full request and response shapes are in
-[`docs/api.md`](docs/api.md).
-
-`/api/flow/:period` returns aggregates only. Events are served a page at a time by
-`/events`, because shipping a whole period to the browser took 28 seconds and then crashed
-in `JSON.stringify` at six months.
-
-Admin endpoints need `Authorization: Bearer $ADMIN_TOKEN` and are refused outright when no
-token is configured.
-
-**Limits.** Every query parameter is validated: a bad `limit`, `type` or `kind` is a `400`
-naming the parameter, not a silent default. Clients are rate limited per IP
-(`API_RATE_LIMIT_RPS` sustained, `API_RATE_LIMIT_BURST` burst; `0` disables), except
-health, status, metrics and the stream. Request bodies over 64 KB are refused with `413`,
-and a request must arrive within 30 s. Behind a reverse proxy set `TRUST_PROXY=1` so the
-limiter sees real client IPs.
-
-### Live updates (`/api/stream`)
-
-After each committed sync cycle the server sends `event: sync` with the new tip and data
-version (the same version the API's ETags carry, so a refetch is a cheap `304` when nothing
-you show changed). New flows of at least `LIVE_FLOW_MIN_FLUX` from tip-following arrive as
-`event: flow`. Backfilled history never does.
-
-```js
-const events = new EventSource('/api/stream');
-events.addEventListener('sync', (e) => refresh(JSON.parse(e.data)));
-events.addEventListener('flow', (e) => toast(JSON.parse(e.data)));
-```
-
-At most `LIVE_MAX_CLIENTS` subscribers; beyond that the stream answers `503` and clients
-should fall back to polling.
-
-### Metrics (`/api/metrics`)
-
-Prometheus text format, cheap enough to scrape every 15 s. Highlights:
-`fluxflow_chain_height`, `fluxflow_sync_blocks_total{phase}`,
-`fluxflow_sync_blocks_per_minute`, `fluxflow_source_active{source}`,
-`fluxflow_pool_nodes{state}`, `fluxflow_api_cache_total{outcome}`,
-`fluxflow_event_loop_delay_seconds{quantile}`, `fluxflow_alerts_total{outcome}`.
-`/api/status` carries the event-loop delay too, under `runtime`.
 
 ---
 
-## ⚙️ Configuration Files
+## How it works
+
+```mermaid
+flowchart LR
+  subgraph Sources
+    N[Your FluxNode]
+    I[FluxIndexer]
+    P[Public FluxNode pool]
+    B[Blockbook]
+  end
+  Sources -->|whole blocks, with input addresses| S[Sync pipeline]
+  S -->|one transaction per batch| DB[(SQLite on volume fluxflow-data)]
+  DB --> INT[Intelligence: labels, node operators, deposit addresses, clustering, hops, Foundation]
+  INT -->|labels change → flows re-derived| DB
+  DB --> API["/api + live stream"]
+  API --> UI[Svelte dashboard]
+```
+
+One Node.js process serves the API, the web app and the live event stream on one port.
+
+### Sync pipeline
+
+- **Whole blocks in one request.** A FluxNode's `getblockdeltas` returns every transaction
+  of a block with each input's address and amount. v1 needed one request per transaction
+  against a rate-limited public API, capped at 50 per block.
+- **Back to back while behind.** Batches of `SYNC_BATCH_SIZE` blocks are fetched
+  `SYNC_CONCURRENCY` at a time and committed one after another until the tip is reached;
+  the 30-second poll only applies once caught up. (The first v2 build ran one batch per
+  poll: about 17 hours for six months. Now it is under an hour from a LAN node.)
+- **All or nothing.** Everything derived from a batch (blocks, per-address deltas, flows,
+  node rewards) commits in one SQLite transaction, so a crash never leaves a block marked
+  done with its flows missing. A height that fails is recorded and retried, never skipped.
+- **Reorgs.** The last stored hashes are compared with the chain every cycle; a mismatch
+  rolls back and re-syncs.
+- **Retention.** Raw rows older than `RETENTION_DAYS` are pruned; the totals are kept.
+
+### From transactions to flows
+
+For each transfer, FluxFlow nets every address's inputs against its outputs, so change and
+self-transfers cancel out. Each recipient's amount is then **split across all the funders in
+proportion to what they put in**. A sweep of ten exchange deposit addresses becomes ten
+rows, each credited with its own share, not one row credited to whichever address came
+first. The split is exact to the satoshi.
+
+Each row is classified from the labels of the two sides:
+
+| From          | To          | Flow        |
+| ------------- | ----------- | ----------- |
+| an exchange   | anyone else | **buying**  |
+| anyone else   | an exchange | **selling** |
+| anything else |             | p2p         |
+
+Transfers between Foundation wallets produce no flow at all.
+
+### Data model
+
+| Table                                                                    | Role                                                              |
+| ------------------------------------------------------------------------ | ----------------------------------------------------------------- |
+| `blocks`                                                                 | height, hash, time, and which source it came from                 |
+| `tx_deltas`                                                              | per-transaction, per-address satoshi in/out: the immutable facts  |
+| `node_rewards`                                                           | who received block rewards, so "was a node operator" has a date   |
+| `address_labels`                                                         | labels with a **source**, **confidence** and **evidence**         |
+| `flows`                                                                  | the derived buying / selling / p2p rows                           |
+| `rollup_*`, `wallet_*`                                                   | hourly/daily totals and per-wallet totals, kept exact by triggers |
+| `label_candidates`, `exchange_hops`, `address_clusters`, `relabel_queue` | intelligence state                                                |
+
+Facts are never rewritten. When a label changes, the affected transactions are re-derived
+from `tx_deltas` in small batches, and the triggers move the totals in the same write, so
+the dashboard always matches the current labels.
+
+### Speed
+
+Every API answer is cached per data version (it only changes when a batch commits) and
+carries an `ETag`, so repeat requests are answered from memory or with `304`. Totals come
+from the rollups: a 6-month summary reads a few hundred daily buckets instead of millions
+of rows.
+
+---
+
+## Address intelligence
+
+Every label has a **source**, a **confidence** and its **evidence**. Only labels at
+**likely** (0.7) or above change how a flow is counted; weaker ones are shown on the wallet
+page with their evidence and nowhere else. A manual label always wins.
+
+| Kind                     | How it is found                                                                                                                                                                           | Confidence         |
+| ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------ |
+| Exchange                 | `config/labels.json`, or a candidate accepted on the Label review page                                                                                                                    | confirmed          |
+| Exchange deposit address | **Forwarder:** an unlabelled address that sends every outflow to one exchange (5+ times), passes on what it receives and never withdrew from an exchange. 2–4 times → proposed for review | likely / candidate |
+| Exchange (candidate)     | **Clustering:** addresses spent together with a known exchange address. **Sweeps:** addresses consolidated into a known hot wallet                                                        | candidate          |
+| Foundation               | `config/labels.json`, with named sub-wallets                                                                                                                                              | confirmed          |
+| Foundation intermediary  | A wallet funded ≥95% by the Foundation that passes it on (not more than it received) almost entirely to **confirmed** nodes or as live node collateral                                    | likely             |
+| Node operator            | Payment address on the current node list                                                                                                                                                  | confirmed          |
+| Node operator            | Received block rewards in stored blocks but is no longer listed (valid 30 days after its last reward)                                                                                     | likely             |
+| Node operator's wallet   | **Reward forwarding:** ≥90% of its inflow from node operators (≥100 FLUX), nothing bought on an exchange; followed **two wallets deep** (node → W1 → W2)                                  | likely / possible  |
+| Node operator's wallet   | **Node funding:** sends ≥90% of its outflow (at least one collateral, 1,000 FLUX) to node addresses, e.g. buying FLUX to stand nodes up                                                   | likely             |
+| Unknown                  | everything else                                                                                                                                                                           | –                  |
+
+What this means in practice:
+
+- **Node operators who sell through their own wallets are counted as node operators.**
+  Node → own wallet → Kucoin shows as node-operator selling, as does node → Kucoin deposit
+  address.
+- **Sales are credited to the person who deposited**, at the time they deposited, once the
+  deposit address is known, not to the deposit address when the exchange sweeps it hours
+  later.
+- **Exchange hops** (a withdrawal from one exchange re-deposited to another by the same
+  wallet within ~2 hours) are listed separately, and headline totals can be read without
+  them.
+- **Foundation money is followed up to three wallets forward** and summarised as exchange
+  (by name), node collateral (verified against the node list), returned, or still held.
+  Payments through a Foundation intermediary count as the Foundation's own outflow to their
+  real destinations.
+
+---
+
+## API
+
+All endpoints are same-origin JSON under `/api`. Full request and response shapes are in
+[`docs/api.md`](docs/api.md).
+
+```bash
+curl -s localhost:3000/api/health
+# {"status":"ok","version":"e3c9c34","uptimeSeconds":446,"lastSuccessfulSyncAt":1791103224883}
+
+curl -s localhost:3000/api/flow/7D | jq '{netFlow, buying: .buying.total, selling: .selling.total}'
+# {"netFlow": -318994.68, "buying": 156183.23, "selling": 475177.91}
+
+curl -s 'localhost:3000/api/flow/7D/sellers?limit=1' | jq '.sellers[0] | {address, kind, total, share, exchanges}'
+# {"address":"t1Tohzrk8n…","kind":"unknown","total":199000,"share":0.419,
+#  "exchanges":[{"name":"Kucoin","total":199000,"count":1}]}
+
+curl -s localhost:3000/api/status | jq .sync.catchUp
+# {"tip":3007084,"behindBlocks":318178,"catchingUp":true,"progress":38.6,
+#  "dataFrom":1775524774,"dataAsOf":1781543554,"etaSeconds":1391}
+```
+
+| Method | Path                                                                                             | What                                                                  |
+| ------ | ------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------- |
+| GET    | `/api/health`                                                                                    | Liveness; `503` + `degraded` when sync is stale                       |
+| GET    | `/api/status`                                                                                    | Sync and catch-up progress, ingest stats, data sources, labels        |
+| GET    | `/api/flow/:period`                                                                              | Totals, by exchange and by kind of wallet; previous period            |
+| GET    | `/api/flow/:period/sellers` / `buyers`                                                           | Leaderboards (`limit`, `kind`, `minConfidence`)                       |
+| GET    | `/api/flow/:period/series`                                                                       | Buying / selling / net per hour (≤ 7 days) or per day                 |
+| GET    | `/api/flow/:period/events`                                                                       | Every transfer, keyset-paginated and filterable                       |
+| GET    | `/api/flow/:period/hops`                                                                         | Exchange hops                                                         |
+| GET    | `/api/wallets/:address`                                                                          | Wallet profile, labels with evidence, exchanges, history              |
+| GET    | `/api/wallets/:address/events`                                                                   | A wallet's transfers, paginated                                       |
+| GET    | `/api/search?q=`                                                                                 | Address prefix, label name or txid                                    |
+| GET    | `/api/foundation?period=`                                                                        | Foundation wallets, totals, balance history, destinations             |
+| GET    | `/api/intel/status`                                                                              | Labels by source, node list, clustering, intermediaries               |
+| GET    | `/api/stream`                                                                                    | Server-Sent Events: `sync` after each batch, `flow` for new big flows |
+| GET    | `/api/metrics`                                                                                   | Prometheus metrics                                                    |
+| GET    | `/api/admin/labels/review`                                                                       | Admin: candidates with evidence, for the review page                  |
+| POST   | `/api/admin/labels/candidates/decide-bulk`                                                       | Admin: accept or reject many candidates in one go                     |
+| POST   | `/api/admin/labels` · DELETE `/api/admin/labels/:address`                                        | Admin: set or remove a manual label                                   |
+| POST   | `/api/admin/sync` · `/api/admin/intel/run` · `/api/admin/retention` · `/api/admin/alerts/reload` | Admin: run a job now                                                  |
+
+`period` is `24H`, `7D`, `30D`, `90D` or `6M`. Admin endpoints need
+`Authorization: Bearer $ADMIN_TOKEN`. Every parameter is validated (a bad value is a `400`
+naming it), clients are rate limited per IP, and bodies over 64 KB are refused.
+`/api/blocks/status`, `/api/database/stats`, `/api/classification/stats` and
+`/api/unknowns/stats` remain for v1 clients.
+
+Live updates in the browser:
+
+```js
+const events = new EventSource('/api/stream');
+events.addEventListener('sync', (e) => refresh(JSON.parse(e.data))); // after each batch
+events.addEventListener('flow', (e) => toast(JSON.parse(e.data))); // a new flow ≥ LIVE_FLOW_MIN_FLUX
+```
+
+---
+
+## Config files: labels and alerts
 
 ### Address labels (`config/labels.json`)
 
 ```json
 {
-  "exchanges": [{ "name": "Coinex", "addresses": ["t1abc...", "t1def..."] }],
+  "exchanges": [{ "name": "Kucoin", "addresses": ["t1...", "t1..."] }],
   "foundation": {
     "name": "Flux Foundation",
-    "addresses": ["t1xyz..."]
+    "addresses": ["t1..."],
+    "wallets": [{ "name": "Treasury", "addresses": ["t3..."] }]
   }
 }
 ```
 
-Foundation sub-wallets go under `foundation.wallets` as `{ "name": "Treasury",
-"addresses": [...] }`; the name becomes the wallet's `subLabel`.
+The file is watched: an edit applies within seconds, without a restart, and the affected
+flows are re-derived. Removing an address removes its label.
 
-Mounted at `/app/config/labels.json` in the container and **watched**: an edit is applied
-within a few seconds, without a restart, and the affected flows are re-derived. Removing an
-address from the file removes its label.
+### Reviewing detected exchange addresses
 
-### Growing exchange coverage (#20)
-
-Clustering (addresses spent together share an owner) and sweep detection (deposit
-addresses consolidated into a known hot wallet) propose **candidates**. They change no total
-until accepted. The easiest way is the **Label review** page at `/review` (linked in the
-footer): enter `ADMIN_TOKEN` once per browser tab, then accept or reject whole groups (one
-exchange, one method) with the evidence for each address beside it. Or with curl:
+Open **Label review** (linked in the footer, `/review`), enter `ADMIN_TOKEN` once per
+browser tab, and accept or reject whole groups (one exchange, one method) with the evidence
+beside each address. Accepting re-derives the affected transfers; rejecting undoes it. The
+same with curl:
 
 ```bash
-curl -H "Authorization: Bearer $ADMIN_TOKEN" localhost:3000/api/admin/labels/candidates?status=pending
+curl -H "Authorization: Bearer $ADMIN_TOKEN" 'localhost:3000/api/admin/labels/review?status=pending'
 curl -H "Authorization: Bearer $ADMIN_TOKEN" -H 'content-type: application/json' \
   -d '{"address":"t1...","kind":"exchange","name":"Kucoin","decision":"accepted"}' \
   localhost:3000/api/admin/labels/candidates/decide
 ```
 
-A manual label (`POST /api/admin/labels`) beats every other source; `"kind": "unknown"`
-removes a wrong label. `npm run precision -- <copy of the db>` runs the whole pass on a
-database file and prints how often each heuristic agrees with independent ground truth.
-
 ### Alerts (`config/alerts.json`)
 
 Whale and watchlist alerts to Discord, Telegram or any webhook. Copy
-[`config/alerts.example.json`](config/alerts.example.json) to `config/alerts.json` (or point
-`ALERTS_PATH` elsewhere); without the file, alerts are off.
+[`config/alerts.example.json`](config/alerts.example.json) to `config/alerts.json`; without
+the file, alerts are off.
 
 ```json
 {
-  "channels": {
-    "discord": { "type": "discord", "url": "env:DISCORD_WEBHOOK_URL" }
-  },
+  "channels": { "discord": { "type": "discord", "url": "env:DISCORD_WEBHOOK_URL" } },
   "rules": [
     {
       "name": "Whale sell to an exchange",
@@ -495,129 +414,116 @@ Whale and watchlist alerts to Discord, Telegram or any webhook. Copy
 }
 ```
 
-- **Matching:** `minFlux`, `flowTypes`, `exchanges`, `kinds` (the counterparty, e.g.
-  `node_operator`) and `addresses` (either side) — every condition given must hold.
-- **Secrets:** `"env:NAME"` reads a value from the environment, so webhook URLs and bot
-  tokens stay out of the file. A channel whose variable is unset is disabled with a warning.
-- **Noise control:** each flow alerts once per rule, `cooldownSeconds` suppresses repeats,
-  and one batch sends at most 5 alerts per rule plus a `(+N more)` note. Only recent
-  tip-following flows are checked; backfill never alerts.
-- **Delivery** runs in the background with retries, never delaying ingestion.
-- The file is re-read when it changes (or `POST /api/admin/alerts/reload`); an invalid edit
-  keeps the previous rules and is reported in `/api/status`.
+Then put `DISCORD_WEBHOOK_URL=…` in `.env`. Rules can match on `minFlux`, `flowTypes`,
+`exchanges`, `kinds` (e.g. `node_operator`) and `addresses`. Secrets are referenced as
+`env:NAME` so they stay out of the file. Each flow alerts once per rule, with a cooldown and
+at most 5 alerts per batch; history being synced never alerts. The file is re-read when it
+changes.
 
-## 🎨 Theming
+---
 
-The app uses a terminal-style dark theme inspired by Fluxtracker:
-
-- Flux purple primary color (#8247e5)
-- Cyan accents (#00d4ff)
-- Dark background (#0a0e27)
-- Monospace font (Courier New)
-
-## 🐛 Troubleshooting
-
-### `/api/health` returns 503
-
-The service reports `degraded` when sync has not completed a cycle recently, and the
-`reason` field says why. In Docker the healthcheck will report unhealthy and an orchestrator
-can restart the container. Check `/api/status` for the data-source state and any open
-circuit breaker.
-
-### The dashboard shows zeros
-
-On a fresh install the database starts empty and fills from the retention floor upwards.
-`/api/flow/:period` returns `ready: false` and a progress figure until enough blocks have
-landed. Watch progress at `/api/status`, or in the logs:
+## Development
 
 ```bash
-docker logs -f fluxflow | grep "batch committed"
+npm install
+cp .env.example .env         # LOG_PRETTY=1 for readable logs; FLUX_NODE_URL to sync fast
+npm run dev                  # API on :3000 + Vite on :5173, both watching
 ```
 
-### Ingestion stalls on `HTTP 429` or timeouts
-
-If `blockbook` is the active source it is being rate-limited by IP, which it does to shared
-and busy hosts. The service handles this correctly — it backs off, opens the circuit breaker
-and reports `degraded` rather than writing partial data — but it cannot make progress.
-
-Check which source is actually in use:
+Open <http://localhost:5173>. To work on the UI against a server that already has data:
 
 ```bash
-curl -s localhost:3000/api/status | jq '.dataSources.active'
+API_PROXY_TARGET=http://<server>:3000 npm run dev:web
 ```
 
-If that says `blockbook` when you expected `fluxnode-pool`, the pool found no usable nodes.
-`/api/status` carries the detail:
+Checks (all run in CI on Node 22):
 
 ```bash
-curl -s localhost:3000/api/status | jq '.dataSources.details["fluxnode-pool"]'
+npm run verify               # format check + lint + server typecheck + tests
+npm run check                # svelte-check
+npm run build:all            # vite build → build/, tsc → dist/
+npx tsx scripts/bench-api.ts # API benchmark on a synthetic 6-month database
 ```
 
-| Field             | Meaning                                                         |
-| ----------------- | --------------------------------------------------------------- |
-| `discovered`      | nodes kept after probing                                        |
-| `serving`         | not currently benched                                           |
-| `insight`         | of those, how many can attribute transaction inputs             |
-| `medianTip`       | the agreed chain tip                                            |
-| `lastError`       | why the last probe or fetch failed                              |
-| `nodes[].benched` | a node answering wrongly or failing is out for a cooling period |
-
-`insight: 0` means no node could tell us **who sent** the value, so the pool refuses to serve
-blocks rather than record flows with no counterparty. Raise `FLUXNODE_PROBE_SAMPLE` to look
-at more candidates, and check `FLUXNODE_API_PORTS` if your nodes run on non-standard ports.
-
-For sustained ingestion, prefer a source you control:
-
-| Option                                | How                                                                    |
-| ------------------------------------- | ---------------------------------------------------------------------- |
-| **Your own FluxIndexer** (fastest)    | `FLUX_INDEXER_URL=http://your-indexer:42067`                           |
-| **FluxNode pool** (free, distributed) | default; many nodes instead of one                                     |
-| **Own `fluxd`**                       | planned — see [#36](https://github.com/2ndtlmining/fluxflow/issues/36) |
-
-`SYNC_CONCURRENCY`, `SYNC_BATCH_SIZE`, `FLUXNODE_POOL_SIZE` and `FLUXNODE_MAX_INFLIGHT` are
-the knobs. Lowering them reduces pressure on remote nodes at the cost of a slower backfill.
-
-### Insufficient data
-
-If you see "Insufficient data" messages, the system is still syncing blocks. Wait for the
-progress bar to reach 100%.
-
-### Sync errors
-
-Logs are structured JSON, so failures are easy to filter:
+**Windows:** `better-sqlite3` needs a C++ toolchain to install. Without Visual Studio Build
+Tools, run the commands in Docker instead:
 
 ```bash
-docker logs fluxflow 2>&1 | grep '"level":40'
-docker logs fluxflow 2>&1 | grep 'circuit breaker transition'
+docker run --rm -v "$PWD":/app -v fluxflow-nm:/app/node_modules -w /app node:22-bookworm \
+  bash -c "npm ci && npx svelte-kit sync && npm run verify"
 ```
 
-Common causes are rate limiting (see above), network connectivity, and a data source
-returning an unexpected shape. A height that cannot be fetched is recorded in
-`missing_blocks` and retried with backoff — it is never skipped.
+---
 
-### High memory usage
+## Troubleshooting
 
-Set `RETENTION_DAYS` to keep less history. Blocks older than the retention window are
-pruned on a schedule; rollups can be kept for longer than the raw data once they land.
+**The numbers keep jumping.** It is still catching up: the banner says how far, and up to
+which date the figures reach. They settle once it reaches today.
 
-## 📝 Roadmap
+**Sync is slow or stalls.** Check which source is active:
 
-Work in progress is tracked in [#36](https://github.com/2ndtlmining/fluxflow/issues/36) and
-[#34](https://github.com/2ndtlmining/fluxflow/issues/34). The remaining layers are:
+```bash
+curl -s localhost:3000/api/status | jq '.dataSources.active, .dataSources.details'
+```
 
-- **Read models** — rollup tables so dashboard queries are O(buckets) rather than O(events)
-- **Intelligence** — node-operator detection from coinbase rewards, exchange clustering,
-  confidence-scored heuristics
-- **UI** — status bar, leaderboards, net-flow-over-time, transaction explorer, wallet pages
+`blockbook` means the better sources are failing; Blockbook rate-limits by IP. Set
+`FLUX_NODE_URL` to your own node. For the pool, `insight: 0` means no discovered node has
+the spent index; raise `FLUXNODE_PROBE_SAMPLE` or check `FLUXNODE_API_PORTS`.
 
-## 🙏 Credits
+**`FLUX_NODE_URL` is set but not used.** The node must be reachable from the container on
+its FluxOS API port (usually `16127`) and have the spent index enabled. If not, it reports
+unhealthy and the pool takes over; `/api/status` → `dataSources.sources` shows its state.
 
-Built on the Flux blockchain ecosystem:
+**`/api/health` returns 503.** No sync cycle has succeeded recently; the `reason` field says
+why. Look at `/api/status` and the logs:
 
-- Blockbook API: https://blockbook.runonflux.io
-- Flux Nodes API: https://explorer.runonflux.io
-- Inspired by: Fluxtracker (https://fluxtracker.app.runonflux.io)
+```bash
+docker compose logs fluxflow | grep -E '"level":(40|50)'
+```
 
-## 📄 License
+**The container won't start.** `ADMIN_TOKEN` must be set and at least 32 characters. Any
+other configuration error is listed in full in the log at startup.
 
-MIT License - See LICENSE file for details
+**A wallet is labelled wrongly.** The wallet page shows the label's source and evidence.
+Correct it with a manual label (`POST /api/admin/labels`, or `"kind": "unknown"` to remove
+one), or fix `config/labels.json`.
+
+---
+
+## Project structure
+
+```
+src/
+├── server.ts                     # entry: /api router + SvelteKit handler, one process
+├── routes/                       # pages: /, /wallet/[address], /foundation, /search, /review
+└── lib/
+    ├── ui/                       # Svelte 5 components
+    ├── client/                   # browser-only: API client, live stream, formatting, CSV
+    ├── shared/                   # code safe on both sides
+    └── server/                   # stripped from the client bundle
+        ├── config.ts             # zod-validated environment
+        ├── http.ts               # every outbound call: timeout, retries, limiter
+        ├── labels.ts             # label book: sources, priorities, confidence
+        ├── db/                   # SQLite connection, versioned migrations
+        ├── ingest/               # sync loop, block → flows derivation, writer, data sources
+        ├── intel/                # node operators, deposit forwarders, clustering, hops,
+        │                         #   Foundation intermediaries and destinations, re-derivation
+        ├── api/                  # router, queries, caching, catch-up state
+        └── live/                 # event stream and alerts
+config/labels.json                # address labels, mounted into the container
+deploy/redeploy.sh                # pull, back up, build, verify
+docs/api.md · docs/adr/           # API reference, architecture decisions
+```
+
+Design decisions are recorded in [`docs/adr/`](docs/adr/).
+
+## Credits
+
+Built on the Flux ecosystem: FluxOS daemon APIs on FluxNodes,
+[explorer.runonflux.io](https://explorer.runonflux.io) and
+[blockbook.runonflux.io](https://blockbook.runonflux.io). Inspired by
+[Fluxtracker](https://fluxtracker.app.runonflux.io).
+
+## License
+
+MIT.

@@ -33,6 +33,23 @@ O(1). `200` when sync is current, `503` when it is stale or has never succeeded.
 Cached once per data version: sync progress, database counts, data sources (with FluxNode
 pool detail) and label counts.
 
+`sync.catchUp` says whether the stored data is still catching up with the network (a fresh
+install syncs six months oldest-first, forward to today). `catchingUp` turns false within 20
+blocks of the tip. Times are unix seconds; `ingest.networkTip` is the same tip, and
+`ingest.tip` is the highest _stored_ block.
+
+```json
+"catchUp": {
+  "tip": 3007084,
+  "behindBlocks": 318178,
+  "catchingUp": true,
+  "progress": 38.6,
+  "dataFrom": 1775524774,
+  "dataAsOf": 1781543554,
+  "etaSeconds": 1391
+}
+```
+
 ---
 
 ## Flows
