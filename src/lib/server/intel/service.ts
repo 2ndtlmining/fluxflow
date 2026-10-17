@@ -7,7 +7,8 @@
  *   node list     every NODE_REFRESH_SECONDS: node-list, coinbase-reward and forwarding
  *                 labels (`nodes.ts`)
  *   clustering    every INTEL_CLUSTER_SECONDS: clusters and exchange candidates
- *                 (`clusters.ts`); candidates change nothing until accepted
+ *                 (`clusters.ts`), and Foundation-funded wallets (`foundation-funded.ts`);
+ *                 candidates change nothing until accepted
  *   hops          every minute, incrementally (`hops.ts`)
  *   balances      Foundation balances from your own node, when configured (`foundation.ts`)
  *   foundation    with the node list: Foundation intermediaries (`intermediaries.ts`); the
@@ -31,6 +32,7 @@ import { serialiseError } from '../logger.js';
 import { clusterAddresses, storeCandidates, type ClusterResult } from './clusters.js';
 import { fetchBalances, type BalanceSnapshot } from './foundation.js';
 import { detectDepositForwarders } from './forwarders.js';
+import { detectFoundationFunded } from './foundation-funded.js';
 import { detectIntermediaries, INTERMEDIARY_SOURCE } from './intermediaries.js';
 import { dataVersion } from '../api/queries.js';
 import { detectHops } from './hops.js';
@@ -326,8 +328,11 @@ export class IntelService {
       await this.exclusive(() => replaceSourceLabels(db, 'forwarder', forwarders.labels));
       const changed = labels.refresh('deposit forwarders refreshed');
 
+      // Wallets the Foundation (or one of these) funds: proposed only, never applied (#62).
+      const foundationFunded = await this.exclusive(() => detectFoundationFunded(db, labels));
+
       const stored = await this.exclusive(() =>
-        storeCandidates(db, [...result!.candidates, ...forwarders.candidates])
+        storeCandidates(db, [...result!.candidates, ...forwarders.candidates, ...foundationFunded])
       );
 
       this.clustering = {
@@ -335,7 +340,8 @@ export class IntelService {
         clusters: result.clusters,
         clusteredAddresses: result.clusteredAddresses,
         largest: result.largest,
-        candidates: result.candidates.length + forwarders.candidates.length,
+        candidates:
+          result.candidates.length + forwarders.candidates.length + foundationFunded.length,
         conflicts: result.conflicts.length,
         forwarders: forwarders.labels.length
       };

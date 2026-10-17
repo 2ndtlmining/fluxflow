@@ -28,7 +28,14 @@ export interface ReviewCandidate {
     txs: number;
     firstSeen: number | null;
     lastSeen: number | null;
-    received: { flux: number; transfers: number; senders: number; fromNodeOperators: number };
+    received: {
+      flux: number;
+      transfers: number;
+      senders: number;
+      fromNodeOperators: number;
+      fromClaimed: number;
+      fromClaimedShare: number | null;
+    };
     sent: {
       flux: number;
       transfers: number;
@@ -220,7 +227,9 @@ export function groupCandidates(candidates: readonly ReviewCandidate[]): Candida
 const METHOD_TEXT: Record<string, string> = {
   sweep: 'Swept into a known exchange wallet together with other deposit addresses',
   common_input: 'Spent in the same transaction as a known exchange wallet (shared inputs)',
-  forwarder: 'Sends everything it receives to one exchange (a deposit address)'
+  forwarder: 'Sends everything it receives to one exchange (a deposit address)',
+  foundation_funded:
+    'Funded mostly by Foundation wallets, directly or through other wallets proposed here, and does not sell. Accepting counts it as one of the Foundation’s own wallets'
 };
 
 /** Plain words for a method; an unknown method is shown by its name, not hidden. */
@@ -305,11 +314,20 @@ export function activityText(candidate: ReviewCandidate): string {
     parts.push(
       `received ${formatFlux(received.flux)} FLUX from ${formatCount(received.senders)} ${
         received.senders === 1 ? 'wallet' : 'wallets'
-      }${received.fromNodeOperators > 0 ? ` (${formatCount(received.fromNodeOperators)} from node operators)` : ''}`
+      }${received.fromNodeOperators > 0 ? ` (${formatCount(received.fromNodeOperators)} from node operators)` : ''}${
+        // A Foundation candidate is judged by where its money came from.
+        candidate.kind !== 'exchange' && received.fromClaimedShare !== null
+          ? `, ${Math.round(received.fromClaimedShare * 100)}% of it directly from ${candidate.name || candidate.kind}`
+          : ''
+      }`
     );
   }
   if (sent.transfers > 0) {
-    const share = sent.toClaimedShare === null ? null : Math.round(sent.toClaimedShare * 100);
+    // Only an exchange candidate is judged by where its money went.
+    const share =
+      candidate.kind !== 'exchange' || sent.toClaimedShare === null
+        ? null
+        : Math.round(sent.toClaimedShare * 100);
     parts.push(
       `sent ${formatFlux(sent.flux)} FLUX${share !== null ? `, ${share}% of it to ${candidate.name}` : ''}`
     );
