@@ -8,7 +8,7 @@
 import type { PeriodId } from '$lib/shared/constants';
 
 export type FlowType = 'buying' | 'selling' | 'p2p';
-export type AddressKind = 'exchange' | 'foundation' | 'node_operator' | 'unknown';
+export type AddressKind = 'exchange' | 'foundation' | 'node_operator' | 'app_hosting' | 'unknown';
 
 export interface ExchangeTotal {
   readonly name: string;
@@ -160,6 +160,8 @@ export interface DestinationTotals {
   readonly exchange: number;
   readonly byExchange: Record<string, number>;
   readonly nodes: number;
+  /** Paid as Flux app hosting fees; absent from a server older than the app-hosting kind. */
+  readonly apps?: number;
   readonly collateral: {
     readonly payments: number;
     readonly amount: number;
@@ -306,4 +308,76 @@ export interface Status {
     readonly sizeBytes: number;
   };
   readonly dataSources: { readonly active: string | null; readonly sources: SourceStatus[] };
+}
+
+/** A counterparty of a wallet, or of the app hosting addresses. */
+export interface Party {
+  readonly address: string;
+  readonly kind: AddressKind;
+  readonly name: string | null;
+  readonly total: number;
+  readonly count: number;
+  /** Fraction of that side's total. */
+  readonly share: number;
+  readonly firstSeen: number;
+  readonly lastSeen: number;
+}
+
+export interface CounterpartySide {
+  readonly total: number;
+  readonly count: number;
+  readonly distinct: number;
+  readonly parties: Party[];
+}
+
+export interface WalletCounterparties {
+  readonly address: string;
+  readonly incoming: CounterpartySide;
+  readonly outgoing: CounterpartySide;
+  readonly firstFunder: {
+    readonly address: string;
+    readonly kind: AddressKind;
+    readonly name: string | null;
+    readonly txid: string;
+    readonly time: number;
+    readonly amount: number;
+  } | null;
+  readonly appPayments: { readonly total: number; readonly count: number };
+}
+
+/** FLUX (or, in `fundingOfPayments`, fractions) by the kind of wallet. */
+export type KindMix = Partial<Record<AddressKind, number>>;
+
+export interface AppPayer {
+  readonly address: string;
+  readonly kind: AddressKind;
+  readonly name: string | null;
+  readonly total: number;
+  readonly count: number;
+  readonly share: number;
+  readonly firstSeen: number;
+  readonly lastSeen: number;
+  readonly fundedBy: { readonly received: number; readonly mix: KindMix };
+  readonly topFunders: {
+    readonly address: string;
+    readonly kind: AddressKind;
+    readonly name: string | null;
+    readonly total: number;
+  }[];
+}
+
+export interface AppPayments {
+  readonly period: PeriodId;
+  readonly label: string;
+  readonly fromTime: number;
+  readonly toTime: number;
+  readonly hosting: { readonly address: string; readonly name: string | null }[];
+  readonly total: number;
+  readonly count: number;
+  readonly payers: number;
+  readonly byPayerKind: KindMix;
+  readonly series: { readonly time: number; readonly total: number; readonly count: number }[];
+  readonly topPayers: AppPayer[];
+  readonly fundingOfPayments: KindMix;
+  readonly outflows: { readonly total: number; readonly recipients: Party[] };
 }

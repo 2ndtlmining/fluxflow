@@ -48,6 +48,7 @@ import {
   type LeaderboardKind
 } from './wallets.js';
 import { ResponseCache } from './cache.js';
+import { appPayments, walletCounterparties } from './apps.js';
 import {
   APPLY_MIN_CONFIDENCE,
   CONFIDENCE,
@@ -256,6 +257,7 @@ export function createApiRouter(deps: ApiDependencies): Router {
     res.json({
       exchanges: { count: stats.exchanges },
       foundation: { count: stats.foundation },
+      appHosting: { count: stats.appHosting },
       nodeOperators: {
         count: stats.nodeOperators,
         totalNodes: intel?.status().nodeList?.addresses ?? 0,
@@ -437,7 +439,7 @@ export function createApiRouter(deps: ApiDependencies): Router {
     const body = z
       .object({
         address: z.string().regex(ADDRESS_PATTERN),
-        kind: z.enum(['exchange', 'foundation', 'node_operator', 'unknown']),
+        kind: z.enum(['exchange', 'foundation', 'node_operator', 'app_hosting', 'unknown']),
         name: z.string().max(100).optional(),
         subLabel: z.string().max(100).optional(),
         note: z.string().max(500).optional()
@@ -880,6 +882,47 @@ export function createApiRouter(deps: ApiDependencies): Router {
     }));
   });
 
+  /** Biggest senders and recipients, first funder and app fees paid, in the stored window. */
+  router.get('/wallets/:address/counterparties', (req: Request, res: Response) => {
+    const address = parseAddress(req, res);
+    if (!address) return;
+
+    const query = counterpartiesQuery.safeParse(req.query);
+    if (!query.success) {
+      res.status(400).json({ error: 'Invalid query', message: query.error.issues[0]?.message });
+      return;
+    }
+
+    cache.send(req, res, () => walletCounterparties(db, labels, address, query.data));
+  });
+
+  // ── App payments ──────────────────────────────────────────────────────────
+  /** Transfers into the `app_hosting` addresses: who pays for Flux apps, and from what money. */
+  router.get('/apps', (req: Request, res: Response) => {
+    const raw = typeof req.query.period === 'string' ? req.query.period.toUpperCase() : '30D';
+    if (!isPeriodId(raw)) {
+      res.status(400).json({ error: 'Invalid period', message: `Unknown period: ${raw}` });
+      return;
+    }
+
+    const query = counterpartiesQuery.safeParse({ limit: req.query.limit });
+    if (!query.success) {
+      res.status(400).json({ error: 'Invalid query', message: query.error.issues[0]?.message });
+      return;
+    }
+
+    cache.send(req, res, () => {
+      const window = periodWindow(raw);
+      return {
+        period: raw,
+        label: PERIOD_LABELS[raw],
+        fromTime: window.fromTime,
+        toTime: window.toTime,
+        ...appPayments(db, labels, window, { limit: query.data.limit ?? 20 })
+      };
+    });
+  });
+
   /** A period's window, ending at the newest stored block. */
   function periodWindow(period: PeriodId) {
     const database = cache.databaseSummary();
@@ -1009,7 +1052,13 @@ function parseAddress(req: Request, res: Response): string | null {
  * reason, not silently coerced: `Number('abc') || 50` used to turn garbage into a default
  * and hide the client's bug.
  */
-const ADDRESS_KINDS = ['exchange', 'foundation', 'node_operator', 'unknown'] as const;
+const ADDRESS_KINDS = [
+  'exchange',
+  'foundation',
+  'node_operator',
+  'app_hosting',
+  'unknown'
+] as const;
 
 const eventsQuery = z.object({
   type: z.enum(['buying', 'selling', 'p2p']).optional(),
@@ -1018,6 +1067,10 @@ const eventsQuery = z.object({
   minAmount: z.coerce.number().min(0).max(1e10).optional(),
   limit: z.coerce.number().int().min(1).max(500).default(50),
   cursor: z.string().max(200).optional()
+});
+
+const counterpartiesQuery = z.object({
+  limit: z.coerce.number().int().min(1).max(100).optional()
 });
 
 const leaderboardQuery = z.object({

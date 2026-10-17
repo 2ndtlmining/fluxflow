@@ -133,6 +133,7 @@ export interface LabelStats {
   readonly exchanges: number;
   readonly foundation: number;
   readonly nodeOperators: number;
+  readonly appHosting: number;
   readonly total: number;
   readonly bySource: Record<string, number>;
   readonly source: string;
@@ -155,6 +156,8 @@ interface LabelsFile {
   exchanges?: LabelEntry[];
   /** `wallets` names Foundation sub-wallets; each becomes a `sub_label` (#31). */
   foundation?: LabelEntry & { wallets?: { name: string; addresses: string[] }[] };
+  /** Where Flux app hosting fees are paid. */
+  appHosting?: LabelEntry[];
 }
 
 /** A label to write; `address_labels` columns. */
@@ -375,16 +378,19 @@ export function loadLabels(db: Db, config: Config, log: Logger): LabelLookup {
     let exchanges = 0;
     let foundation = 0;
     let nodeOperators = 0;
+    let appHosting = 0;
     for (const { kind } of effective.values()) {
       if (kind === 'exchange') exchanges++;
       else if (kind === 'foundation') foundation++;
       else if (kind === 'node_operator') nodeOperators++;
+      else if (kind === 'app_hosting') appHosting++;
     }
 
     stats = {
       exchanges,
       foundation,
       nodeOperators,
+      appHosting,
       total: effective.size,
       bySource,
       source: config.labelsPath,
@@ -438,6 +444,7 @@ function emptyStats(source: string): LabelStats {
     exchanges: 0,
     foundation: 0,
     nodeOperators: 0,
+    appHosting: 0,
     total: 0,
     bySource: {},
     source,
@@ -486,6 +493,18 @@ function configRows(parsed: LabelsFile): LabelInput[] {
           evidence: { method: 'config' }
         });
       }
+    }
+  }
+
+  for (const entry of parsed.appHosting ?? []) {
+    for (const address of entry.addresses ?? []) {
+      add({
+        address,
+        kind: 'app_hosting',
+        name: entry.name,
+        confidence: entry.confidence ?? 1,
+        evidence: { method: 'config' }
+      });
     }
   }
 

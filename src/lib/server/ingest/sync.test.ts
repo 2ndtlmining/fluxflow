@@ -15,6 +15,7 @@ const STATS = {
   exchanges: 1,
   foundation: 0,
   nodeOperators: 0,
+  appHosting: 0,
   total: 1,
   bySource: { config: 1 },
   source: 'test',

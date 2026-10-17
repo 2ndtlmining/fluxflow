@@ -160,7 +160,12 @@ export interface DataSource {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export type FlowType = 'buying' | 'selling' | 'p2p';
-export type AddressKind = 'exchange' | 'foundation' | 'node_operator' | 'unknown';
+/**
+ * `app_hosting` is where Flux app (dapp) hosting fees are paid. A payment to it is still a
+ * wallet-to-wallet transfer, so it never changes buying or selling; the kind only lets the
+ * app-payment views find those transfers.
+ */
+export type AddressKind = 'exchange' | 'foundation' | 'node_operator' | 'app_hosting' | 'unknown';
 
 export interface ValueDelta {
   readonly address: string;

@@ -42,7 +42,13 @@ export interface DashboardState {
 export const EMPTY_FILTERS: TxFilters = { type: 'exchange', kind: '', exchange: '', min: 0 };
 
 const VIEWS: readonly string[] = ['exchange', 'all', 'buying', 'selling', 'p2p'];
-const KINDS: readonly string[] = ['exchange', 'foundation', 'node_operator', 'unknown'];
+const KINDS: readonly string[] = [
+  'exchange',
+  'foundation',
+  'node_operator',
+  'app_hosting',
+  'unknown'
+];
 const BOARD_KINDS: readonly string[] = ['unknown', 'node_operator', 'foundation'];
 const CERTAINTIES: readonly string[] = ['confirmed', 'likely', 'possible'];
 

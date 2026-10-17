@@ -68,6 +68,8 @@ export interface DestinationTotals {
   readonly exchange: number;
   readonly byExchange: Record<string, number>;
   readonly nodes: number;
+  /** Paid as Flux app hosting fees: spent on running apps. */
+  readonly apps: number;
   readonly collateral: {
     readonly payments: number;
     readonly amount: number;
@@ -179,6 +181,7 @@ class Tally {
   exchange = 0;
   byExchange = new Map<string, number>();
   nodes = 0;
+  apps = 0;
   /** `txid:address`, so a payment split across several traces is one payment. */
   collateralPayments = new Set<string>();
   collateralAmount = 0;
@@ -198,6 +201,7 @@ class Tally {
         [...this.byExchange].sort((a, b) => b[1] - a[1]).map(([name, sat]) => [name, flux(sat)])
       ),
       nodes: flux(this.nodes),
+      apps: flux(this.apps),
       collateral: {
         payments: this.collateralPayments.size,
         amount: flux(this.collateralAmount),
@@ -352,6 +356,10 @@ export function traceFoundation(
         t.exchange += item.amount;
         t.byExchange.set(name, (t.byExchange.get(name) ?? 0) + item.amount);
       });
+      continue;
+    }
+    if (label?.kind === 'app_hosting') {
+      add(item, (t) => (t.apps += item.amount));
       continue;
     }
     if (label?.kind === 'foundation' || foundation.has(item.address)) {

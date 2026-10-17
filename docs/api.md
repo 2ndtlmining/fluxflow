@@ -239,6 +239,24 @@ stored history, including days older than the raw retention window. `p2pIn`/`p2p
 The wallet's flows, either side, newest first. Same `cursor`/`limit` as the period events
 (limit 1–200), and `type` = `buying` | `selling` | `p2p`.
 
+### `GET /api/wallets/:address/counterparties`
+
+`?limit=` (1-100, default 15). Who the wallet deals with, over the raw retention window:
+
+```json
+{
+  "address": "t1…",
+  "incoming": { "total": 1000, "count": 3, "distinct": 2, "parties": [Party] },
+  "outgoing": { "total": 550, "count": 3, "distinct": 2, "parties": [Party] },
+  "firstFunder": { "address": "t1…", "kind": "foundation", "name": "Flux Foundation", "txid": "…", "time": 1792227904, "amount": 1000 },
+  "appPayments": { "total": 150, "count": 2 }
+}
+```
+
+`Party` is `{address, kind, name, total, count, share, firstSeen, lastSeen}`; `share` is of that side's
+total. `firstFunder` is the earliest stored transfer into the wallet (`null` if none), and
+`appPayments` what it paid to `app_hosting` addresses.
+
 ### `GET /api/search?q=` (also `/api/wallets/search`)
 
 `q` is 2–64 characters. Three forms:
@@ -404,6 +422,37 @@ change a total.
 
 The report is cached per data version, label change and balance snapshot, and recomputed in
 the background once a minute; a stale copy is served for up to five minutes meanwhile.
+
+### `GET /api/apps?period=30D`
+
+Flux app (dapp) hosting fees: transfers into the addresses labelled `app_hosting` in
+`config/labels.json` (`appHosting`). They stay `p2p` flows and never change buying or selling.
+`?limit=` (1-100, default 20) sizes `topPayers`.
+
+```json
+{
+  "period": "30D", "fromTime": 1789638304, "toTime": 1792230304,
+  "hosting": [{ "address": "t3NryfAQLGeFs9jEoeqsxmBN2QLRaRKFLUX", "name": "Flux App Hosting" }],
+  "total": 52876.2, "count": 9516, "payers": 49,
+  "byPayerKind": { "unknown": 51000, "node_operator": 1230 },
+  "series": [{ "time": 1792195200, "total": 812.4, "count": 140 }],
+  "topPayers": [{
+    "address": "t1…", "kind": "unknown", "name": null, "total": 25576, "count": 3415, "share": 0.48,
+    "firstSeen": 1776668314, "lastSeen": 1792227904,
+    "fundedBy": { "received": 159373, "mix": { "foundation": 99313, "unknown": 60060 } },
+    "topFunders": [{ "address": "t1…", "kind": "foundation", "name": "Flux Foundation", "total": 80000 }]
+  }],
+  "fundingOfPayments": { "foundation": 0.62, "unknown": 0.35, "exchange": 0.03 },
+  "outflows": { "total": 744023, "recipients": [Party] }
+}
+```
+
+`fundedBy` apportions everything the payer received (stored window, up to the period's end) by
+the kind that sent it; an unlabelled sender is followed one more hop and its own mix applied in
+proportion (largest 25 senders, 5 followed). It ignores ordering and balances: an indication, not
+an audit. `fundingOfPayments` weights the top payers' mixes by what each paid for apps.
+`outflows` is where the hosting addresses sent money in the period. The Foundation report's
+destination trace also counts value reaching an `app_hosting` address as `apps`.
 
 ### `GET /api/intel/status`
 
