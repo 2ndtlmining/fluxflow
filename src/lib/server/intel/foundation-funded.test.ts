@@ -2,7 +2,11 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createTestDb, type Db } from '../testkit.js';
 import type { LabelLookup } from '../labels.js';
 import { applyDecision, storeCandidates } from './clusters.js';
-import { detectFoundationFunded, FOUNDATION_FUNDED } from './foundation-funded.js';
+import {
+  detectFoundationFunded,
+  dropStaleFoundationFunded,
+  FOUNDATION_FUNDED
+} from './foundation-funded.js';
 import { reviewCandidates } from './review.js';
 import { labelBook, writeChain, type SimpleTx } from './testchain.js';
 
@@ -89,12 +93,56 @@ describe('Foundation-funded wallets (#62)', () => {
   });
 
   it('ignores a wallet that sells what the Foundation gave it', () => {
+    // Treasury-sized, so only the selling rules it out.
+    writeChain(db, labels, [
+      pay(10, 'a1', FOUND_A, 150_000.01, [['t1seller', 150_000]]),
+      pay(11, 'a2', FOUND_A, 150_000.01, [['t1seller', 150_000]]),
+      pay(20, 's1', 't1seller', 200_000.01, [[KUCOIN, 200_000]])
+    ]);
+    expect(detectFoundationFunded(db, labels)).toEqual([]);
+  });
+
+  it('ignores someone the Foundation pays, who only holds it', () => {
+    writeChain(db, labels, [
+      pay(10, 'a1', FOUND_A, 20_000.01, [['t1contributor', 20_000]]),
+      pay(11, 'a2', FOUND_A, 20_000.01, [['t1contributor', 20_000]])
+    ]);
+    expect(detectFoundationFunded(db, labels)).toEqual([]);
+  });
+
+  it('does not let a contributor qualify by forwarding to their own savings', () => {
     writeChain(db, labels, [
       pay(10, 'a1', FOUND_A, 20_000.01, [['t1contributor', 20_000]]),
       pay(11, 'a2', FOUND_A, 20_000.01, [['t1contributor', 20_000]]),
-      pay(20, 's1', 't1contributor', 30_000.01, [[KUCOIN, 30_000]])
+      pay(20, 'f1', 't1contributor', 20_000.01, [['t1savings', 20_000]]),
+      pay(21, 'f2', 't1contributor', 20_000.01, [['t1savings', 20_000]])
     ]);
     expect(detectFoundationFunded(db, labels)).toEqual([]);
+  });
+
+  it('ignores a wallet spending far more than it was given, and whoever it funds', () => {
+    // The live case: 29k from the Foundation, 446k sent on from its own (mined) money.
+    writeChain(db, labels, [
+      pay(10, 'a1', FOUND_A, 15_000.01, [['t1miner', 15_000]]),
+      pay(11, 'a2', FOUND_A, 15_000.01, [['t1miner', 15_000]]),
+      { height: 12, txid: 'cb', kind: 'coinbase', outputs: [['t1miner', 500_000]] },
+      pay(20, 'f1', 't1miner', 300_000.01, [['t1stash', 300_000]]),
+      pay(21, 'f2', 't1miner', 146_000.01, [['t1stash', 146_000]])
+    ]);
+    expect(detectFoundationFunded(db, labels)).toEqual([]);
+  });
+
+  it('keeps an operations wallet that only funds an app payer', () => {
+    writeChain(db, labels, [
+      pay(10, 'a1', FOUND_A, 20_000.01, [['t1ops', 20_000]]),
+      pay(11, 'a2', FOUND_A, 20_000.01, [['t1ops', 20_000]]),
+      pay(20, 'f1', 't1ops', 20_000.01, [['t1payer', 20_000]]),
+      pay(21, 'f2', 't1ops', 20_000.01, [['t1payer', 20_000]]),
+      ...[30, 31].map((height) => pay(height, `d${height}`, 't1payer', 100.01, [[HOSTING, 100]]))
+    ]);
+    const found = detectFoundationFunded(db, labels);
+    expect(found.map((row) => row.address)).toEqual(['t1ops', 't1payer']);
+    expect(found[0]!.evidence).toMatchObject({ toFoundationShare: 1, toAppsShare: 0 });
   });
 
   it('ignores a single payment, small amounts and wallets mostly funded elsewhere', () => {
@@ -132,6 +180,32 @@ describe('Foundation-funded wallets (#62)', () => {
     const again = detectFoundationFunded(db, labels).map((row) => row.address);
     // t1payer was only reachable through t1ops.
     expect(again).toEqual(['t3treasury']);
+  });
+
+  it('drops pending proposals that no longer qualify, and keeps decided ones', () => {
+    writeChain(db, labels, appCluster);
+    storeCandidates(db, detectFoundationFunded(db, labels));
+    applyDecision(
+      db,
+      { address: 't1ops', kind: 'foundation', name: 'Flux Foundation' },
+      'accepted'
+    );
+    // As the review does: the accepted wallet is now one of the Foundation's own.
+    labels.refresh('accepted');
+
+    // The treasury later sells most of its money: it no longer qualifies.
+    writeChain(db, labels, [pay(50, 's1', 't3treasury', 500_000.01, [[KUCOIN, 500_000]])]);
+    expect(dropStaleFoundationFunded(db, detectFoundationFunded(db, labels))).toBe(1);
+
+    const left = db
+      .prepare<[], { address: string; status: string }>(
+        `SELECT address, status FROM label_candidates ORDER BY address`
+      )
+      .all();
+    expect(left).toEqual([
+      { address: 't1ops', status: 'accepted' },
+      { address: 't1payer', status: 'pending' }
+    ]);
   });
 
   it('shows on the review page with how much came from the Foundation', () => {

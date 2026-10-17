@@ -32,7 +32,7 @@ import { serialiseError } from '../logger.js';
 import { clusterAddresses, storeCandidates, type ClusterResult } from './clusters.js';
 import { fetchBalances, type BalanceSnapshot } from './foundation.js';
 import { detectDepositForwarders } from './forwarders.js';
-import { detectFoundationFunded } from './foundation-funded.js';
+import { detectFoundationFunded, dropStaleFoundationFunded } from './foundation-funded.js';
 import { detectIntermediaries, INTERMEDIARY_SOURCE } from './intermediaries.js';
 import { dataVersion } from '../api/queries.js';
 import { detectHops } from './hops.js';
@@ -329,7 +329,11 @@ export class IntelService {
       const changed = labels.refresh('deposit forwarders refreshed');
 
       // Wallets the Foundation (or one of these) funds: proposed only, never applied (#62).
-      const foundationFunded = await this.exclusive(() => detectFoundationFunded(db, labels));
+      const foundationFunded = await this.exclusive(() => {
+        const rows = detectFoundationFunded(db, labels);
+        dropStaleFoundationFunded(db, rows);
+        return rows;
+      });
 
       const stored = await this.exclusive(() =>
         storeCandidates(db, [...result!.candidates, ...forwarders.candidates, ...foundationFunded])
