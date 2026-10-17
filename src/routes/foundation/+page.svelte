@@ -97,6 +97,7 @@
     return [
       { key: 'nodes', label: 'Nodes', amount: d.nodes },
       { key: 'exchange', label: 'Exchanges', amount: d.exchange },
+      { key: 'apps', label: 'Flux app hosting', amount: d.apps ?? 0 },
       { key: 'held', label: 'Still held', amount: d.held },
       { key: 'returned', label: 'Back to the Foundation', amount: d.returned },
       { key: 'untraced', label: `Still moving after ${d.maxHops} wallets`, amount: d.untraced }
@@ -228,6 +229,7 @@
                 <th scope="col" class="num">Received</th>
                 <th scope="col" class="num">Nodes</th>
                 <th scope="col" class="num">Exchanges</th>
+                <th scope="col" class="num">Apps</th>
                 <th scope="col" class="num">Held</th>
               </tr>
             </thead>
@@ -245,6 +247,7 @@
                   <td class="num sell"
                     >{recipient.exchange ? formatFlux(recipient.exchange) : ''}</td
                   >
+                  <td class="num">{recipient.apps ? formatFlux(recipient.apps) : ''}</td>
                   <td class="num muted">{recipient.held ? formatFlux(recipient.held) : ''}</td>
                 </tr>
               {/each}
@@ -500,6 +503,10 @@
 
   .exchange {
     background: var(--sell);
+  }
+
+  .apps {
+    background: var(--good);
   }
 
   .held {

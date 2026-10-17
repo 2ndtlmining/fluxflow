@@ -46,8 +46,9 @@
   </dl>
   {#if d && d.traced > 0}
     <p class="small">
-      Of what it sent: {share(d.nodes)}% went to nodes, {share(d.exchange)}% to exchanges and
-      {share(d.held)}% is still held, followed up to {d.maxHops} wallets.
+      Of what it sent: {share(d.nodes)}% went to nodes, {share(d.exchange)}% to exchanges,
+      {share(d.apps ?? 0)}% to <a href="/apps">Flux app hosting</a> and {share(d.held)}% is still
+      held, followed up to {d.maxHops} wallets.
     </p>
   {/if}
   {#if t.internalTransfers > 0}

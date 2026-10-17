@@ -2,13 +2,18 @@
   Wallet page (#30): what this wallet moved to and from exchanges, where, when, and with whom.
 
   Exchange totals, the per-exchange split and the daily chart cover all stored history (they
-  come from rollups); wallet-to-wallet totals and the transfer list cover the raw retention
-  window. The watchlist is kept in this browser.
+  come from rollups); wallet-to-wallet totals, counterparties and the transfer list cover the
+  raw retention window. The watchlist is kept in this browser.
 -->
 <script lang="ts">
   import { page } from '$app/state';
   import { ApiError, isAbort } from '$lib/client/api';
-  import { fetchWallet, fetchWalletEvents, isAddress } from '$lib/client/endpoints';
+  import {
+    fetchCounterparties,
+    fetchWallet,
+    fetchWalletEvents,
+    isAddress
+  } from '$lib/client/endpoints';
   import {
     evidenceText,
     sourceText,
@@ -17,21 +22,24 @@
     formatFluxFull,
     formatSigned,
     formatTime,
-    kindLabel
+    kindLabel,
+    shortAddress
   } from '$lib/client/format';
   import { live } from '$lib/client/live.svelte';
-  import type { FlowEvent, FlowType, WalletProfile } from '$lib/client/types';
+  import type { FlowEvent, FlowType, WalletCounterparties, WalletProfile } from '$lib/client/types';
   import { fillDays } from '$lib/client/series';
   import { isWatched, toggleWatch } from '$lib/client/watchlist';
   import Diverging from '$lib/ui/Diverging.svelte';
   import EventRows from '$lib/ui/EventRows.svelte';
   import SeriesChart from '$lib/ui/SeriesChart.svelte';
   import ConfidenceBadge from '$lib/ui/ConfidenceBadge.svelte';
+  import PartyTable from '$lib/ui/PartyTable.svelte';
 
   const address = $derived(page.params.address ?? '');
   const valid = $derived(isAddress(address));
 
   let profile = $state<WalletProfile | null>(null);
+  let parties = $state<WalletCounterparties | null>(null);
   let missing = $state(false);
   let error = $state<string | null>(null);
   let watched = $state(false);
@@ -71,6 +79,24 @@
         } else {
           error = (reason as Error).message;
         }
+      });
+
+    return () => controller.abort();
+  });
+
+  // Who it deals with: loaded on its own so a busy wallet's grouping never holds up the page.
+  $effect(() => {
+    const current = address;
+    void live.version;
+    if (!isAddress(current)) return;
+    const controller = new AbortController();
+
+    fetchCounterparties(current, controller.signal)
+      .then((result) => {
+        if (!controller.signal.aborted) parties = result;
+      })
+      .catch((reason: unknown) => {
+        if (!isAbort(reason)) parties = null;
       });
 
     return () => controller.abort();
@@ -248,6 +274,87 @@
           Wallet to wallet in the stored window: {formatFlux(profile.totals.p2pIn)} received,
           {formatFlux(profile.totals.p2pOut)} sent.
         </p>
+      {/if}
+
+      {#if profile.kind === 'app_hosting'}
+        <p class="note">
+          This is where Flux app hosting fees are paid. <a href="/apps">See who pays for apps</a>
+          and how those wallets were funded.
+        </p>
+      {/if}
+
+      {#if parties && (parties.incoming.count > 0 || parties.outgoing.count > 0)}
+        <section aria-labelledby="parties-heading" class="block">
+          <h2 id="parties-heading">Who it deals with</h2>
+          <ul class="headline">
+            {#if parties.firstFunder}
+              <li>
+                <span class="muted">First funded by</span>
+                <a
+                  href="/wallet/{parties.firstFunder.address}"
+                  class:mono={!parties.firstFunder.name}
+                >
+                  {parties.firstFunder.name ?? shortAddress(parties.firstFunder.address)}
+                </a>
+                <span class="muted">
+                  ({kindLabel(parties.firstFunder.kind).toLowerCase()}), {formatFlux(
+                    parties.firstFunder.amount
+                  )} FLUX on {formatTime(parties.firstFunder.time)}
+                </span>
+              </li>
+            {/if}
+            {#if parties.appPayments.count > 0}
+              <li>
+                <span class="muted">Paid for Flux apps</span>
+                <strong>{formatFlux(parties.appPayments.total)} FLUX</strong>
+                <span class="muted">in {formatCount(parties.appPayments.count)} payments</span>
+              </li>
+            {/if}
+          </ul>
+          <div class="sides">
+            <div>
+              <h3>
+                Received from
+                <span class="muted small">
+                  {formatCount(parties.incoming.distinct)}
+                  {parties.incoming.distinct === 1 ? 'wallet' : 'wallets'},
+                  {formatFlux(parties.incoming.total)} FLUX
+                </span>
+              </h3>
+              {#if parties.incoming.parties.length > 0}
+                <PartyTable
+                  parties={parties.incoming.parties}
+                  column="From"
+                  caption="Wallets that sent FLUX to this one, largest first"
+                />
+              {:else}
+                <p class="muted small">Nothing received in the stored window.</p>
+              {/if}
+            </div>
+            <div>
+              <h3>
+                Sent to
+                <span class="muted small">
+                  {formatCount(parties.outgoing.distinct)}
+                  {parties.outgoing.distinct === 1 ? 'wallet' : 'wallets'},
+                  {formatFlux(parties.outgoing.total)} FLUX
+                </span>
+              </h3>
+              {#if parties.outgoing.parties.length > 0}
+                <PartyTable
+                  parties={parties.outgoing.parties}
+                  column="To"
+                  caption="Wallets this one sent FLUX to, largest first"
+                />
+              {:else}
+                <p class="muted small">Nothing sent in the stored window.</p>
+              {/if}
+            </div>
+          </div>
+          <p class="muted small">
+            Within the stored window. Click a wallet to follow the money a step further.
+          </p>
+        </section>
       {/if}
 
       {#if profile.labels.length > 0 || (profile.candidates?.length ?? 0) > 0 || profile.cluster}
@@ -447,6 +554,29 @@
   .block {
     display: grid;
     gap: 0.75rem;
+  }
+
+  .headline {
+    display: grid;
+    gap: 0.25rem;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .sides {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 24rem), 1fr));
+    gap: 1.25rem 2rem;
+  }
+
+  h3 {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 0.25rem 0.6rem;
+    margin: 0 0 0.25rem;
+    font-size: var(--step-0);
   }
 
   .history-head {

@@ -8,6 +8,9 @@
     "the immutable chain facts. Correcting a label therefore never rewrites history:",
     "flows are re-derived from tx_deltas plus labels.",
     "",
+    "appHosting lists where Flux app (dapp) hosting fees are paid. Payments to it stay",
+    "wallet-to-wallet transfers; the /apps page and wallet counterparties report them.",
+    "",
     "Coverage is thin - only 4 exchanges and 17 Foundation addresses are known (#20).",
     "Addresses found by clustering are proposed as candidates and need a human to add",
     "them here."
@@ -46,6 +49,15 @@
       "confidence": 1,
       "source": "config",
       "addresses": ["t1LXVRNWEugRtoWdNgxnozCBGksGtCvvWsy", "t1eELWS8QBkhRfEF2LBZnxKwCQaWvZ8j8hU"]
+    }
+  ],
+  "appHosting": [
+    {
+      "name": "Flux App Hosting",
+      "kind": "app_hosting",
+      "confidence": 1,
+      "source": "config",
+      "addresses": ["t3NryfAQLGeFs9jEoeqsxmBN2QLRaRKFLUX"]
     }
   ],
   "foundation": {

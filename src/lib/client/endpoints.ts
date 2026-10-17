@@ -8,6 +8,7 @@
 import type { PeriodId } from '$lib/shared/constants';
 import { apiFetch, cachedFetch } from './api';
 import type {
+  AppPayments,
   Counterparty,
   EventsPage,
   Foundation,
@@ -17,6 +18,7 @@ import type {
   Leaderboard,
   SearchResponse,
   Series,
+  WalletCounterparties,
   WalletProfile
 } from './types';
 import type { BoardKind, Certainty } from './urlState';
@@ -44,6 +46,15 @@ export function hopsPath(period: PeriodId): string {
 export function foundationPath(period: PeriodId): string {
   return `/foundation?period=${period}`;
 }
+
+export const fetchApps = (period: PeriodId, signal?: AbortSignal) =>
+  cachedFetch<AppPayments>(`/apps?period=${period}`, signal);
+
+export const fetchCounterparties = (address: string, signal?: AbortSignal) =>
+  cachedFetch<WalletCounterparties>(
+    `/wallets/${encodeURIComponent(address)}/counterparties?limit=15`,
+    signal
+  );
 
 export const fetchHops = (period: PeriodId, signal?: AbortSignal) =>
   cachedFetch<HopsResponse>(hopsPath(period), signal);

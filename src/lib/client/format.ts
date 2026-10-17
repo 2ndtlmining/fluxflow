@@ -95,6 +95,7 @@ const KIND_LABELS: Record<AddressKind, string> = {
   exchange: 'Exchange',
   foundation: 'Flux Foundation',
   node_operator: 'Node operator',
+  app_hosting: 'Flux app hosting',
   unknown: 'Unlabelled wallet'
 };
 
