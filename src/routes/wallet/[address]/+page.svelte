@@ -196,6 +196,7 @@
         >
           {watched ? 'Watching' : 'Watch this wallet'}
         </button>
+        <a class="button" href="/graph?root={address}">Follow the money</a>
         <a
           class="button"
           href="https://explorer.runonflux.io/address/{address}"

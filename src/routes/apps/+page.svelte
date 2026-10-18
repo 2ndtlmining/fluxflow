@@ -126,7 +126,9 @@
       Paid into
       {#each data.hosting as host, i (host.address)}{i > 0 ? ', ' : ' '}<a
           href="/wallet/{host.address}">{host.name ?? shortAddress(host.address)}</a
-        >{/each}, {formatTime(data.fromTime)} to {formatTime(data.toTime)}.
+        >
+        (<a href="/graph?root={host.address}&period={period}">follow the money</a>){/each},
+      {formatTime(data.fromTime)} to {formatTime(data.toTime)}.
     </p>
 
     {#if data.count > 0}
