@@ -19,6 +19,7 @@ import type {
   SearchResponse,
   Series,
   WalletCounterparties,
+  WalletFunds,
   WalletProfile
 } from './types';
 import type { BoardKind, Certainty } from './urlState';
@@ -53,6 +54,18 @@ export const fetchApps = (period: PeriodId, signal?: AbortSignal) =>
 export const fetchCounterparties = (address: string, signal?: AbortSignal) =>
   cachedFetch<WalletCounterparties>(
     `/wallets/${encodeURIComponent(address)}/counterparties?limit=15`,
+    signal
+  );
+
+/** Source (`in`) or destination (`out`) of a wallet's funds, `hops` wallets deep (#64). */
+export const fetchFunds = (
+  address: string,
+  direction: 'in' | 'out',
+  hops: number,
+  signal?: AbortSignal
+) =>
+  cachedFetch<WalletFunds>(
+    `/wallets/${encodeURIComponent(address)}/${direction === 'in' ? 'sources' : 'destinations'}?hops=${hops}`,
     signal
   );
 

@@ -257,6 +257,35 @@ The wallet's flows, either side, newest first. Same `cursor`/`limit` as the peri
 total. `firstFunder` is the earliest stored transfer into the wallet (`null` if none), and
 `appPayments` what it paid to `app_hosting` addresses.
 
+### `GET /api/wallets/:address/sources` and `/destinations`
+
+`?hops=` (1-4, default 3). Source of funds (everything the wallet received, including coinbase
+node rewards) or destination of funds (everything it sent), over the raw retention window:
+
+```json
+{
+  "address": "t1…",
+  "direction": "in",
+  "hops": 3,
+  "total": 1000,
+  "byKind": { "foundation": 400, "node_rewards": 600 },
+  "byExchange": {},
+  "endpoints": [
+    { "address": "t1…", "kind": "foundation", "name": "Flux Foundation", "amount": 400, "hop": 2 }
+  ],
+  "untraced": 0,
+  "truncated": false
+}
+```
+
+A labelled counterparty ends the trace. An unlabelled one (among each wallet's 5 largest) is
+followed one hop further and its own mix applied in proportion; what is still unlabelled at the
+last hop is `unknown`. `byKind` keys are the address kinds plus `node_rewards` (sources) and
+`held` (destinations: what an intermediate wallet received but did not send on). `byKind` sums
+to `total`; `untraced` is `byKind.unknown`. `endpoints` lists the largest labelled wallets
+reached, with the fewest hops to each. At most 300 wallets are read per trace; `truncated`
+says the budget ran out. At `hops=2`, `sources` equals `/api/apps` `fundedBy`.
+
 ### `GET /api/search?q=` (also `/api/wallets/search`)
 
 `q` is 2–64 characters. Three forms:

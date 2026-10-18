@@ -345,8 +345,30 @@ export interface WalletCounterparties {
   readonly appPayments: { readonly total: number; readonly count: number };
 }
 
+/** A wallet kind, or coinbase rewards (source of funds), or money a wallet kept (destination). */
+export type FundsKind = AddressKind | 'node_rewards' | 'held';
+
 /** FLUX (or, in `fundingOfPayments`, fractions) by the kind of wallet. */
-export type KindMix = Partial<Record<AddressKind, number>>;
+export type KindMix = Partial<Record<FundsKind, number>>;
+
+/** `/api/wallets/:address/sources` and `/destinations` (#64). */
+export interface WalletFunds {
+  readonly address: string;
+  readonly direction: 'in' | 'out';
+  readonly hops: number;
+  readonly total: number;
+  readonly byKind: KindMix;
+  readonly byExchange: Record<string, number>;
+  readonly endpoints: {
+    readonly address: string;
+    readonly kind: AddressKind;
+    readonly name: string | null;
+    readonly amount: number;
+    readonly hop: number;
+  }[];
+  readonly untraced: number;
+  readonly truncated: boolean;
+}
 
 export interface AppPayer {
   readonly address: string;

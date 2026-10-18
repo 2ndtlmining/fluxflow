@@ -459,6 +459,21 @@ describe('api router', () => {
       expect((await get(`/api/wallets/${'t1Nobody'.padEnd(35, 'C')}`)).status).toBe(404);
     });
 
+    it('serves source and destination of funds, and bounds the hop count', async () => {
+      await boot();
+      seedWallet();
+
+      const sources = await get(`/api/wallets/${WHALE}/sources?hops=2`);
+      expect(sources.status).toBe(200);
+      expect(sources.body).toMatchObject({ address: WHALE, direction: 'in', hops: 2 });
+
+      const destinations = await get(`/api/wallets/${WHALE}/destinations`);
+      expect(destinations.body).toMatchObject({ direction: 'out', hops: 3, truncated: false });
+
+      expect((await get(`/api/wallets/${WHALE}/sources?hops=9`)).status).toBe(400);
+      expect((await get('/api/wallets/not-an-address/sources')).status).toBe(400);
+    });
+
     it('pages wallet events and validates the cursor', async () => {
       await boot();
       seedWallet();

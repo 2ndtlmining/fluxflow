@@ -99,8 +99,14 @@ const KIND_LABELS: Record<AddressKind, string> = {
   unknown: 'Unlabelled wallet'
 };
 
+/** Not wallet kinds: where traced money came from or stopped (#64). */
+const FUNDS_LABELS: Record<string, string> = {
+  node_rewards: 'Node rewards',
+  held: 'Kept in wallet'
+};
+
 export function kindLabel(kind: string): string {
-  return KIND_LABELS[kind as AddressKind] ?? kind;
+  return KIND_LABELS[kind as AddressKind] ?? FUNDS_LABELS[kind] ?? kind;
 }
 
 const FLOW_LABELS: Record<FlowType, string> = {
