@@ -91,7 +91,21 @@ export function foundationReport(
   window: { fromTime: number; toTime: number },
   balances: BalanceSnapshot | null = null
 ): FoundationReport {
-  const addresses = labels.addressesOf('foundation');
+  return addressSetReport(db, labels, labels.addressesOf('foundation'), window, balances);
+}
+
+/**
+ * The same report for any set of addresses that one owner controls: an entity (#65). Moves
+ * between the set's own addresses are internal, exactly as for the Foundation, so an
+ * entity's totals are what left or reached it as a whole.
+ */
+export function addressSetReport(
+  db: Db,
+  labels: LabelLookup,
+  addresses: readonly string[],
+  window: { fromTime: number; toTime: number },
+  balances: BalanceSnapshot | null = null
+): FoundationReport {
   const empty: FoundationReport = {
     wallets: [],
     totals: {
@@ -108,26 +122,69 @@ export function foundationReport(
   };
   if (addresses.length === 0) return empty;
 
+  // The window as heights too: `tx_deltas` is indexed on (address, height), so a height
+  // range reads only the window's rows of each address instead of its whole history.
+  const heights = db
+    .prepare<[number, number], { from: number | null; to: number | null }>(
+      `SELECT (SELECT MIN(height) FROM blocks WHERE time >= ?) AS "from",
+              (SELECT MAX(height) FROM blocks WHERE time <= ?) AS "to"`
+    )
+    .get(window.fromTime, window.toTime);
+  if (heights?.from == null || heights.to == null) return empty;
+  const range = [heights.from, heights.to, window.fromTime, window.toTime] as const;
+
   return db.transaction(() => {
-    db.prepare(`CREATE TEMP TABLE IF NOT EXISTS foundation_set (address TEXT PRIMARY KEY)`).run();
-    db.prepare(`DELETE FROM foundation_set`).run();
-    const insert = db.prepare(`INSERT OR IGNORE INTO foundation_set (address) VALUES (?)`);
+    db.prepare(`CREATE TEMP TABLE IF NOT EXISTS report_set (address TEXT PRIMARY KEY)`).run();
+    db.prepare(`DELETE FROM report_set`).run();
+    const insert = db.prepare(`INSERT OR IGNORE INTO report_set (address) VALUES (?)`);
     for (const address of addresses) insert.run(address);
 
-    // Per transaction: the Foundation-wide net, and how much moved between its own wallets.
-    const txs = db
+    // Every movement of the set's addresses in the window, read once (through the address
+    // index) and grouped here: per transaction for the set-wide net, per address for totals.
+    const rows = db
       .prepare<
-        [number, number],
-        { txid: string; height: number; time: number; net: number; moved: number; wallets: string }
+        [number, number, number, number],
+        {
+          txid: string;
+          address: string;
+          height: number;
+          time: number;
+          satIn: number;
+          satOut: number;
+        }
       >(
-        `SELECT d.txid, d.height, d.time, SUM(d.sat_out - d.sat_in) AS net,
-                SUM(d.sat_in) AS moved, GROUP_CONCAT(d.address) AS wallets
-         FROM tx_deltas d JOIN foundation_set f ON f.address = d.address
-         WHERE d.time BETWEEN ? AND ?
-         GROUP BY d.txid
-         ORDER BY d.height DESC`
+        `SELECT d.txid, d.address, d.height, d.time, d.sat_in AS satIn, d.sat_out AS satOut
+         FROM report_set f
+         CROSS JOIN tx_deltas d INDEXED BY idx_tx_deltas_address ON d.address = f.address
+         WHERE d.height BETWEEN ? AND ? AND d.time BETWEEN ? AND ?`
       )
-      .all(window.fromTime, window.toTime);
+      .all(...range);
+
+    // Per transaction: the set-wide net, and how much moved between its own addresses.
+    const byTx = new Map<
+      string,
+      { txid: string; height: number; time: number; net: number; moved: number; wallets: string[] }
+    >();
+    for (const row of rows) {
+      const tx = byTx.get(row.txid);
+      if (tx) {
+        tx.net += row.satOut - row.satIn;
+        tx.moved += row.satIn;
+        tx.wallets.push(row.address);
+      } else {
+        byTx.set(row.txid, {
+          txid: row.txid,
+          height: row.height,
+          time: row.time,
+          net: row.satOut - row.satIn,
+          moved: row.satIn,
+          wallets: [row.address]
+        });
+      }
+    }
+    const txs = [...byTx.values()].sort(
+      (a, b) => b.height - a.height || (a.txid < b.txid ? -1 : a.txid > b.txid ? 1 : 0)
+    );
 
     let inflow = 0;
     let outflow = 0;
@@ -152,20 +209,13 @@ export function foundationReport(
     }
 
     // Per wallet, excluding internal transactions.
-    const perWallet = db
-      .prepare<[number, number], { address: string; txid: string; delta: number }>(
-        `SELECT d.address, d.txid, d.sat_out - d.sat_in AS delta
-         FROM tx_deltas d JOIN foundation_set f ON f.address = d.address
-         WHERE d.time BETWEEN ? AND ?`
-      )
-      .all(window.fromTime, window.toTime);
-
     const walletTotals = new Map<string, { inflow: number; outflow: number }>();
-    for (const row of perWallet) {
+    for (const row of rows) {
       if (internal.has(row.txid)) continue;
+      const delta = row.satOut - row.satIn;
       const totals = walletTotals.get(row.address) ?? { inflow: 0, outflow: 0 };
-      if (row.delta > 0) totals.inflow += row.delta;
-      else totals.outflow -= row.delta;
+      if (delta > 0) totals.inflow += delta;
+      else totals.outflow -= delta;
       walletTotals.set(row.address, totals);
     }
 
@@ -205,7 +255,7 @@ export function foundationReport(
     const counterparty = db.prepare<[string], { address: string; satIn: number; satOut: number }>(
       `SELECT d.address, d.sat_in AS satIn, d.sat_out AS satOut
        FROM tx_deltas d
-       WHERE d.txid = ? AND d.address NOT IN (SELECT address FROM foundation_set)`
+       WHERE d.txid = ? AND d.address NOT IN (SELECT address FROM report_set)`
     );
 
     const recent: FoundationMovement[] = external.slice(0, 20).map((tx) => {
@@ -225,7 +275,7 @@ export function foundationReport(
         counterparty: pick?.address ?? null,
         counterpartyName: label?.name ?? null,
         counterpartyKind: label?.kind ?? 'unknown',
-        wallets: tx.wallets.split(',')
+        wallets: tx.wallets
       };
     });
 

@@ -166,6 +166,60 @@ export function decideBulk(
   });
 }
 
+// ── Entities (#65) ────────────────────────────────────────────────────────────
+
+/** Name a co-spend cluster (every current and future member of `anchor`'s cluster). */
+export function nameCluster(
+  token: string,
+  anchor: string,
+  name: string,
+  kind = 'unknown'
+): Promise<{ success: true; id: string }> {
+  return adminFetch('/admin/entities', token, {
+    method: 'POST',
+    body: JSON.stringify({ name, kind, clusterOf: [anchor] })
+  });
+}
+
+/** Add a cluster or single addresses to a named entity. */
+export function addToEntity(
+  token: string,
+  id: string,
+  members: { clusterOf?: string[]; addresses?: string[] }
+): Promise<{ success: true; added: number }> {
+  return adminFetch(`/admin/entities/${encodeURIComponent(id)}/members`, token, {
+    method: 'POST',
+    body: JSON.stringify(members)
+  });
+}
+
+export function renameEntity(
+  token: string,
+  id: string,
+  changes: { name?: string; kind?: string }
+): Promise<{ success: true }> {
+  return adminFetch(`/admin/entities/${encodeURIComponent(id)}`, token, {
+    method: 'PATCH',
+    body: JSON.stringify(changes)
+  });
+}
+
+export function deleteEntity(token: string, id: string): Promise<{ success: true }> {
+  return adminFetch(`/admin/entities/${encodeURIComponent(id)}`, token, { method: 'DELETE' });
+}
+
+export function removeMember(
+  token: string,
+  id: string,
+  address: string
+): Promise<{ success: true; removed: number }> {
+  return adminFetch(
+    `/admin/entities/${encodeURIComponent(id)}/members/${encodeURIComponent(address)}`,
+    token,
+    { method: 'DELETE' }
+  );
+}
+
 // ── Grouping ──────────────────────────────────────────────────────────────────
 
 export interface CandidateGroup {

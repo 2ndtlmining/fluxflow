@@ -346,6 +346,52 @@ At most `limit` results (1–25, default 10).
 
 ---
 
+## Entities (#65)
+
+One owner behind many addresses. **Label entities** are derived: every applied label with a name
+groups its addresses (id `exchange:Kucoin`), and all Foundation addresses are one entity (id
+`foundation`). **Named entities** (id `e-<name>`) are stored, named on the review page; a
+`cluster` member brings its whole current co-spend cluster, so the entity follows the cluster as
+clustering finds more of it. An address belongs to one entity: a named entity wins over a label
+entity, and the older named entity over a newer one. Entities never change a flow's kind or an
+exchange total; they group and name. Elsewhere in the API, an unlabelled member of a named entity
+is called by the entity's name, and `GET /api/wallets/:address` has `entity` (or `null`).
+
+### `GET /api/entities`
+
+`?q=` (name contains, 1-100 characters), `?limit=` (1-500, default 100). Most members first:
+
+```json
+{
+  "total": 6,
+  "entities": [
+    {
+      "id": "exchange:Kucoin",
+      "name": "Kucoin",
+      "kind": "exchange",
+      "source": "label",
+      "members": 28
+    }
+  ]
+}
+```
+
+### `GET /api/entities/:id`
+
+`?period=` (`24H` … `6M`, default `30D`). The Foundation report (below) for the entity's addresses —
+`totals`, `series`, `recent`, `wallets` (the 100 most active, each with its member `source`) —
+plus `memberSources`, `appPayments`, and `incoming` / `outgoing` counterparties grouped into
+entities where they belong to one (`{entity: {id, members} | null, address, name, kind, total,
+count, share, firstSeen, lastSeen}`). Moves between its own addresses are internal, so for
+`foundation` the totals equal `/api/foundation`'s. 90-day and 6-month reports may be reused for
+up to 5 minutes. 404 for an unknown id.
+
+### `GET /api/clusters`
+
+`?limit=` (1-100, default 25), `?unnamed=1` to skip clusters whose members all belong to an
+entity. Largest first: `{anchor, size, sample, entities: [{id, name, kind, members}], unassigned,
+received, sent}`. `anchor` is a member address — cluster ids change on every clustering pass.
+
 ## Intelligence (#18–#20, #31)
 
 Labels carry a confidence: `confirmed` (≥ 0.95), `likely` (≥ 0.7), `possible` (≥ 0.45),
@@ -544,6 +590,11 @@ All need `Authorization: Bearer <ADMIN_TOKEN>` and are refused when no token is 
 | POST   | `/api/admin/labels/candidates/decide-bulk` | `{decision, candidates: [{address, kind, name}]}` (1–500) — all or nothing (404 + `missing` if any is unknown), one label refresh; answers `decided`, `changedAddresses`, `transactions` to re-derive          |
 | POST   | `/api/admin/labels`                        | `{address, kind, name?, subLabel?, note?}` — a manual label; `kind: "unknown"` overrides                                                                                                                       |
 | DELETE | `/api/admin/labels/:address`               | removes the address's manual labels                                                                                                                                                                            |
+| POST   | `/api/admin/entities`                      | `{name, kind?, note?, addresses?: [], clusterOf?: []}` — a named entity (#65); `clusterOf` adds each address with its whole current co-spend cluster. Answers `{id}`                                           |
+| PATCH  | `/api/admin/entities/:id`                  | `{name?, kind?, note?}`                                                                                                                                                                                        |
+| DELETE | `/api/admin/entities/:id`                  | removes the entity and its members                                                                                                                                                                             |
+| POST   | `/api/admin/entities/:id/members`          | `{addresses?: [], clusterOf?: []}`                                                                                                                                                                             |
+| DELETE | `/api/admin/entities/:id/members/:address` | removes one member row                                                                                                                                                                                         |
 
 ---
 

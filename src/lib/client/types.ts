@@ -242,6 +242,8 @@ export interface WalletProfile {
   /** Every label on record, applied or not. */
   readonly labels: WalletLabel[];
   readonly cluster?: { clusterId: string; size: number; sample: string[] } | null;
+  /** The entity this address belongs to (#65), if any. */
+  readonly entity?: EntityRef | null;
   readonly candidates?: WalletLabel[];
   readonly totals: {
     readonly bought: number;
@@ -433,4 +435,63 @@ export interface FlowGraph {
   readonly edges: GraphEdge[];
   readonly expanded: Record<string, { in?: GraphSide; out?: GraphSide }>;
   readonly truncated: boolean;
+}
+
+/** One owner behind many addresses (#65): from labels, or named on the review page. */
+export interface EntityRef {
+  readonly id: string;
+  readonly name: string;
+  readonly kind: AddressKind;
+  readonly source: 'label' | 'stored';
+  readonly members: number;
+}
+
+export type MemberSource = 'label' | 'manual' | 'cluster';
+
+export interface EntityParty {
+  readonly entity: { readonly id: string; readonly members: number } | null;
+  readonly address: string;
+  readonly name: string | null;
+  readonly kind: AddressKind;
+  readonly total: number;
+  readonly count: number;
+  readonly share: number;
+  readonly firstSeen: number;
+  readonly lastSeen: number;
+}
+
+export interface EntityReport {
+  readonly period: PeriodId;
+  readonly label: string;
+  readonly fromTime: number;
+  readonly toTime: number;
+  readonly entity: EntityRef;
+  readonly totals: Foundation['totals'];
+  readonly series: Foundation['series'];
+  readonly recent: FoundationMovement[];
+  readonly wallets: (FoundationWallet & { readonly source: MemberSource })[];
+  readonly memberSources: Record<MemberSource, number>;
+  readonly incoming: { readonly total: number; readonly parties: EntityParty[] };
+  readonly outgoing: { readonly total: number; readonly parties: EntityParty[] };
+  readonly appPayments: { readonly total: number; readonly count: number };
+}
+
+export interface EntityList {
+  readonly total: number;
+  readonly entities: EntityRef[];
+}
+
+export interface ClusterSummary {
+  readonly anchor: string;
+  readonly size: number;
+  readonly sample: string[];
+  readonly entities: {
+    readonly id: string;
+    readonly name: string;
+    readonly kind: AddressKind;
+    readonly members: number;
+  }[];
+  readonly unassigned: number;
+  readonly received: number;
+  readonly sent: number;
 }

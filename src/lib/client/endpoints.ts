@@ -9,7 +9,10 @@ import type { PeriodId } from '$lib/shared/constants';
 import { apiFetch, cachedFetch } from './api';
 import type {
   AppPayments,
+  ClusterSummary,
   Counterparty,
+  EntityList,
+  EntityReport,
   EventsPage,
   FlowGraph,
   Foundation,
@@ -85,6 +88,25 @@ export function fetchGraph(
   if (query.minAmount > 0) params.set('minAmount', String(query.minAmount));
   return cachedFetch<FlowGraph>(`/graph?${params.toString()}`, signal);
 }
+
+/** Entities (#65), largest first, optionally matching a name. */
+export const fetchEntities = (query: string, signal?: AbortSignal) =>
+  cachedFetch<EntityList>(
+    `/entities?limit=500${query ? `&q=${encodeURIComponent(query)}` : ''}`,
+    signal
+  );
+
+export const entityPath = (id: string, period: PeriodId) =>
+  `/entities/${encodeURIComponent(id)}?period=${period}`;
+
+export const fetchEntity = (id: string, period: PeriodId, signal?: AbortSignal) =>
+  cachedFetch<EntityReport>(entityPath(id, period), signal);
+
+export const fetchClusters = (unnamed: boolean, signal?: AbortSignal) =>
+  cachedFetch<{ clusters: ClusterSummary[] }>(
+    `/clusters?limit=25${unnamed ? '&unnamed=1' : ''}`,
+    signal
+  );
 
 export const fetchHops = (period: PeriodId, signal?: AbortSignal) =>
   cachedFetch<HopsResponse>(hopsPath(period), signal);
