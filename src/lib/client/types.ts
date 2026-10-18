@@ -403,3 +403,34 @@ export interface AppPayments {
   readonly fundingOfPayments: KindMix;
   readonly outflows: { readonly total: number; readonly recipients: Party[] };
 }
+
+/** `/api/graph` (#63): one wallet's neighbourhood. */
+export interface GraphNode {
+  readonly address: string;
+  readonly kind: AddressKind;
+  readonly name: string | null;
+}
+
+export interface GraphEdge {
+  readonly from: string;
+  readonly to: string;
+  readonly total: number;
+  readonly count: number;
+  readonly first: number;
+  readonly last: number;
+}
+
+export interface GraphSide {
+  readonly more: number;
+  readonly sampled: boolean;
+}
+
+export interface FlowGraph {
+  readonly root: string;
+  readonly direction: 'in' | 'out' | 'both';
+  readonly depth: number;
+  readonly nodes: GraphNode[];
+  readonly edges: GraphEdge[];
+  readonly expanded: Record<string, { in?: GraphSide; out?: GraphSide }>;
+  readonly truncated: boolean;
+}

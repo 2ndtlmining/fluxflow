@@ -241,6 +241,9 @@
                       {recipient.name ?? shortAddress(recipient.address)}
                     </a>
                     <span class="muted small">{kindLabel(recipient.kind)}</span>
+                    <a class="small" href="/graph?root={recipient.address}&period={period}"
+                      >follow</a
+                    >
                   </td>
                   <td class="num">{formatFlux(recipient.received)}</td>
                   <td class="num">{recipient.nodes ? formatFlux(recipient.nodes) : ''}</td>

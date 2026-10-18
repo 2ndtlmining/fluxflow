@@ -50,6 +50,7 @@ import {
 import { ResponseCache } from './cache.js';
 import { appPayments, walletCounterparties } from './apps.js';
 import { FUNDS_LIMITS, walletFunds } from './funds.js';
+import { GRAPH_LIMITS, flowGraph } from './graph.js';
 import {
   APPLY_MIN_CONFIDENCE,
   CONFIDENCE,
@@ -923,6 +924,30 @@ export function createApiRouter(deps: ApiDependencies): Router {
     cache.send(req, res, () => walletFunds(db, labels, address, direction, query.data.hops));
   }
 
+  // ── Fund-flow graph ───────────────────────────────────────────────────────
+  /**
+   * A wallet's neighbourhood as nodes and edges (#63): its largest senders and/or recipients,
+   * `depth` unlabelled wallets out. The /graph page calls this once per click.
+   */
+  router.get('/graph', (req: Request, res: Response) => {
+    const query = graphQuery.safeParse(req.query);
+    if (!query.success) {
+      res.status(400).json({ error: 'Invalid query', message: query.error.issues[0]?.message });
+      return;
+    }
+    const { address, period, ...options } = query.data;
+
+    cache.send(req, res, () =>
+      flowGraph(
+        db,
+        labels,
+        address,
+        period ? periodWindow(period) : { fromHeight: 0, toHeight: Number.MAX_SAFE_INTEGER },
+        options
+      )
+    );
+  });
+
   // ── App payments ──────────────────────────────────────────────────────────
   /** Transfers into the `app_hosting` addresses: who pays for Flux apps, and from what money. */
   router.get('/apps', (req: Request, res: Response) => {
@@ -1102,6 +1127,19 @@ const counterpartiesQuery = z.object({
 
 const fundsQuery = z.object({
   hops: z.coerce.number().int().min(1).max(FUNDS_LIMITS.maxHops).default(3)
+});
+
+const graphQuery = z.object({
+  address: z.string().regex(ADDRESS_PATTERN, 'Expected a FLUX transparent address'),
+  direction: z.enum(['in', 'out', 'both']).default('both'),
+  depth: z.coerce.number().int().min(1).max(GRAPH_LIMITS.maxDepth).default(1),
+  fanout: z.coerce.number().int().min(1).max(GRAPH_LIMITS.maxFanout).default(GRAPH_LIMITS.fanout),
+  minAmount: z.coerce.number().min(0).max(1e10).default(0),
+  period: z
+    .string()
+    .transform((value) => value.toUpperCase())
+    .refine(isPeriodId, 'Unknown period')
+    .optional()
 });
 
 const leaderboardQuery = z.object({

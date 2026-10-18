@@ -474,6 +474,20 @@ describe('api router', () => {
       expect((await get('/api/wallets/not-an-address/sources')).status).toBe(400);
     });
 
+    it('serves the fund-flow graph and validates its query', async () => {
+      await boot();
+      seedWallet();
+
+      const { status, body } = await get(`/api/graph?address=${WHALE}&period=30d`);
+      expect(status).toBe(200);
+      expect(body).toMatchObject({ root: WHALE, direction: 'both', depth: 1, truncated: false });
+      expect((body.nodes as { address: string }[]).map((node) => node.address)).toContain(WHALE);
+
+      expect((await get('/api/graph?address=nope')).status).toBe(400);
+      expect((await get(`/api/graph?address=${WHALE}&depth=9`)).status).toBe(400);
+      expect((await get(`/api/graph?address=${WHALE}&period=1Y`)).status).toBe(400);
+    });
+
     it('pages wallet events and validates the cursor', async () => {
       await boot();
       seedWallet();

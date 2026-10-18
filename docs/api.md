@@ -286,6 +286,47 @@ to `total`; `untraced` is `byKind.unknown`. `endpoints` lists the largest labell
 reached, with the fewest hops to each. At most 300 wallets are read per trace; `truncated`
 says the budget ran out. At `hops=2`, `sources` equals `/api/apps` `fundedBy`.
 
+### `GET /api/graph`
+
+The fund-flow graph (#63): one wallet's largest senders and/or recipients as nodes and edges.
+The `/graph?root=` page calls it once per click.
+
+| Parameter   | Default | Meaning                                                                 |
+| ----------- | ------- | ----------------------------------------------------------------------- |
+| `address`   |         | The wallet (required)                                                   |
+| `direction` | `both`  | `in` (senders), `out` (recipients) or `both`                            |
+| `depth`     | 1       | 1-3: repeat for the unlabelled wallets found; labelled ones end a trail |
+| `fanout`    | 12      | 1-50 counterparties per wallet and side, largest first                  |
+| `minAmount` | 0       | Leave out edges under this many FLUX                                    |
+| `period`    | all     | `24H` … `6M`; without it, the whole stored window                       |
+
+```json
+{
+  "root": "t3…",
+  "direction": "both",
+  "depth": 1,
+  "nodes": [{ "address": "t3…", "kind": "app_hosting", "name": "Flux App Hosting" }],
+  "edges": [
+    {
+      "from": "t1…",
+      "to": "t3…",
+      "total": 386553,
+      "count": 412,
+      "first": 1776765244,
+      "last": 1792346614
+    }
+  ],
+  "expanded": {
+    "t3…": { "in": { "more": 139, "sampled": false }, "out": { "more": 0, "sampled": false } }
+  },
+  "truncated": false
+}
+```
+
+An edge is every flow between two wallets in the window. `expanded` says, per wallet and side,
+how many counterparties were left out (`more`) and whether only its newest 20,000 flows were
+read (`sampled`, for very busy wallets). At most 200 nodes; `truncated` says that cap was hit.
+
 ### `GET /api/search?q=` (also `/api/wallets/search`)
 
 `q` is 2–64 characters. Three forms:

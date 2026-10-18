@@ -11,6 +11,7 @@ import type {
   AppPayments,
   Counterparty,
   EventsPage,
+  FlowGraph,
   Foundation,
   HopsResponse,
   FlowSummary,
@@ -68,6 +69,22 @@ export const fetchFunds = (
     `/wallets/${encodeURIComponent(address)}/${direction === 'in' ? 'sources' : 'destinations'}?hops=${hops}`,
     signal
   );
+
+/** One wallet's senders and/or recipients for the fund-flow graph (#63). */
+export function fetchGraph(
+  query: {
+    address: string;
+    direction: 'in' | 'out' | 'both';
+    period: PeriodId | null;
+    minAmount: number;
+  },
+  signal?: AbortSignal
+): Promise<FlowGraph> {
+  const params = new URLSearchParams({ address: query.address, direction: query.direction });
+  if (query.period) params.set('period', query.period);
+  if (query.minAmount > 0) params.set('minAmount', String(query.minAmount));
+  return cachedFetch<FlowGraph>(`/graph?${params.toString()}`, signal);
+}
 
 export const fetchHops = (period: PeriodId, signal?: AbortSignal) =>
   cachedFetch<HopsResponse>(hopsPath(period), signal);
