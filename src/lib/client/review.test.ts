@@ -32,7 +32,14 @@ function candidate(overrides: Partial<ReviewCandidate> & { address: string }): R
       txs: 1,
       firstSeen: 1,
       lastSeen: 2,
-      received: { flux: 0, transfers: 0, senders: 0, fromNodeOperators: 0 },
+      received: {
+        flux: 0,
+        transfers: 0,
+        senders: 0,
+        fromNodeOperators: 0,
+        fromClaimed: 0,
+        fromClaimedShare: null
+      },
       sent: { flux: 0, transfers: 0, toClaimed: 0, toClaimedShare: null, exchanges: [] }
     },
     ...overrides
@@ -175,7 +182,14 @@ describe('describing candidates', () => {
         txs: 20,
         firstSeen: 1,
         lastSeen: 2,
-        received: { flux: 46_413, transfers: 13, senders: 7, fromNodeOperators: 5 },
+        received: {
+          flux: 46_413,
+          transfers: 13,
+          senders: 7,
+          fromNodeOperators: 5,
+          fromClaimed: 0,
+          fromClaimedShare: 0
+        },
         sent: {
           flux: 46_413,
           transfers: 13,
@@ -188,6 +202,33 @@ describe('describing candidates', () => {
     expect(activityText(active)).toBe(
       'Received 46.4K FLUX from 7 wallets (5 from node operators); sent 46.4K FLUX, 100% of it to GateIO.'
     );
+  });
+
+  it('describes a Foundation candidate by where its money came from', () => {
+    const treasury = candidate({
+      address: 'a',
+      kind: 'foundation',
+      name: 'Flux Foundation',
+      method: 'foundation_funded',
+      activity: {
+        txs: 6,
+        firstSeen: 1,
+        lastSeen: 2,
+        received: {
+          flux: 650_000,
+          transfers: 4,
+          senders: 4,
+          fromNodeOperators: 0,
+          fromClaimed: 500_000,
+          fromClaimedShare: 0.769
+        },
+        sent: { flux: 60_000, transfers: 1, toClaimed: 0, toClaimedShare: 0, exchanges: [] }
+      }
+    });
+    expect(activityText(treasury)).toBe(
+      'Received 650K FLUX from 4 wallets, 77% of it directly from Flux Foundation; sent 60K FLUX.'
+    );
+    expect(methodText('foundation_funded')).toMatch(/^Funded mostly by Foundation wallets/);
   });
 
   it('previews a decision', () => {

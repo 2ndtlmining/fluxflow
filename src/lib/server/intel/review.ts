@@ -32,6 +32,10 @@ export interface CandidateActivity {
     readonly senders: number;
     /** Transfers in from node-operator wallets: an operator selling through a deposit address. */
     readonly fromNodeOperators: number;
+    /** FLUX received from wallets of the proposed kind (the Foundation, for a Foundation wallet). */
+    readonly fromClaimed: number;
+    /** `fromClaimed / flux`, or null when the address has received nothing. */
+    readonly fromClaimedShare: number | null;
   };
   readonly sent: {
     readonly flux: number;
@@ -55,18 +59,24 @@ export interface ReviewCandidate extends StoredCandidate {
 /**
  * How strongly the evidence supports accepting, from 0 to 1.
  *
- * The method's own confidence, scaled by how much of what the address sent went to the
- * proposed exchange: a deposit address forwards everything to it, a personal wallet that
- * happened to share a transaction does not. An address that has sent nothing yet is neutral
- * (0.75 of its confidence). One already labelled as something else is halved: accepting would
- * overrule an existing label, which deserves a closer look.
+ * The method's own confidence, scaled by how well what the address did agrees with the
+ * proposal (`agreement`, 0�1, or null when it has not acted yet):
+ *
+ * - an exchange candidate by how much of what it sent went to that exchange: a deposit
+ *   address forwards everything to it, a personal wallet that happened to share a
+ *   transaction does not;
+ * - a Foundation candidate by how much of what it received came from the Foundation, directly
+ *   or through other proposed wallets (see {@link agreementOf}).
+ *
+ * No agreement yet is neutral (0.75 of its confidence). One already labelled as something
+ * else is halved: accepting would overrule an existing label, which deserves a closer look.
  */
 export function strengthOf(
   confidence: number,
-  toClaimedShare: number | null,
+  agreement: number | null,
   conflicting: boolean
 ): number {
-  const agreement = toClaimedShare ?? 0.5;
+  agreement ??= 0.5;
   const strength = confidence * (0.5 + 0.5 * agreement) * (conflicting ? 0.5 : 1);
   return Math.round(strength * 1000) / 1000;
 }
@@ -82,11 +92,18 @@ export function reviewCandidates(
      FROM tx_deltas WHERE address = ?`
   );
   const inbound = db.prepare<
-    [string],
-    { sat: number | null; transfers: number; senders: number; fromNodes: number | null }
+    [string, string],
+    {
+      sat: number | null;
+      transfers: number;
+      senders: number;
+      fromNodes: number | null;
+      fromClaimed: number | null;
+    }
   >(
     `SELECT SUM(sat) AS sat, COUNT(*) AS transfers, COUNT(DISTINCT from_address) AS senders,
-            SUM(from_kind = 'node_operator') AS fromNodes
+            SUM(from_kind = 'node_operator') AS fromNodes,
+            SUM(CASE WHEN from_kind = ? THEN sat ELSE 0 END) AS fromClaimed
      FROM flows WHERE to_address = ?`
   );
   const outbound = db.prepare<
@@ -101,7 +118,12 @@ export function reviewCandidates(
 
   const reviewed = listCandidates(db, options).map((candidate): ReviewCandidate => {
     const span = seen.get(candidate.address)!;
-    const received = inbound.get(candidate.address)!;
+    const received = inbound.get(candidate.kind, candidate.address)!;
+    const receivedSat = received.sat ?? 0;
+    const fromClaimedShare =
+      receivedSat > 0
+        ? Math.round(((received.fromClaimed ?? 0) / receivedSat) * 1000) / 1000
+        : null;
     const sent = outbound.all(candidate.address);
 
     const sentSat = sent.reduce((sum, row) => sum + row.sat, 0);
@@ -126,10 +148,12 @@ export function reviewCandidates(
         firstSeen: span.first,
         lastSeen: span.last,
         received: {
-          flux: (received.sat ?? 0) / SATS_PER_FLUX,
+          flux: receivedSat / SATS_PER_FLUX,
           transfers: received.transfers,
           senders: received.senders,
-          fromNodeOperators: received.fromNodes ?? 0
+          fromNodeOperators: received.fromNodes ?? 0,
+          fromClaimed: (received.fromClaimed ?? 0) / SATS_PER_FLUX,
+          fromClaimedShare
         },
         sent: {
           flux: sentSat / SATS_PER_FLUX,
@@ -143,7 +167,11 @@ export function reviewCandidates(
         }
       },
       currentLabel,
-      strength: strengthOf(candidate.confidence, toClaimedShare, conflicting)
+      strength: strengthOf(
+        candidate.confidence,
+        agreementOf(candidate, toClaimedShare, fromClaimedShare),
+        conflicting
+      )
     };
   });
 
@@ -153,6 +181,27 @@ export function reviewCandidates(
       b.activity.sent.flux - a.activity.sent.flux ||
       a.address.localeCompare(b.address)
   );
+}
+
+/**
+ * How far an address's behaviour agrees with its proposal. An exchange: the share it sent to
+ * that exchange. Anything else (a Foundation wallet): the share it received from that kind,
+ * or the method's own traced share when higher � a wallet funded through other proposed
+ * wallets received little from the Foundation directly, and that is the point of the method.
+ */
+export function agreementOf(
+  candidate: Pick<StoredCandidate, 'kind' | 'evidence'>,
+  toClaimedShare: number | null,
+  fromClaimedShare: number | null
+): number | null {
+  if (candidate.kind === 'exchange') return toClaimedShare;
+  const evidence = candidate.evidence;
+  const traced =
+    evidence && typeof evidence === 'object'
+      ? (evidence as Record<string, unknown>)['shareFromFoundation']
+      : undefined;
+  if (typeof traced === 'number') return Math.max(traced, fromClaimedShare ?? 0);
+  return fromClaimedShare;
 }
 
 /** How many candidates are in each state, for the review's tabs. */

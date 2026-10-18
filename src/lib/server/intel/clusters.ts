@@ -38,9 +38,9 @@ export const CANDIDATE_CONFIDENCE = {
 
 export interface Candidate {
   readonly address: string;
-  readonly kind: 'exchange';
+  readonly kind: 'exchange' | 'foundation';
   readonly name: string;
-  readonly method: 'common_input' | 'sweep' | 'forwarder';
+  readonly method: 'common_input' | 'sweep' | 'forwarder' | 'foundation_funded';
   readonly confidence: number;
   readonly evidence: Record<string, unknown>;
 }
