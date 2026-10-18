@@ -7,21 +7,30 @@
 -->
 <script lang="ts">
   import { formatFlux, kindLabel } from '$lib/client/format';
-  import type { AddressKind, KindMix } from '$lib/client/types';
+  import type { FundsKind, KindMix } from '$lib/client/types';
 
   let {
     mix = {},
     legend = true,
     fractions = false,
-    keyOnly = false
-  }: { mix?: KindMix; legend?: boolean; fractions?: boolean; keyOnly?: boolean } = $props();
+    keyOnly = false,
+    empty = 'No stored inflows'
+  }: {
+    mix?: KindMix;
+    legend?: boolean;
+    fractions?: boolean;
+    keyOnly?: boolean;
+    empty?: string;
+  } = $props();
 
   // Fixed order, so bars in a table line up kind by kind.
-  const ORDER: AddressKind[] = [
+  const ORDER: FundsKind[] = [
     'foundation',
     'exchange',
     'node_operator',
+    'node_rewards',
     'app_hosting',
+    'held',
     'unknown'
   ];
 
@@ -42,12 +51,13 @@
 
 {#if keyOnly}
   <ul class="legend">
-    {#each ORDER as kind (kind)}
+    <!-- Only destinations have money kept in a wallet; the key is for sources. -->
+    {#each ORDER.filter((kind) => kind !== 'held') as kind (kind)}
       <li><span class="swatch {kind}" aria-hidden="true"></span>{kindLabel(kind)}</li>
     {/each}
   </ul>
 {:else if segments.length === 0}
-  <span class="muted small">No stored inflows</span>
+  <span class="muted small">{empty}</span>
 {:else}
   <div class="bar" class:thin={!legend} role="img" aria-label={text} title={text}>
     {#each segments as segment (segment.kind)}
@@ -123,6 +133,14 @@
 
   .app_hosting {
     background: var(--good);
+  }
+
+  .node_rewards {
+    background: var(--warn);
+  }
+
+  .held {
+    background: repeating-linear-gradient(135deg, var(--text-muted) 0 2px, transparent 2px 5px);
   }
 
   .unknown {

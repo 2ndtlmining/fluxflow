@@ -20,6 +20,7 @@ import type { Db } from '../db/database.js';
 import type { AddressKind } from '../ingest/datasource/types.js';
 import { SATS_PER_FLUX } from '../ingest/datasource/types.js';
 import type { LabelLookup } from '../labels.js';
+import { FUNDS_LIMITS, fundsTracer, toFlux, type FundsKind, type FundsMix } from './funds.js';
 
 const flux = (sat: number) => sat / SATS_PER_FLUX;
 
@@ -174,7 +175,7 @@ export interface HeightWindow {
 }
 
 /** Where a wallet's money came from, by the kind that sent it, in FLUX. */
-export type SourceMix = Partial<Record<AddressKind, number>>;
+export type SourceMix = FundsMix;
 
 export interface AppPayer {
   readonly address: string;
@@ -214,14 +215,6 @@ export interface AppPayments {
   /** Where the hosting addresses sent their money in the period. */
   readonly outflows: { total: number; recipients: Party[] };
 }
-
-/** Limits for the funding trace; it runs per request, so it is kept small. */
-export const SOURCE_LIMITS = {
-  /** Direct senders read per wallet. Anything beyond them counts as `unknown`. */
-  funders: 25,
-  /** Unlabelled senders followed one hop further, per wallet. */
-  followed: 5
-} as const;
 
 const DAY = 86_400;
 
@@ -300,16 +293,21 @@ export function appPayments(
     )
     .all(...params, limit);
 
-  const trace = sourceTracer(db, labels, window.toHeight);
+  // Two hops: each payer's senders, and the senders of its largest unlabelled senders (#64).
+  const tracer = fundsTracer(db, labels, 'in', {
+    maxHops: 2,
+    toHeight: window.toHeight,
+    maxReads: limit * (1 + FUNDS_LIMITS.followed)
+  });
   const total = totals.sat ?? 0;
   const weighted: SourceMix = {};
   let weightedTotal = 0;
 
   const topPayers = payerRows.map((row): AppPayer => {
-    const source = trace(row.address);
-    if (source.received > 0) {
-      for (const [kind, amount] of Object.entries(source.mix) as [AddressKind, number][]) {
-        weighted[kind] = (weighted[kind] ?? 0) + (row.sat * amount) / source.received;
+    const source = tracer.trace(row.address);
+    if (source.total > 0) {
+      for (const [kind, amount] of Object.entries(source.mix) as [FundsKind, number][]) {
+        weighted[kind] = (weighted[kind] ?? 0) + (row.sat * amount) / source.total;
       }
       weightedTotal += row.sat;
     }
@@ -322,8 +320,8 @@ export function appPayments(
       share: total > 0 ? row.sat / total : 0,
       firstSeen: row.first,
       lastSeen: row.last,
-      fundedBy: { received: flux(source.received), mix: toFlux(source.mix) },
-      topFunders: source.funders.slice(0, 3).map((funder) => ({
+      fundedBy: { received: flux(source.total), mix: toFlux(source.mix) },
+      topFunders: source.direct.slice(0, 3).map((funder) => ({
         address: funder.address,
         kind: labels.kindOf(funder.address),
         name: labels.nameOf(funder.address),
@@ -385,79 +383,4 @@ export function appPayments(
       }))
     };
   }
-}
-
-const toFlux = (mix: SourceMix): SourceMix =>
-  Object.fromEntries(Object.entries(mix).map(([kind, sat]) => [kind, flux(sat)]));
-
-interface Source {
-  /** Satoshis received, all senders. */
-  readonly received: number;
-  /** Satoshis by source kind; sums to `received`. */
-  readonly mix: SourceMix;
-  readonly funders: { address: string; sat: number }[];
-}
-
-/**
- * A memoised two-hop funding trace up to `toHeight`.
- *
- * A labelled sender's share counts as its kind. An unlabelled one (among the largest
- * {@link SOURCE_LIMITS.followed}) has its own one-hop mix applied in proportion; the rest,
- * and senders beyond {@link SOURCE_LIMITS.funders}, count as `unknown`.
- */
-function sourceTracer(db: Db, labels: LabelLookup, toHeight: number) {
-  const senders = db.prepare<[string, string, number, number], { address: string; sat: number }>(
-    `SELECT from_address AS address, SUM(sat) AS sat FROM flows
-     WHERE to_address = ? AND from_address <> ? AND height <= ?
-     GROUP BY from_address ORDER BY sat DESC, address LIMIT ?`
-  );
-  const received = db.prepare<[string, string, number], { sat: number | null }>(
-    `SELECT SUM(sat) AS sat FROM flows WHERE to_address = ? AND from_address <> ? AND height <= ?`
-  );
-
-  const memo = new Map<string, Source>();
-
-  const read = (address: string, depth: number): Source => {
-    const key = `${depth}:${address}`;
-    const cached = memo.get(key);
-    if (cached) return cached;
-
-    const total = received.get(address, address, toHeight)?.sat ?? 0;
-    const funders = senders.all(address, address, toHeight, SOURCE_LIMITS.funders);
-    const mix: SourceMix = {};
-    const add = (kind: AddressKind, sat: number) => {
-      if (sat > 0) mix[kind] = (mix[kind] ?? 0) + sat;
-    };
-
-    let listed = 0;
-    let followed = 0;
-    for (const funder of funders) {
-      listed += funder.sat;
-      const kind = labels.kindOf(funder.address);
-      if (kind !== 'unknown') {
-        add(kind, funder.sat);
-        continue;
-      }
-      if (depth >= 2 || followed >= SOURCE_LIMITS.followed) {
-        add('unknown', funder.sat);
-        continue;
-      }
-      followed++;
-      const upstream = read(funder.address, depth + 1);
-      if (upstream.received <= 0) {
-        add('unknown', funder.sat);
-        continue;
-      }
-      for (const [upKind, sat] of Object.entries(upstream.mix) as [AddressKind, number][]) {
-        add(upKind, (funder.sat * sat) / upstream.received);
-      }
-    }
-    add('unknown', total - listed);
-
-    const source = { received: total, mix, funders };
-    memo.set(key, source);
-    return source;
-  };
-
-  return (address: string) => read(address, 1);
 }

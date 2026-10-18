@@ -49,6 +49,7 @@ import {
 } from './wallets.js';
 import { ResponseCache } from './cache.js';
 import { appPayments, walletCounterparties } from './apps.js';
+import { FUNDS_LIMITS, walletFunds } from './funds.js';
 import {
   APPLY_MIN_CONFIDENCE,
   CONFIDENCE,
@@ -896,6 +897,32 @@ export function createApiRouter(deps: ApiDependencies): Router {
     cache.send(req, res, () => walletCounterparties(db, labels, address, query.data));
   });
 
+  /**
+   * Source of funds (#64): what share of everything this wallet received came from each kind
+   * of wallet, following unlabelled senders up to `hops` wallets back.
+   */
+  router.get('/wallets/:address/sources', (req: Request, res: Response) => {
+    fundsRoute(req, res, 'in');
+  });
+
+  /** Destination of funds (#64): where this wallet's money went, up to `hops` wallets on. */
+  router.get('/wallets/:address/destinations', (req: Request, res: Response) => {
+    fundsRoute(req, res, 'out');
+  });
+
+  function fundsRoute(req: Request, res: Response, direction: 'in' | 'out'): void {
+    const address = parseAddress(req, res);
+    if (!address) return;
+
+    const query = fundsQuery.safeParse(req.query);
+    if (!query.success) {
+      res.status(400).json({ error: 'Invalid query', message: query.error.issues[0]?.message });
+      return;
+    }
+
+    cache.send(req, res, () => walletFunds(db, labels, address, direction, query.data.hops));
+  }
+
   // ── App payments ──────────────────────────────────────────────────────────
   /** Transfers into the `app_hosting` addresses: who pays for Flux apps, and from what money. */
   router.get('/apps', (req: Request, res: Response) => {
@@ -1071,6 +1098,10 @@ const eventsQuery = z.object({
 
 const counterpartiesQuery = z.object({
   limit: z.coerce.number().int().min(1).max(100).optional()
+});
+
+const fundsQuery = z.object({
+  hops: z.coerce.number().int().min(1).max(FUNDS_LIMITS.maxHops).default(3)
 });
 
 const leaderboardQuery = z.object({

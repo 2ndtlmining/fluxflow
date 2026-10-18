@@ -34,6 +34,7 @@
   import SeriesChart from '$lib/ui/SeriesChart.svelte';
   import ConfidenceBadge from '$lib/ui/ConfidenceBadge.svelte';
   import PartyTable from '$lib/ui/PartyTable.svelte';
+  import FundsPanel from '$lib/ui/FundsPanel.svelte';
 
   const address = $derived(page.params.address ?? '');
   const valid = $derived(isAddress(address));
@@ -355,6 +356,8 @@
             Within the stored window. Click a wallet to follow the money a step further.
           </p>
         </section>
+
+        <FundsPanel {address} />
       {/if}
 
       {#if profile.labels.length > 0 || (profile.candidates?.length ?? 0) > 0 || profile.cluster}
