@@ -105,6 +105,11 @@ const FUNDS_LABELS: Record<string, string> = {
   held: 'Kept in wallet'
 };
 
+/** An entity's kind: a named group whose kind nobody set is not an "unlabelled wallet". */
+export function entityKindLabel(kind: string): string {
+  return kind === 'unknown' ? 'Unclassified' : kindLabel(kind);
+}
+
 export function kindLabel(kind: string): string {
   return KIND_LABELS[kind as AddressKind] ?? FUNDS_LABELS[kind] ?? kind;
 }

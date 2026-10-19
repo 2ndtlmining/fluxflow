@@ -52,6 +52,15 @@ import { appPayments, walletCounterparties } from './apps.js';
 import { FUNDS_LIMITS, walletFunds } from './funds.js';
 import { GRAPH_LIMITS, flowGraph } from './graph.js';
 import {
+  EntityIndex,
+  addMembers,
+  createEntity,
+  entityReport,
+  isStoredEntity,
+  listClusters,
+  withEntityNames
+} from '../intel/entities.js';
+import {
   APPLY_MIN_CONFIDENCE,
   CONFIDENCE,
   confidenceLevel,
@@ -483,6 +492,84 @@ export function createApiRouter(deps: ApiDependencies): Router {
     res.json({ success: true, removed, changed: changed.length });
   });
 
+  // ── Named entities (#65) ──────────────────────────────────────────────────
+  /** Name a cluster or a set of addresses: `clusterOf` adds each address's whole cluster. */
+  router.post('/admin/entities', admin, (req: Request, res: Response) => {
+    const body = newEntityBody.safeParse(req.body);
+    if (!body.success) {
+      res.status(400).json({ error: 'Invalid body', issues: body.error.issues });
+      return;
+    }
+    const { name, kind, note, addresses, clusterOf } = body.data;
+    const id = db.transaction(() => {
+      const created = createEntity(db, { name, kind, note: note ?? null });
+      addMembers(db, created, toMembers(addresses, clusterOf));
+      return created;
+    })();
+    res.json({ success: true, id });
+  });
+
+  router.patch('/admin/entities/:id', admin, (req: Request, res: Response) => {
+    const id = storedEntityId(req, res);
+    if (!id) return;
+    const body = entityPatch.safeParse(req.body);
+    if (!body.success) {
+      res.status(400).json({ error: 'Invalid body', issues: body.error.issues });
+      return;
+    }
+    const { name, kind, note } = body.data;
+    db.prepare(
+      `UPDATE entities SET name = COALESCE(?, name), kind = COALESCE(?, kind),
+         note = COALESCE(?, note), updated_at = CAST(strftime('%s','now') AS INTEGER)
+       WHERE id = ?`
+    ).run(name ?? null, kind ?? null, note ?? null, id);
+    res.json({ success: true, id });
+  });
+
+  router.delete('/admin/entities/:id', admin, (req: Request, res: Response) => {
+    const id = storedEntityId(req, res);
+    if (!id) return;
+    db.prepare(`DELETE FROM entities WHERE id = ?`).run(id);
+    res.json({ success: true, id });
+  });
+
+  router.post('/admin/entities/:id/members', admin, (req: Request, res: Response) => {
+    const id = storedEntityId(req, res);
+    if (!id) return;
+    const body = membersBody.safeParse(req.body);
+    if (!body.success) {
+      res.status(400).json({ error: 'Invalid body', issues: body.error.issues });
+      return;
+    }
+    const added = addMembers(db, id, toMembers(body.data.addresses, body.data.clusterOf));
+    res.json({ success: true, id, added });
+  });
+
+  router.delete('/admin/entities/:id/members/:address', admin, (req: Request, res: Response) => {
+    const id = storedEntityId(req, res);
+    if (!id) return;
+    const address = parseAddress(req, res);
+    if (!address) return;
+    const removed = db
+      .prepare(`DELETE FROM entity_members WHERE entity_id = ? AND address = ?`)
+      .run(id, address).changes;
+    res.json({ success: true, id, removed });
+  });
+
+  /** A named entity's id, or a 404: entities from labels follow the labels, not this API. */
+  function storedEntityId(req: Request, res: Response): string | null {
+    const id = entityId(req, res);
+    if (!id) return null;
+    if (!isStoredEntity(db, id)) {
+      res.status(404).json({
+        error: 'Not found',
+        message: 'No such named entity. Entities from labels change with their labels.'
+      });
+      return null;
+    }
+    return id;
+  }
+
   if (intel) {
     router.post('/admin/intel/run', admin, (_req: Request, res: Response) => {
       void intel.runAll().then(
@@ -850,6 +937,7 @@ export function createApiRouter(deps: ApiDependencies): Router {
                 .map((row) => row.address)
             }
           : null,
+        entity: EntityIndex.build(db, labels).entityOf(address),
         candidates: listCandidates(db, { address, limit: 10 }),
         recent: walletEvents(db, address, { limit: 20 })
       };
@@ -895,7 +983,7 @@ export function createApiRouter(deps: ApiDependencies): Router {
       return;
     }
 
-    cache.send(req, res, () => walletCounterparties(db, labels, address, query.data));
+    cache.send(req, res, () => walletCounterparties(db, named(), address, query.data));
   });
 
   /**
@@ -921,7 +1009,7 @@ export function createApiRouter(deps: ApiDependencies): Router {
       return;
     }
 
-    cache.send(req, res, () => walletFunds(db, labels, address, direction, query.data.hops));
+    cache.send(req, res, () => walletFunds(db, named(), address, direction, query.data.hops));
   }
 
   // ── Fund-flow graph ───────────────────────────────────────────────────────
@@ -940,12 +1028,81 @@ export function createApiRouter(deps: ApiDependencies): Router {
     cache.send(req, res, () =>
       flowGraph(
         db,
-        labels,
+        named(),
         address,
         period ? periodWindow(period) : { fromHeight: 0, toHeight: Number.MAX_SAFE_INTEGER },
         options
       )
     );
+  });
+
+  // ── Entities (#65) ────────────────────────────────────────────────────────
+  /** Labels, with an unlabelled member of a named entity called by the entity's name. */
+  function named() {
+    return withEntityNames(labels, EntityIndex.build(db, labels));
+  }
+
+  router.get('/entities', (req: Request, res: Response) => {
+    const query = entitiesQuery.safeParse(req.query);
+    if (!query.success) {
+      res.status(400).json({ error: 'Invalid query', message: query.error.issues[0]?.message });
+      return;
+    }
+    cache.send(req, res, () => {
+      const all = EntityIndex.build(db, labels).list();
+      const needle = query.data.q?.toLowerCase();
+      const matching = needle ? all.filter((e) => e.name.toLowerCase().includes(needle)) : all;
+      return { total: matching.length, entities: matching.slice(0, query.data.limit) };
+    });
+  });
+
+  /** One entity's combined totals, members and counterparties (as entities) over a period. */
+  router.get('/entities/:id', (req: Request, res: Response) => {
+    const id = entityId(req, res);
+    if (!id) return;
+    const raw = typeof req.query.period === 'string' ? req.query.period.toUpperCase() : '30D';
+    if (!isPeriodId(raw)) {
+      res.status(400).json({ error: 'Invalid period', message: `Unknown period: ${raw}` });
+      return;
+    }
+
+    const index = EntityIndex.build(db, labels);
+    if (!index.get(id)) {
+      res.status(404).json({ error: 'Not found', message: 'No such entity' });
+      return;
+    }
+    cache.send(
+      req,
+      res,
+      () => {
+        const window = periodWindow(raw);
+        return {
+          period: raw,
+          label: PERIOD_LABELS[raw],
+          fromTime: window.fromTime,
+          toTime: window.toTime,
+          ...entityReport(db, withEntityNames(labels, index), index, id, window)
+        };
+        // A 90-day or 6-month report reads every movement of every member (~0.4 s for the
+        // Foundation over 6 months): reuse it for a few minutes rather than every sync cycle.
+      },
+      { maxStaleMs: PERIOD_SECONDS[raw] > 30 * 86_400 ? 5 * 60_000 : 0 }
+    );
+  });
+
+  /** The largest co-spend clusters, and which entities their members already belong to. */
+  router.get('/clusters', (req: Request, res: Response) => {
+    const query = clustersQuery.safeParse(req.query);
+    if (!query.success) {
+      res.status(400).json({ error: 'Invalid query', message: query.error.issues[0]?.message });
+      return;
+    }
+    cache.send(req, res, () => ({
+      clusters: listClusters(db, EntityIndex.build(db, labels), {
+        limit: query.data.limit,
+        unnamedOnly: query.data.unnamed
+      })
+    }));
   });
 
   // ── App payments ──────────────────────────────────────────────────────────
@@ -970,7 +1127,7 @@ export function createApiRouter(deps: ApiDependencies): Router {
         label: PERIOD_LABELS[raw],
         fromTime: window.fromTime,
         toTime: window.toTime,
-        ...appPayments(db, labels, window, { limit: query.data.limit ?? 20 })
+        ...appPayments(db, named(), window, { limit: query.data.limit ?? 20 })
       };
     });
   });
@@ -1141,6 +1298,66 @@ const graphQuery = z.object({
     .refine(isPeriodId, 'Unknown period')
     .optional()
 });
+
+const entitiesQuery = z.object({
+  q: z.string().min(1).max(100).optional(),
+  limit: z.coerce.number().int().min(1).max(500).default(100)
+});
+
+const clustersQuery = z.object({
+  limit: z.coerce.number().int().min(1).max(100).default(25),
+  unnamed: z
+    .enum(['0', '1', 'true', 'false'])
+    .transform((value) => value === '1' || value === 'true')
+    .default(false)
+});
+
+const entityFields = {
+  name: z.string().trim().min(1).max(100),
+  kind: z.enum(ADDRESS_KINDS),
+  note: z.string().max(500)
+};
+
+const memberFields = {
+  addresses: z.array(z.string().regex(ADDRESS_PATTERN)).max(1000).default([]),
+  clusterOf: z.array(z.string().regex(ADDRESS_PATTERN)).max(100).default([])
+};
+
+const hasMembers = (body: { addresses: string[]; clusterOf: string[] }) =>
+  body.addresses.length + body.clusterOf.length > 0;
+
+const newEntityBody = z
+  .object({
+    name: entityFields.name,
+    kind: entityFields.kind.default('unknown'),
+    note: entityFields.note.optional(),
+    ...memberFields
+  })
+  .refine(hasMembers, 'Give at least one address');
+
+const entityPatch = z.object({
+  name: entityFields.name.optional(),
+  kind: entityFields.kind.optional(),
+  note: entityFields.note.optional()
+});
+
+const membersBody = z.object(memberFields).refine(hasMembers, 'Give at least one address');
+
+function toMembers(addresses: readonly string[], clusterOf: readonly string[]) {
+  return [
+    ...addresses.map((address) => ({ address, source: 'manual' as const })),
+    ...clusterOf.map((address) => ({ address, source: 'cluster' as const }))
+  ];
+}
+
+function entityId(req: Request, res: Response): string | null {
+  const id = req.params.id;
+  if (typeof id !== 'string' || id.length === 0 || id.length > 200) {
+    res.status(400).json({ error: 'Invalid entity id' });
+    return null;
+  }
+  return id;
+}
 
 const leaderboardQuery = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(10)

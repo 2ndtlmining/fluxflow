@@ -78,7 +78,8 @@
   <p>
     On-chain FLUX moving to and from tracked exchange wallets. Labels are a best effort; an
     unlabelled wallet may belong to anyone. <a href="/foundation">Flux Foundation</a> ·
-    <a href="/apps">App payments</a>
+    <a href="/apps">App payments</a> ·
+    <a href="/entities">Entities</a>
     ·
     <a href="/review">Review proposed labels</a> (admin).
   </p>

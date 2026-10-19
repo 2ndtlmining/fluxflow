@@ -184,6 +184,16 @@
       {:else}
         <h1 class="mono address">{address}</h1>
       {/if}
+      {#if profile?.entity}
+        <p class="entity-link">
+          Part of
+          <a href="/entity/{encodeURIComponent(profile.entity.id)}">{profile.entity.name}</a>
+          <span class="muted">
+            ({profile.entity.members}
+            {profile.entity.members === 1 ? 'address' : 'addresses'})
+          </span>
+        </p>
+      {/if}
       <div class="actions">
         <button type="button" class="button" onclick={copy}>
           {copied ? 'Copied' : 'Copy address'}
@@ -486,6 +496,10 @@
   header {
     display: grid;
     gap: 0.75rem;
+  }
+
+  .entity-link {
+    margin: 0;
   }
 
   h1 {

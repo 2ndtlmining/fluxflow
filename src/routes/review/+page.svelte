@@ -7,6 +7,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { SvelteSet } from 'svelte/reactivity';
+  import ClusterNaming from '$lib/ui/ClusterNaming.svelte';
   import {
     formatCount,
     formatFlux,
@@ -186,6 +187,7 @@
   <p class="muted lede">
     Addresses FluxFlow thinks belong to an exchange. Nothing counts until you accept it; accepting a
     deposit address turns transfers into it into sales at the moment they happened.
+    <a href="#clusters">Name groups of addresses</a> further down.
   </p>
 
   {#if !mounted}
@@ -356,6 +358,8 @@
         </section>
       {/each}
     {/if}
+
+    <ClusterNaming {token} onError={handleError} />
 
     {#if chosen.length > 0}
       <div class="actions" role="region" aria-label="Decide the selected candidates">

@@ -599,13 +599,66 @@ const splitFunders: Migration = {
   }
 };
 
+/**
+ * Version 6 (#65): entities — one named owner behind many addresses.
+ *
+ * Labels already group addresses by name (every "Kucoin" address is Kucoin); those entities
+ * are derived, not stored. These tables hold the ones a person names: an unlabelled
+ * co-spend cluster ("the 866-address cluster is X"), or addresses merged by hand.
+ *
+ * - `entity_members.source = 'cluster'` means "this address and its whole current co-spend
+ *   cluster". Clusters are rebuilt on every clustering pass and their ids change, so the
+ *   membership is anchored on an address, not on a cluster id.
+ * - Any change bumps the data version, like a chain change: cached answers that name or
+ *   total an entity are stale the moment it changes.
+ */
+const entities: Migration = {
+  version: 6,
+  name: 'entities',
+  up: (db) => {
+    db.exec(`
+      CREATE TABLE entities (
+        id         TEXT    PRIMARY KEY,
+        name       TEXT    NOT NULL,
+        kind       TEXT    NOT NULL DEFAULT 'unknown',
+        note       TEXT,
+        created_at INTEGER NOT NULL DEFAULT (${now}),
+        updated_at INTEGER NOT NULL DEFAULT (${now})
+      ) WITHOUT ROWID;
+
+      CREATE TABLE entity_members (
+        entity_id TEXT    NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+        address   TEXT    NOT NULL,
+        source    TEXT    NOT NULL DEFAULT 'manual',
+        added_at  INTEGER NOT NULL DEFAULT (${now}),
+        PRIMARY KEY (entity_id, address),
+        CHECK (source IN ('manual', 'cluster'))
+      ) WITHOUT ROWID;
+      CREATE INDEX idx_entity_members_address ON entity_members(address);
+    `);
+
+    const bump = `
+      INSERT INTO sync_state (key, value) VALUES ('${DATA_VERSION_KEY}', '1')
+      ON CONFLICT (key) DO UPDATE SET value = CAST(value AS INTEGER) + 1;`;
+    for (const table of ['entities', 'entity_members']) {
+      for (const event of ['INSERT', 'UPDATE', 'DELETE']) {
+        db.exec(`
+          CREATE TRIGGER ${table}_${event.toLowerCase()}_version AFTER ${event} ON ${table}
+          BEGIN ${bump} END;
+        `);
+      }
+    }
+  }
+};
+
 /** Every migration, in ascending version order. Append only — never edit a shipped one. */
 export const MIGRATIONS: readonly Migration[] = [
   initialSchema,
   rollups,
   walletRollups,
   intelligence,
-  splitFunders
+  splitFunders,
+  entities
 ];
 
 /** The version a fresh database ends up at. */
