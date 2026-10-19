@@ -330,8 +330,7 @@ read (`sampled`, for very busy wallets). At most 200 nodes; `truncated` says tha
 ### `GET /api/tx/:txid`
 
 One transaction as FluxFlow classified it (#66), for the `/tx/:txid` page. `txid` is 64 hex
-characters (any case); anything else is a 400, and a transaction outside the stored window is a
-404.
+characters (any case); anything else is a 400, and a transaction outside the stored window is a 404.
 
 ```json
 {
