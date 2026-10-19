@@ -323,8 +323,7 @@ function describeValue(label: string, value: unknown): EvidenceItem[] {
         {
           label,
           text: shortAddress(value, 8),
-          href: `https://explorer.runonflux.io/tx/${value}`,
-          external: true
+          href: `/tx/${value}`
         }
       ];
     }

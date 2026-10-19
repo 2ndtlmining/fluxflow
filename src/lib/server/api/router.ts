@@ -51,6 +51,7 @@ import { ResponseCache } from './cache.js';
 import { appPayments, walletCounterparties } from './apps.js';
 import { FUNDS_LIMITS, walletFunds } from './funds.js';
 import { GRAPH_LIMITS, flowGraph } from './graph.js';
+import { TXID_PATTERN, txDetail } from './tx.js';
 import {
   EntityIndex,
   addMembers,
@@ -1034,6 +1035,30 @@ export function createApiRouter(deps: ApiDependencies): Router {
         options
       )
     );
+  });
+
+  // ── Transaction page (#66) ────────────────────────────────────────────────
+  /** One transaction's parties, funder shares, derived flows and hop legs. */
+  router.get('/tx/:txid', (req: Request, res: Response) => {
+    const txid = req.params.txid;
+    if (typeof txid !== 'string' || !TXID_PATTERN.test(txid)) {
+      res.status(400).json({
+        error: 'Invalid txid',
+        message: 'Expected a transaction id (64 hexadecimal characters)'
+      });
+      return;
+    }
+
+    const detail = txDetail(db, labels, EntityIndex.build(db, labels), txid);
+    if (!detail) {
+      res.status(404).json({
+        error: 'Not found',
+        message: 'Not a stored transfer: outside the retention window, or not a FLUX transfer'
+      });
+      return;
+    }
+
+    cache.send(req, res, () => detail);
   });
 
   // ── Entities (#65) ────────────────────────────────────────────────────────

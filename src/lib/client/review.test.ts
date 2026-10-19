@@ -154,8 +154,7 @@ describe('describing candidates', () => {
     });
 
     expect(items.find((i) => i.label === 'sweep tx')).toMatchObject({
-      href: `https://explorer.runonflux.io/tx/${TXID}`,
-      external: true
+      href: `/tx/${TXID}`
     });
     expect(items.find((i) => i.label === 'into')).toMatchObject({ href: `/wallet/${ADDRESS}` });
     expect(items.filter((i) => i.label === 'anchors')).toHaveLength(2);

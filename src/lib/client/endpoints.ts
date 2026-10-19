@@ -22,6 +22,7 @@ import type {
   Leaderboard,
   SearchResponse,
   Series,
+  TxDetail,
   WalletCounterparties,
   WalletFunds,
   WalletProfile
@@ -193,6 +194,11 @@ export function search(query: string, signal?: AbortSignal): Promise<SearchRespo
 }
 
 /** FLUX transparent address: `t1`/`t3` + 33 base58 characters. Mirrors the server's check. */
+/** One transaction's parties, funder shares, flows and hop legs (#66). */
+export function fetchTx(txid: string, signal?: AbortSignal): Promise<TxDetail> {
+  return cachedFetch<TxDetail>(`/tx/${encodeURIComponent(txid)}`, signal);
+}
+
 export function isAddress(value: string): boolean {
   return /^t[13][1-9A-HJ-NP-Za-km-z]{33}$/.test(value);
 }

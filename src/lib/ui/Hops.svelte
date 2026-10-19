@@ -78,9 +78,7 @@
           <td class="num">
             <a
               class="muted"
-              href="https://explorer.runonflux.io/tx/{hop.sellTxid}"
-              rel="noopener noreferrer"
-              target="_blank"
+              href="/tx/{hop.sellTxid}"
               title="Deposit transaction at block {hop.sellHeight}"
               >{formatCount(hop.blocksApart)}</a
             >

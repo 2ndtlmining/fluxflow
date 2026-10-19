@@ -488,6 +488,35 @@ describe('api router', () => {
       expect((await get(`/api/graph?address=${WHALE}&period=1Y`)).status).toBe(400);
     });
 
+    it('serves a transaction and validates its id', async () => {
+      await boot();
+      const txid = 'ab'.repeat(32);
+      seedFlows(db, [
+        {
+          txid,
+          height: 22,
+          time: NOW,
+          fromAddress: WHALE,
+          fromKind: 'unknown',
+          toAddress: KUCOIN,
+          toKind: 'exchange',
+          flowType: 'selling',
+          exchange: 'Kucoin',
+          amountFlux: 200
+        }
+      ]);
+
+      const { status, body } = await get(`/api/tx/${txid.toUpperCase()}`);
+      expect(status).toBe(200);
+      expect(body).toMatchObject({ txid, height: 22 });
+      expect(body.flows).toEqual([
+        expect.objectContaining({ fromAddress: WHALE, flowType: 'selling', amount: 200 })
+      ]);
+
+      expect((await get('/api/tx/nope')).status).toBe(400);
+      expect((await get(`/api/tx/${'cd'.repeat(32)}`)).status).toBe(404);
+    });
+
     it('pages wallet events and validates the cursor', async () => {
       await boot();
       seedWallet();

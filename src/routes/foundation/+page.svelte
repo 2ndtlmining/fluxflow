@@ -335,12 +335,8 @@
                 </a>
                 <span class="muted">({kindLabel(move.counterpartyKind)})</span>
               </span>
-              <a
-                class="muted small when"
-                href="https://explorer.runonflux.io/tx/{move.txid}"
-                rel="noopener noreferrer"
-                target="_blank"
-                title={formatTime(move.time)}>{timeAgo(move.time, now)}</a
+              <a class="muted small when" href="/tx/{move.txid}" title={formatTime(move.time)}
+                >{timeAgo(move.time, now)}</a
               >
             </li>
           {/each}

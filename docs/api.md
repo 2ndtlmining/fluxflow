@@ -327,6 +327,62 @@ An edge is every flow between two wallets in the window. `expanded` says, per wa
 how many counterparties were left out (`more`) and whether only its newest 20,000 flows were
 read (`sampled`, for very busy wallets). At most 200 nodes; `truncated` says that cap was hit.
 
+### `GET /api/tx/:txid`
+
+One transaction as FluxFlow classified it (#66), for the `/tx/:txid` page. `txid` is 64 hex
+characters (any case); anything else is a 400, and a transaction outside the stored window is a
+404.
+
+```json
+{
+  "txid": "4532…44c8",
+  "height": 3019535,
+  "time": 1791477634,
+  "totalIn": 303992.8118619,
+  "totalOut": 303992.81148772,
+  "fee": 0.00037418,
+  "parties": [
+    {
+      "address": "t1JKj8…",
+      "kind": "unknown",
+      "name": null,
+      "label": null,
+      "entity": null,
+      "sent": 182165.45,
+      "received": 0,
+      "net": -182165.45,
+      "role": "funder",
+      "share": 0.5992
+    }
+  ],
+  "flows": [
+    {
+      "vout": 0,
+      "fromAddress": "t1JKj8…",
+      "toAddress": "t1Yvim…",
+      "fromKind": "unknown",
+      "toKind": "exchange",
+      "exchange": "GateIO",
+      "flowType": "selling",
+      "amount": 182165.22,
+      "share": 0.5992,
+      "stale": false
+    }
+  ],
+  "hops": [],
+  "note": null
+}
+```
+
+`parties` nets each address's inputs against its outputs: `role` is `funder` (paid in more
+than it got back), `recipient` or `change` (got back exactly what it paid). A funder's `share`
+is its part of all net input, which is the share of every output credited to it. `kind`, `name`
+and `label` are the label **now**; each flow keeps the kinds it was classified with, and
+`stale` marks a row whose labels have changed since (the next relabel pass re-derives it).
+`hops` lists the exchange hops this transaction is a leg of (`leg`: `buy` or `sell`, with
+`otherTxid`). `note` says why a transaction produced no flows (a self-transfer, Foundation
+wallets only, a coinbase).
+
 ### `GET /api/search?q=` (also `/api/wallets/search`)
 
 `q` is 2–64 characters. Three forms:
