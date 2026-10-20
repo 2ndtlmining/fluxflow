@@ -52,6 +52,7 @@ import { appPayments, walletCounterparties } from './apps.js';
 import { FUNDS_LIMITS, walletFunds } from './funds.js';
 import { GRAPH_LIMITS, flowGraph } from './graph.js';
 import { TXID_PATTERN, txDetail } from './tx.js';
+import { BalanceCache, balanceHistory } from './balances.js';
 import {
   EntityIndex,
   addMembers,
@@ -71,7 +72,7 @@ import type { IntelService } from '../intel/service.js';
 import { decideCandidate, listCandidates } from '../intel/clusters.js';
 import { catchUpState } from './catchup.js';
 import { candidateCounts, decideCandidates, reviewCandidates } from '../intel/review.js';
-import { foundationReport } from '../intel/foundation.js';
+import { fetchBalances, foundationReport, type BalanceSnapshot } from '../intel/foundation.js';
 import { traceFoundation } from '../intel/destinations.js';
 import { listHops, summariseHops } from '../intel/hops.js';
 
@@ -91,6 +92,11 @@ export interface ApiDependencies {
   };
   /** Address intelligence (#18-#20, #31); absent when disabled. */
   readonly intel?: IntelService;
+  /**
+   * Current balances for wallet pages (#67). Defaults to the own node (`FLUX_NODE_URL`)
+   * when one is configured; absent means balance history is shown as net change only.
+   */
+  readonly balances?: BalanceCache;
   /** Read by `/api/health`; kept O(1) so the Docker healthcheck is never the bottleneck. */
   readonly health: {
     startedAt: number;
@@ -143,6 +149,10 @@ function parsePeriod(req: Request, res: Response): PeriodId | null {
 export function createApiRouter(deps: ApiDependencies): Router {
   const { config, db, labels, dataSource, health, sync, intel, log, runtime } = deps;
   const router = Router();
+  const nodeUrl = config.dataSources.fluxNodeUrl;
+  const balanceCache =
+    deps.balances ??
+    (nodeUrl ? new BalanceCache((addresses) => fetchBalances(nodeUrl, addresses)) : null);
   // Counts and flow answers change only when a sync cycle commits (#3, #4).
   const cache = new ResponseCache(db);
 
@@ -1035,6 +1045,62 @@ export function createApiRouter(deps: ApiDependencies): Router {
         options
       )
     );
+  });
+
+  // ── Balance history (#67) ─────────────────────────────────────────────────
+  /**
+   * Current balances for a set of addresses. Foundation wallets come from the snapshot the
+   * Foundation report uses, so a Foundation wallet's line matches /foundation's exactly;
+   * everything else is read from the node through the cache.
+   */
+  async function currentBalances(addresses: readonly string[]): Promise<BalanceSnapshot | null> {
+    const snapshot = intel?.foundationBalances() ?? null;
+    const sat = new Map<string, number>();
+    let at = Infinity;
+    const rest: string[] = [];
+    for (const address of addresses) {
+      const known = snapshot?.sat.get(address);
+      if (known === undefined) rest.push(address);
+      else {
+        sat.set(address, known);
+        at = Math.min(at, snapshot!.at);
+      }
+    }
+    if (rest.length > 0 && balanceCache) {
+      const read = await balanceCache.get(rest);
+      for (const [address, value] of read?.sat ?? []) sat.set(address, value);
+      if (read) at = Math.min(at, read.at);
+    }
+    return sat.size > 0 ? { at, sat } : null;
+  }
+
+  router.get('/wallets/:address/balance', (req: Request, res: Response, next: NextFunction) => {
+    const address = parseAddress(req, res);
+    if (!address) return;
+    currentBalances([address])
+      .then((balances) => {
+        res.setHeader('Cache-Control', 'no-cache');
+        res.json({ address, ...balanceHistory(db, [address], balances) });
+      })
+      .catch(next);
+  });
+
+  /** An entity's combined balance; members beyond the node lookup cap leave it unknown. */
+  router.get('/entities/:id/balance', (req: Request, res: Response, next: NextFunction) => {
+    const id = entityId(req, res);
+    if (!id) return;
+    const index = EntityIndex.build(db, labels);
+    if (!index.get(id)) {
+      res.status(404).json({ error: 'Not found', message: 'No such entity' });
+      return;
+    }
+    const addresses = index.members(id).map((member) => member.address);
+    currentBalances(addresses)
+      .then((balances) => {
+        res.setHeader('Cache-Control', 'no-cache');
+        res.json({ id, members: addresses.length, ...balanceHistory(db, addresses, balances) });
+      })
+      .catch(next);
   });
 
   // ── Transaction page (#66) ────────────────────────────────────────────────

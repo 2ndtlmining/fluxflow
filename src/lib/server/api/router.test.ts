@@ -13,6 +13,7 @@ import {
   type TestServer
 } from '../testkit.js';
 import { ApiError, createApiRouter, errorHandler } from './router.js';
+import { BalanceCache } from './balances.js';
 
 const NOW = 1_756_000_000;
 
@@ -29,6 +30,7 @@ describe('api router', () => {
     options: {
       lastSync?: number | null;
       degraded?: { degraded: boolean; reason: string | null };
+      balances?: BalanceCache;
     } = {}
   ): Promise<void> {
     const config = createTestConfig();
@@ -49,7 +51,15 @@ describe('api router', () => {
     app.use('/api', express.json());
     app.use(
       '/api',
-      createApiRouter({ config, db, labels, dataSource, log: silentLogger(), health })
+      createApiRouter({
+        config,
+        db,
+        labels,
+        dataSource,
+        log: silentLogger(),
+        health,
+        ...(options.balances ? { balances: options.balances } : {})
+      })
     );
     app.use('/api', errorHandler(config, silentLogger()));
 
@@ -486,6 +496,40 @@ describe('api router', () => {
       expect((await get('/api/graph?address=nope')).status).toBe(400);
       expect((await get(`/api/graph?address=${WHALE}&depth=9`)).status).toBe(400);
       expect((await get(`/api/graph?address=${WHALE}&period=1Y`)).status).toBe(400);
+    });
+
+    it("serves a wallet's balance history, anchored on the node's balance", async () => {
+      await boot({
+        balances: new BalanceCache(async (addresses) => ({
+          at: 1,
+          sat: new Map(addresses.map((address) => [address, 1_000 * 1e8]))
+        }))
+      });
+      // Deltas, not flows, drive the balance: 500 in on one day, 200 out the next.
+      db.prepare(
+        `INSERT INTO tx_deltas (txid, address, height, time, sat_in, sat_out) VALUES
+           ('b1', ?, 20, ?, 0, 50000000000), ('b2', ?, 21, ?, 20000000000, 0)`
+      ).run(WHALE, NOW - 86_400, WHALE, NOW);
+
+      const { status, body } = await get(`/api/wallets/${WHALE}/balance`);
+      expect(status).toBe(200);
+      expect(body).toMatchObject({
+        address: WHALE,
+        balance: 1_000,
+        opening: 700,
+        consistent: true
+      });
+      expect((body.series as { balance: number }[]).map((point) => point.balance)).toEqual([
+        1_200, 1_000
+      ]);
+      expect((await get('/api/wallets/nope/balance')).status).toBe(400);
+    });
+
+    it('serves balance history as net change when no node is configured', async () => {
+      await boot();
+      const { status, body } = await get(`/api/wallets/${WHALE}/balance`);
+      expect(status).toBe(200);
+      expect(body).toMatchObject({ balance: null, series: [] });
     });
 
     it('serves a transaction and validates its id', async () => {

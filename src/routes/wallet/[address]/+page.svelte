@@ -9,6 +9,7 @@
   import { page } from '$app/state';
   import { ApiError, isAbort } from '$lib/client/api';
   import {
+    fetchBalance,
     fetchCounterparties,
     fetchWallet,
     fetchWalletEvents,
@@ -35,6 +36,7 @@
   import ConfidenceBadge from '$lib/ui/ConfidenceBadge.svelte';
   import PartyTable from '$lib/ui/PartyTable.svelte';
   import FundsPanel from '$lib/ui/FundsPanel.svelte';
+  import BalancePanel from '$lib/ui/BalancePanel.svelte';
 
   const address = $derived(page.params.address ?? '');
   const valid = $derived(isAddress(address));
@@ -294,6 +296,8 @@
           and how those wallets were funded.
         </p>
       {/if}
+
+      <BalancePanel key={address} load={(signal) => fetchBalance(address, signal)} />
 
       {#if parties && (parties.incoming.count > 0 || parties.outgoing.count > 0)}
         <section aria-labelledby="parties-heading" class="block">

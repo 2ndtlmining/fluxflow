@@ -286,6 +286,37 @@ to `total`; `untraced` is `byKind.unknown`. `endpoints` lists the largest labell
 reached, with the fewest hops to each. At most 300 wallets are read per trace; `truncated`
 says the budget ran out. At `hops=2`, `sources` equals `/api/apps` `fundedBy`.
 
+### `GET /api/wallets/:address/balance`
+
+What a wallet holds now and held each day of the stored history (#67). Not cached on the data
+version: the current balance is read from your own node (`FLUX_NODE_URL`, address index) and
+kept for five minutes per address. Foundation wallets use the Foundation report's balance
+snapshot, so their line matches `/api/foundation`'s.
+
+```json
+{
+  "address": "t3c4…",
+  "balance": 9576898,
+  "asOf": 1792456046039,
+  "opening": 6609778.19,
+  "series": [{ "time": 1776729600, "net": 12.5, "change": 12.5, "balance": 6609790.69 }],
+  "consistent": true,
+  "tipHeight": 3052081
+}
+```
+
+`series` has one point per day with activity: the day's net change, the running change since
+the first stored day, and the closing balance, rebuilt backwards from `balance`. `opening` is
+what it held before the first stored day. Every delta counts, including node rewards,
+transfers that produced no flow and fees. Without a node, `balance`, `opening` and every
+point's `balance` are null; draw `change` instead. `consistent` is false when the rebuilt
+history would dip below zero, meaning transactions are missing from the stored data (for
+example while sync is still catching up to the node).
+
+`GET /api/entities/:id/balance` returns the same for all of an entity's addresses combined
+(plus `id` and `members`). Moves between its own addresses net to the fee. An entity with
+more than 50 addresses the node would have to be asked about has an unknown balance.
+
 ### `GET /api/graph`
 
 The fund-flow graph (#63): one wallet's largest senders and/or recipients as nodes and edges.

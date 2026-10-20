@@ -555,3 +555,23 @@ export interface TxDetail {
   readonly hops: TxHop[];
   readonly note: string | null;
 }
+
+/** What a wallet or entity holds, and held over the stored window (#67). */
+export interface BalanceHistory {
+  /** Current balance, or null when no node answered. */
+  readonly balance: number | null;
+  /** When `balance` was read, ms. */
+  readonly asOf: number | null;
+  /** What it held before the first stored day. */
+  readonly opening: number | null;
+  /** Days with activity, oldest first. */
+  readonly series: {
+    readonly time: number;
+    readonly net: number;
+    readonly change: number;
+    readonly balance: number | null;
+  }[];
+  /** False when the rebuilt history would dip below zero: data is missing. */
+  readonly consistent: boolean;
+  readonly tipHeight: number | null;
+}

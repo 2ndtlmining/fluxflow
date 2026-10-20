@@ -9,6 +9,7 @@ import type { PeriodId } from '$lib/shared/constants';
 import { apiFetch, cachedFetch } from './api';
 import type {
   AppPayments,
+  BalanceHistory,
   ClusterSummary,
   Counterparty,
   EntityList,
@@ -194,6 +195,22 @@ export function search(query: string, signal?: AbortSignal): Promise<SearchRespo
 }
 
 /** FLUX transparent address: `t1`/`t3` + 33 base58 characters. Mirrors the server's check. */
+/** A wallet's current balance and daily balance history (#67). Not cached: it reads the node. */
+export function fetchBalance(address: string, signal?: AbortSignal): Promise<BalanceHistory> {
+  return apiFetch<BalanceHistory>(
+    `/wallets/${encodeURIComponent(address)}/balance`,
+    signal ? { signal } : {}
+  );
+}
+
+/** An entity's combined balance history (#67). */
+export function fetchEntityBalance(id: string, signal?: AbortSignal): Promise<BalanceHistory> {
+  return apiFetch<BalanceHistory>(
+    `/entities/${encodeURIComponent(id)}/balance`,
+    signal ? { signal } : {}
+  );
+}
+
 /** One transaction's parties, funder shares, flows and hop legs (#66). */
 export function fetchTx(txid: string, signal?: AbortSignal): Promise<TxDetail> {
   return cachedFetch<TxDetail>(`/tx/${encodeURIComponent(txid)}`, signal);

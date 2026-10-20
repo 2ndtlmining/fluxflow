@@ -11,7 +11,7 @@
   import { goto } from '$app/navigation';
   import { page } from '$app/state';
   import { ApiError, isAbort, peek } from '$lib/client/api';
-  import { entityPath, fetchEntity } from '$lib/client/endpoints';
+  import { entityPath, fetchEntity, fetchEntityBalance } from '$lib/client/endpoints';
   import {
     formatCount,
     formatFlux,
@@ -34,6 +34,7 @@
   import type { EntityParty, EntityReport, MemberSource } from '$lib/client/types';
   import { isPeriodId, type PeriodId } from '$lib/shared/constants';
   import PeriodTabs from '$lib/ui/PeriodTabs.svelte';
+  import BalancePanel from '$lib/ui/BalancePanel.svelte';
 
   const DEFAULT: PeriodId = '30D';
   const id = $derived(page.params.id ?? '');
@@ -250,6 +251,12 @@
         {data.label}: {formatTime(data.fromTime)} to {formatTime(data.toTime)}. Money moving between
         its own addresses is not counted as received or sent.
       </p>
+
+      <BalancePanel
+        key={id}
+        subject="its addresses"
+        load={(signal) => fetchEntityBalance(id, signal)}
+      />
 
       <section aria-labelledby="parties-heading" class="block">
         <h2 id="parties-heading">Who it deals with</h2>
