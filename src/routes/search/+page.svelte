@@ -70,12 +70,7 @@
             <span class="muted mono small">{result.address}</span>
             <span class="muted small">{kindLabel(result.kind)}</span>
           {:else}
-            <a
-              href="https://explorer.runonflux.io/tx/{result.txid}"
-              rel="noopener noreferrer"
-              target="_blank"
-              class="name">Transaction in block {result.height}</a
-            >
+            <a href="/tx/{result.txid}" class="name">Transaction in block {result.height}</a>
             <span class="muted mono small">{result.txid}</span>
           {/if}
         </li>

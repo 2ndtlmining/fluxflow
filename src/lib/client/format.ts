@@ -127,11 +127,13 @@ export function flowLabel(flowType: string): string {
 const SOURCE_TEXT: Record<string, string> = {
   node_list: 'Runs nodes on the current FluxNode list',
   rewards: 'Has received FluxNode rewards',
+  node_rewards: 'Has received FluxNode rewards',
   forwarding: 'Regularly receives funds forwarded from node-reward wallets',
   cluster: 'Spends together with a labelled wallet (shared inputs)',
   config: "Listed in FluxFlow's address labels",
   manual: 'Labelled by hand',
   deposit: 'Forwards everything it receives to one exchange (a deposit address)',
+  forwarder: 'Forwards everything it receives to one exchange (a deposit address)',
   foundation_intermediary: 'Receives Foundation money and pays it on as node collateral'
 };
 

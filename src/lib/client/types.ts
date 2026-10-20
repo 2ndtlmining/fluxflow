@@ -495,3 +495,63 @@ export interface ClusterSummary {
   readonly received: number;
   readonly sent: number;
 }
+
+/** One transaction as FluxFlow classified it (#66). */
+export interface TxParty {
+  readonly address: string;
+  /** Current classification. */
+  readonly kind: AddressKind;
+  readonly name: string | null;
+  readonly label: {
+    readonly source: string;
+    readonly confidence: number;
+    readonly level: ConfidenceLevel;
+    readonly subLabel: string | null;
+  } | null;
+  readonly entity: { readonly id: string; readonly name: string } | null;
+  readonly sent: number;
+  readonly received: number;
+  readonly net: number;
+  readonly role: 'funder' | 'recipient' | 'change';
+  /** A funder's part of all net input. */
+  readonly share: number | null;
+}
+
+export interface TxFlow {
+  readonly vout: number;
+  readonly fromAddress: string;
+  readonly toAddress: string;
+  /** As classified when the row was derived. */
+  readonly fromKind: AddressKind;
+  readonly toKind: AddressKind;
+  readonly exchange: string | null;
+  readonly flowType: FlowType;
+  readonly amount: number;
+  /** This row's part of what the recipient received. */
+  readonly share: number;
+  readonly stale: boolean;
+}
+
+export interface TxHop {
+  readonly leg: 'buy' | 'sell';
+  readonly address: string;
+  readonly fromExchange: string;
+  readonly toExchange: string;
+  readonly withdrawn: number;
+  readonly deposited: number;
+  readonly otherTxid: string;
+  readonly blocksApart: number;
+}
+
+export interface TxDetail {
+  readonly txid: string;
+  readonly height: number;
+  readonly time: number;
+  readonly totalIn: number;
+  readonly totalOut: number;
+  readonly fee: number;
+  readonly parties: TxParty[];
+  readonly flows: TxFlow[];
+  readonly hops: TxHop[];
+  readonly note: string | null;
+}

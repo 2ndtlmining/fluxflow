@@ -491,9 +491,11 @@ export function search(db: Db, rawQuery: string, limit = 10): SearchResult[] {
   const capped = Math.min(Math.max(1, limit), 25);
 
   if (/^[0-9a-f]{64}$/i.test(q)) {
+    // `tx_deltas` also holds transfers that produced no flow (self-transfers, Foundation
+    // moves), which the transaction page still explains (#66).
     const tx = db
       .prepare<[string], { txid: string; height: number }>(
-        `SELECT txid, height FROM flows WHERE txid = ? LIMIT 1`
+        `SELECT txid, height FROM tx_deltas WHERE txid = ? LIMIT 1`
       )
       .get(q.toLowerCase());
     return tx ? [{ type: 'tx', txid: tx.txid, height: tx.height }] : [];

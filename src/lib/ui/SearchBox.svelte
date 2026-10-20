@@ -1,12 +1,13 @@
 <!--
   Find a wallet, a label or a transaction (#30).
 
-  A full address goes straight to its wallet page; anything else opens the results page,
+  A full address goes straight to its wallet page and a full txid to its transaction page
+  (#66); anything else opens the results page,
   which asks GET /api/search. It is a plain GET form, so it also works before JavaScript loads.
 -->
 <script lang="ts">
   import { goto } from '$app/navigation';
-  import { isAddress } from '$lib/client/endpoints';
+  import { isAddress, isTxid } from '$lib/client/endpoints';
 
   let query = $state('');
 
@@ -20,6 +21,10 @@
       event.preventDefault();
       query = '';
       void goto(`/wallet/${value}`);
+    } else if (isTxid(value)) {
+      event.preventDefault();
+      query = '';
+      void goto(`/tx/${value.toLowerCase()}`);
     }
   }
 </script>

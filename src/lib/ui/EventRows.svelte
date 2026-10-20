@@ -77,9 +77,8 @@
               <span title={formatTime(event.time)}>{timeAgo(event.time, now)}</span>
               <a
                 class="muted mono small"
-                href="https://explorer.runonflux.io/tx/{event.txid}"
-                rel="noopener noreferrer"
-                target="_blank">#{event.height}</a
+                href="/tx/{event.txid}"
+                title="How FluxFlow classified this transaction">#{event.height}</a
               >
             </td>
             <td class="what">
