@@ -11,12 +11,12 @@
     "appHosting lists where Flux app (dapp) hosting fees are paid. Payments to it stay",
     "wallet-to-wallet transfers; the /apps page and wallet counterparties report them.",
     "",
-    "Coverage is thin - only 4 exchanges and 17 Foundation addresses are known (#20).",
+    "Coverage is thin - only 4 exchanges and 18 Foundation addresses are known (#20).",
     "Addresses found by clustering are proposed as candidates and need a human to add",
     "them here."
   ],
   "version": 1,
-  "updatedAt": "2026-10-03",
+  "updatedAt": "2026-10-23",
   "exchanges": [
     {
       "name": "Coinex",
@@ -82,7 +82,8 @@
       "t1Zj9vUsAMoG4M9LSy5ahDzZUmokKGXqwcT",
       "t3c4EfxLoXXSRZCRnPRF3RpjPi9mBzF5yoJ",
       "t1PGMqZxGPzPQcpJKWVyLc4c9D7SvjVe4kq",
-      "t1enVJqsiqRxpdnQw3f6Zwp1jAk9e3Wj9n2"
+      "t1enVJqsiqRxpdnQw3f6Zwp1jAk9e3Wj9n2",
+      "t1Mzja9iJcEYeW5B4m4s1tJG8M42odFZ16A"
     ]
   }
 }
