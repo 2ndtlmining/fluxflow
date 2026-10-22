@@ -4,6 +4,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createTestConfig, createTestDb, silentLogger, type Db } from './testkit.js';
 import { loadLabels, type LabelLookup } from './labels.js';
+import { deriveFlows } from './ingest/derive.js';
 
 const LABELS = {
   version: 1,
@@ -158,5 +159,68 @@ describe('loadLabels', () => {
     const labels = load(writeLabels(LABELS));
 
     expect(labels.entries().get('t1kucoin1')).toEqual({ kind: 'exchange', name: 'Kucoin' });
+  });
+});
+
+describe('the shipped config/labels.json', () => {
+  // Issue #77: a further Flux team address, labelled the way the other 17 are.
+  const TEAM = 't1Mzja9iJcEYeW5B4m4s1tJG8M42odFZ16A';
+  let db: Db;
+
+  beforeEach(() => {
+    db = createTestDb();
+  });
+
+  afterEach(() => {
+    db.close();
+  });
+
+  function shipped(): LabelLookup {
+    return loadLabels(db, createTestConfig(), silentLogger());
+  }
+
+  it('labels t1Mzja9iJcEYeW5B4m4s1tJG8M42odFZ16A as the Flux Foundation (#77)', () => {
+    const labels = shipped();
+
+    expect(labels.kindOf(TEAM)).toBe('foundation');
+    expect(labels.nameOf(TEAM)).toBe('Flux Foundation');
+  });
+
+  it('flags transfers from and to it as Foundation flows (#77)', () => {
+    const labels = shipped();
+    const SATS = 100_000_000;
+    const transfer = (from: string, to: string) =>
+      deriveFlows(
+        {
+          txid: `tx-${from}`,
+          kind: 'transfer',
+          inputs: [{ address: from, sat: 10 * SATS, vout: 0 }],
+          outputs: [{ n: 0, address: to, sat: 10 * SATS - 1_000, nulldata: false }],
+          complete: true
+        },
+        1_000,
+        1_756_000_000,
+        labels
+      );
+
+    const [sent] = transfer(TEAM, 't1someone');
+    expect(sent).toMatchObject({ fromKind: 'foundation', toKind: 'unknown', flowType: 'p2p' });
+
+    const [received] = transfer('t1someone', TEAM);
+    expect(received).toMatchObject({ fromKind: 'unknown', toKind: 'foundation', flowType: 'p2p' });
+  });
+
+  it('keeps src/lib/data/exchanges.json in step with it', () => {
+    // Noxide copies its label list from src/lib/data/exchanges.json, so a Foundation
+    // address added to only one of the two files would go missing there.
+    const read = (file: string) =>
+      JSON.parse(fs.readFileSync(path.join(process.cwd(), file), 'utf8')) as {
+        foundation: { addresses: string[] };
+      };
+    const config = read('config/labels.json').foundation.addresses;
+    const data = read('src/lib/data/exchanges.json').foundation.addresses;
+
+    expect(data).toContain(TEAM);
+    expect([...data].sort()).toEqual([...config].sort());
   });
 });
