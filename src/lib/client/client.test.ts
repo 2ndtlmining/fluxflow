@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { csvField, eventsToCsv } from './csv';
 import { formatFlux, formatSigned, kindLabel, flowLabel, shortAddress, timeAgo } from './format';
 import type { FlowEvent } from './types';
-import { fillDays } from './series';
+import { balanceSteps, fillDays } from './series';
 import { readWatchlist, toggleWatch } from './watchlist';
 
 describe('formatFlux', () => {
@@ -132,5 +132,47 @@ describe('fillDays', () => {
     ]);
     expect(filled).toHaveLength(400);
     expect(filled.at(-1)!.time).toBe(999 * day);
+  });
+});
+
+describe('balance steps (#67)', () => {
+  const D = 86_400;
+
+  it('starts at the opening balance and carries forward to today', () => {
+    const steps = balanceSteps(
+      [
+        { time: 10 * D, change: 500, balance: 600 },
+        { time: 12 * D, change: 300, balance: 400 }
+      ],
+      100,
+      14
+    );
+    expect(steps.map((s) => [s.time / D, s.value])).toEqual([
+      [9, 100],
+      [10, 600],
+      [11, 600],
+      [12, 400],
+      [13, 400],
+      [14, 400]
+    ]);
+  });
+
+  it('draws the running change from zero when the balance is unknown', () => {
+    const steps = balanceSteps([{ time: 5 * D, change: -20, balance: null }], null, 6);
+    expect(steps.map((s) => s.value)).toEqual([0, -20, -20]);
+  });
+
+  it('keeps the newest 400 days, entering at the value carried in', () => {
+    const steps = balanceSteps(
+      [
+        { time: 0, change: 1, balance: 1 },
+        { time: 1_000 * D, change: 2, balance: 2 }
+      ],
+      0,
+      1_000
+    );
+    expect(steps).toHaveLength(400);
+    expect(steps[0]!.value).toBe(1);
+    expect(steps.at(-1)!.value).toBe(2);
   });
 });
