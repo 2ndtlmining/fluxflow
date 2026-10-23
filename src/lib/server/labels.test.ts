@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createTestConfig, createTestDb, silentLogger, type Db } from './testkit.js';
-import { loadLabels, type LabelLookup } from './labels.js';
+import { loadLabels, replaceSourceLabels, type LabelLookup } from './labels.js';
 import { deriveFlows } from './ingest/derive.js';
 
 const LABELS = {
@@ -168,7 +168,29 @@ describe('the shipped config/labels.json', () => {
   const TEAM = [
     ['t1Mzja9iJcEYeW5B4m4s1tJG8M42odFZ16A', '#77'],
     ['t1gjUUxBpBeVC1sWwAFrtSsVCbSaFdZx8UY', '#62'],
-    ['t1XktDZ9Z1QiefMYE5nMFohe8VG2c2BD5A5', '#62']
+    ['t1XktDZ9Z1QiefMYE5nMFohe8VG2c2BD5A5', '#62'],
+    // Owner-confirmed Flux team wallets (stache.beer: Foundation nodes, InFlux-run nodes and
+    // team node wallets). Most are also on the node list; the config label outranks it.
+    ['t3gCppaQdKhCViBA2mtYMphmJmtKY4BbR7d', 'team list'],
+    ['t3ZccrRNem6oTcN8kcPmgCh1HopR6zxH1Mq', 'team list'],
+    ['t1TDCLWnXBtoYJy7BuUPuhhj9xSz7AE4hEw', 'team list'],
+    ['t3TRUNKvgywghL1vU5bsGQqs9eVC17XcUnV', 'team list'],
+    ['t1TRUNKQMx1DVzym4d2Ay5E1dudEcHiyk9C', 'team list'],
+    ['t3RF1j68kXqDTWm99MhPkimCNC8EqomLKTm', 'team list'],
+    ['t1LuQpTx4QrrTKxFxwzX7QAL4icKpryk9pD', 'team list'],
+    ['t1LJjkp7mzFspW9KcAePWdBARdURT4DMXXW', 'team list'],
+    ['t3PbAVTkLgjHUV4zsFiP1LNcPJvFRv18khh', 'team list'],
+    ['t1JdJNvywTpsnNavx9k97qqegSVwBPkhr9J', 'team list'],
+    ['t1dQmkPAqUjijz4gy6AuRgD1yHxX4REaNEZ', 'team list'],
+    ['t1gAHNoPHizdAcup541sgpxqXSQH5KubiPy', 'team list'],
+    ['t1KhWQXoLsstvzB8Ly58V8fy4Mbybihs78w', 'team list'],
+    ['t1MxVfa7uBJHgE3xrnuaR3GxFpKT9zJSob3', 'team list'],
+    ['t1Xizun9KfWLaJdgt5L62xhh9rmjbUR6LWn', 'team list'],
+    ['t1UNoGzKKHsS9aUMaFKsPyHaSDh9SF43q6t', 'team list'],
+    ['t3fAayHBRbMyuAM5HyEnpwzFbPgFezXicMh', 'team list'],
+    ['t1M6fBoxfTnCQrSyQVQFq39B2YXeashcbGR', 'team list'],
+    // InFlux operations wallet: app fees and Foundation money in, round amounts out (#62).
+    ['t3dLRNHYXsRKW4cSec98YDC9G5zjqDN7NRu', '#62']
   ] as const;
   let db: Db;
 
@@ -213,6 +235,41 @@ describe('the shipped config/labels.json', () => {
 
     const [received] = transfer('t1someone', address);
     expect(received).toMatchObject({ fromKind: 'unknown', toKind: 'foundation', flowType: 'p2p' });
+  });
+
+  it('outranks the node list: a team wallet that runs nodes still counts as the Foundation', () => {
+    const NODES = 't3gCppaQdKhCViBA2mtYMphmJmtKY4BbR7d';
+    const labels = shipped();
+    replaceSourceLabels(db, 'node_list', [
+      { address: NODES, kind: 'node_operator', confidence: 1 }
+    ]);
+    labels.refresh('node list');
+
+    expect(labels.kindOf(NODES)).toBe('foundation');
+    expect(
+      labels
+        .allLabels(NODES)
+        .map((label) => label.source)
+        .sort()
+    ).toEqual(['config', 'node_list']);
+  });
+
+  it('leaves Titan nodes to the node list: users deposit there to host nodes', () => {
+    // Flux controls t3c4Efx…, but the FLUX in it is users' node collateral, not the team's.
+    const TITAN = 't3c4EfxLoXXSRZCRnPRF3RpjPi9mBzF5yoJ';
+    const labels = shipped();
+    expect(labels.kindOf(TITAN)).not.toBe('foundation');
+
+    replaceSourceLabels(db, 'node_list', [
+      { address: TITAN, kind: 'node_operator', confidence: 1 }
+    ]);
+    labels.refresh('node list');
+    expect(labels.kindOf(TITAN)).toBe('node_operator');
+  });
+
+  it('keeps t1YvimnG… as GateIO, as the owner chose', () => {
+    // stache.beer calls it an InFlux trading wallet; the owner kept the exchange label.
+    expect(shipped().nameOf('t1YvimnGBmVA7xDiPnqwbKsvujmSJz4X5m2')).toBe('GateIO');
   });
 
   it('keeps src/lib/data/exchanges.json in step with it', () => {
