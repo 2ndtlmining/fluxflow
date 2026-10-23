@@ -178,8 +178,8 @@ describe('api router', () => {
       expect(body.sync).toMatchObject({ enabled: true, latestHeight: 11, degraded: false });
       expect(body.database).toMatchObject({ blocks: 2, flows: 2, missingBlocks: 0 });
       expect(body.dataSources).toMatchObject({ active: 'fake' });
-      // 7 exchange addresses and 18 Foundation addresses in the real config/labels.json.
-      expect(body.labels).toMatchObject({ exchanges: 7, foundation: 18 });
+      // 7 exchange addresses and 20 Foundation addresses in the real config/labels.json.
+      expect(body.labels).toMatchObject({ exchanges: 7, foundation: 20 });
     });
   });
 
@@ -597,7 +597,7 @@ describe('api router', () => {
       expect((await get('/api/database/stats')).body).toMatchObject({ blocks: 2 });
       expect((await get('/api/classification/stats')).body).toMatchObject({
         exchanges: { count: 7 },
-        foundation: { count: 18 }
+        foundation: { count: 20 }
       });
       expect((await get('/api/classifications/stats')).status).toBe(200);
     });

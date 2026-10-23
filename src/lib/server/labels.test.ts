@@ -163,8 +163,13 @@ describe('loadLabels', () => {
 });
 
 describe('the shipped config/labels.json', () => {
-  // Issue #77: a further Flux team address, labelled the way the other 17 are.
-  const TEAM = 't1Mzja9iJcEYeW5B4m4s1tJG8M42odFZ16A';
+  // Flux team addresses added after the first 17, labelled the way those are: #77, and
+  // the two team wallets that pay for apps and hold fiat proceeds from #62.
+  const TEAM = [
+    ['t1Mzja9iJcEYeW5B4m4s1tJG8M42odFZ16A', '#77'],
+    ['t1gjUUxBpBeVC1sWwAFrtSsVCbSaFdZx8UY', '#62'],
+    ['t1XktDZ9Z1QiefMYE5nMFohe8VG2c2BD5A5', '#62']
+  ] as const;
   let db: Db;
 
   beforeEach(() => {
@@ -179,14 +184,14 @@ describe('the shipped config/labels.json', () => {
     return loadLabels(db, createTestConfig(), silentLogger());
   }
 
-  it('labels t1Mzja9iJcEYeW5B4m4s1tJG8M42odFZ16A as the Flux Foundation (#77)', () => {
+  it.each(TEAM)('labels %s as the Flux Foundation (%s)', (address) => {
     const labels = shipped();
 
-    expect(labels.kindOf(TEAM)).toBe('foundation');
-    expect(labels.nameOf(TEAM)).toBe('Flux Foundation');
+    expect(labels.kindOf(address)).toBe('foundation');
+    expect(labels.nameOf(address)).toBe('Flux Foundation');
   });
 
-  it('flags transfers from and to it as Foundation flows (#77)', () => {
+  it.each(TEAM)('flags transfers from and to %s as Foundation flows (%s)', (address) => {
     const labels = shipped();
     const SATS = 100_000_000;
     const transfer = (from: string, to: string) =>
@@ -203,10 +208,10 @@ describe('the shipped config/labels.json', () => {
         labels
       );
 
-    const [sent] = transfer(TEAM, 't1someone');
+    const [sent] = transfer(address, 't1someone');
     expect(sent).toMatchObject({ fromKind: 'foundation', toKind: 'unknown', flowType: 'p2p' });
 
-    const [received] = transfer('t1someone', TEAM);
+    const [received] = transfer('t1someone', address);
     expect(received).toMatchObject({ fromKind: 'unknown', toKind: 'foundation', flowType: 'p2p' });
   });
 
@@ -220,7 +225,7 @@ describe('the shipped config/labels.json', () => {
     const config = read('config/labels.json').foundation.addresses;
     const data = read('src/lib/data/exchanges.json').foundation.addresses;
 
-    expect(data).toContain(TEAM);
+    for (const [address] of TEAM) expect(data).toContain(address);
     expect([...data].sort()).toEqual([...config].sort());
   });
 });
