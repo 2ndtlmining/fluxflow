@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { boardPath, isAddress, isTxid, normaliseBoard } from './endpoints';
-import { evidenceText, sourceText } from './format';
+import { evidenceText, sourceText, tagEvidenceText, tagLabel } from './format';
 import { compareEvents, MergedPager, type PageFetcher } from './pager';
 import type { FlowEvent, FlowType } from './types';
 import {
@@ -19,6 +19,7 @@ describe('URL state (#26, #27, #28)', () => {
     who: '' as const,
     sure: '' as const,
     noHops: false,
+    tag: '' as const,
     filters: EMPTY_FILTERS
   };
 
@@ -28,6 +29,7 @@ describe('URL state (#26, #27, #28)', () => {
       who: 'node_operator' as const,
       sure: 'likely' as const,
       noHops: true,
+      tag: 'automated' as const,
       filters: {
         type: 'selling' as const,
         kind: 'node_operator' as const,
@@ -243,7 +245,8 @@ describe('leaderboard normalisation', () => {
       change: 3,
       confidence: 0.98,
       level: 'confirmed' as const,
-      labelSource: 'config'
+      labelSource: 'config',
+      tags: ['automated' as const]
     };
     const board = normaliseBoard(
       { period: '24H', flowType: 'buying', total: 5, buyers: [row] },
@@ -259,6 +262,41 @@ describe('labels and confidence (#19)', () => {
       '/flow/7D/sellers?limit=10&kind=node_operator&minConfidence=likely'
     );
     expect(boardPath('7D', 'buyers', '')).toBe('/flow/7D/buyers?limit=10');
+  });
+
+  it('narrows the leaderboards by behaviour tag, and ignores an unknown one in a link (#68)', () => {
+    expect(boardPath('30D', 'sellers', '', '', 'automated')).toBe(
+      '/flow/30D/sellers?limit=10&tag=automated'
+    );
+    expect(readState(new URLSearchParams('tag=peel_chain')).tag).toBe('peel_chain');
+    expect(readState(new URLSearchParams('tag=whale')).tag).toBe('');
+  });
+
+  it('explains a behaviour tag from its evidence', () => {
+    expect(tagLabel('recurring_payer')).toBe('Recurring payer');
+    expect(
+      tagEvidenceText('recurring_payer', {
+        counterparty: 't3NryfAQLGeFs9jEoeqsxmBN2QLRaRKFLUX',
+        payments: 10_069,
+        days: 180,
+        commonAmount: 0.02,
+        commonShare: 0.777
+      })
+    ).toBe('10,069 payments to t3Nryf…KFLUX on 180 days; 78% of them exactly 0.02 FLUX');
+    expect(
+      tagEvidenceText('collateral_amounts', { sends: 3, byAmount: { '1000': 2, '12500': 1 } })
+    ).toBe('3 sends of exactly a node collateral (2 × 1,000, 1 × 12,500)');
+    // t1XktDZ9's shape: its most common amount is 0.19% of its payments.
+    expect(
+      tagEvidenceText('recurring_payer', {
+        counterparty: 't3NryfAQLGeFs9jEoeqsxmBN2QLRaRKFLUX',
+        payments: 3_114,
+        days: 182,
+        commonAmount: 13.34,
+        commonShare: 0.0019
+      })
+    ).toBe('3,114 payments to t3Nryf…KFLUX on 182 days, in varying amounts');
+    expect(tagEvidenceText('something_new', {})).toBe('');
   });
 
   it('explains a label source in plain words, with a fallback for new ones', () => {

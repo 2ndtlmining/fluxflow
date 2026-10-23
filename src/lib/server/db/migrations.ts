@@ -651,6 +651,40 @@ const entities: Migration = {
   }
 };
 
+/**
+ * Version 7 (#68): behaviour tags — how a wallet acts, not who it is.
+ *
+ * Kept apart from `address_labels` on purpose: a tag is informational and must never take
+ * part in resolving a wallet's kind. The whole set is replaced on each intelligence pass
+ * (`intel/behaviour.ts`), and only when it changed, since every write bumps the data version.
+ */
+const behaviourTags: Migration = {
+  version: 7,
+  name: 'behaviour_tags',
+  up: (db) => {
+    db.exec(`
+      CREATE TABLE behaviour_tags (
+        address    TEXT    NOT NULL,
+        tag        TEXT    NOT NULL,
+        evidence   TEXT    NOT NULL DEFAULT '{}',
+        updated_at INTEGER NOT NULL DEFAULT (${now}),
+        PRIMARY KEY (address, tag)
+      ) WITHOUT ROWID;
+      CREATE INDEX idx_behaviour_tags_tag ON behaviour_tags(tag, address);
+    `);
+
+    const bump = `
+      INSERT INTO sync_state (key, value) VALUES ('${DATA_VERSION_KEY}', '1')
+      ON CONFLICT (key) DO UPDATE SET value = CAST(value AS INTEGER) + 1;`;
+    for (const event of ['INSERT', 'UPDATE', 'DELETE']) {
+      db.exec(`
+        CREATE TRIGGER behaviour_tags_${event.toLowerCase()}_version AFTER ${event} ON behaviour_tags
+        BEGIN ${bump} END;
+      `);
+    }
+  }
+};
+
 /** Every migration, in ascending version order. Append only — never edit a shipped one. */
 export const MIGRATIONS: readonly Migration[] = [
   initialSchema,
@@ -658,7 +692,8 @@ export const MIGRATIONS: readonly Migration[] = [
   walletRollups,
   intelligence,
   splitFunders,
-  entities
+  entities,
+  behaviourTags
 ];
 
 /** The version a fresh database ends up at. */

@@ -1,6 +1,6 @@
 /** Display formatting. Pure functions, so they are unit-tested without a browser. */
 
-import type { AddressKind, FlowType } from './types';
+import type { AddressKind, BehaviourTagName, FlowType } from './types';
 
 const compact = new Intl.NumberFormat('en-US', {
   notation: 'compact',
@@ -112,6 +112,50 @@ export function entityKindLabel(kind: string): string {
 
 export function kindLabel(kind: string): string {
   return KIND_LABELS[kind as AddressKind] ?? FUNDS_LABELS[kind] ?? kind;
+}
+
+const TAG_LABELS: Record<BehaviourTagName, string> = {
+  recurring_payer: 'Recurring payer',
+  automated: 'Automated',
+  collateral_amounts: 'Collateral-sized sends',
+  dormant_waking: 'Woke up after a long sleep',
+  peel_chain: 'Peel chain'
+};
+
+export const BEHAVIOUR_TAGS = Object.keys(TAG_LABELS) as BehaviourTagName[];
+
+export function tagLabel(tag: string): string {
+  return TAG_LABELS[tag as BehaviourTagName] ?? tag;
+}
+
+const num = (value: unknown) => (typeof value === 'number' ? value : Number.NaN);
+
+/** One line on why a wallet carries a tag, from the evidence the detector kept. */
+export function tagEvidenceText(tag: string, evidence: Record<string, unknown>): string {
+  switch (tag) {
+    case 'recurring_payer': {
+      const base = `${formatCount(num(evidence.payments))} payments to ${shortAddress(String(evidence.counterparty))} on ${formatCount(num(evidence.days))} days`;
+      // A common amount is only worth naming when it is common: app prices vary.
+      const share = num(evidence.commonShare);
+      return share >= 0.25
+        ? `${base}; ${Math.round(share * 100)}% of them exactly ${formatFluxFull(num(evidence.commonAmount))} FLUX`
+        : `${base}, in varying amounts`;
+    }
+    case 'automated':
+      return `${formatCount(num(evidence.sends))} sends spread over ${num(evidence.activeHours)} of 24 hours of the day`;
+    case 'collateral_amounts':
+      return `${formatCount(num(evidence.sends))} sends of exactly a node collateral (${Object.entries(
+        (evidence.byAmount ?? {}) as Record<string, number>
+      )
+        .map(([amount, n]) => `${n} × ${formatFluxFull(Number(amount))}`)
+        .join(', ')})`;
+    case 'dormant_waking':
+      return `Moved ${formatFlux(num(evidence.amount))} FLUX after ${formatCount(num(evidence.quietDays))} quiet days`;
+    case 'peel_chain':
+      return `One of ${num(evidence.hops)} hops in a row, each paying a little away and sending the rest to a new address (${formatFlux(num(evidence.peeled))} FLUX peeled off)`;
+    default:
+      return '';
+  }
 }
 
 const FLOW_LABELS: Record<FlowType, string> = {

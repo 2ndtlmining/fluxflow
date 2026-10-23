@@ -27,10 +27,11 @@
     seriesPath,
     summaryPath
   } from '$lib/client/endpoints';
-  import { kindLabel } from '$lib/client/format';
+  import { BEHAVIOUR_TAGS, kindLabel, tagLabel } from '$lib/client/format';
   import { live } from '$lib/client/live.svelte';
   import type {
     AddressKind,
+    BehaviourTagName,
     ExchangeHop,
     FlowSummary,
     Foundation,
@@ -79,13 +80,14 @@
     period: PeriodId,
     who: BoardKind,
     sure: Certainty,
+    tag: BehaviourTagName | '',
     signal: AbortSignal
   ): Promise<void> {
     const [nextSummary, nextSellers, nextBuyers, nextSeries, nextHops, nextFoundation] =
       await Promise.allSettled([
         fetchSummary(period, signal),
-        fetchBoard(period, 'sellers', who, sure, signal),
-        fetchBoard(period, 'buyers', who, sure, signal),
+        fetchBoard(period, 'sellers', who, sure, tag, signal),
+        fetchBoard(period, 'buyers', who, sure, tag, signal),
         fetchSeries(period, signal),
         fetchHops(period, signal),
         fetchFoundation(period, signal)
@@ -109,21 +111,21 @@
   $effect(() => live.start());
 
   $effect(() => {
-    const { period, who, sure } = view;
+    const { period, who, sure, tag } = view;
     void live.version;
     const controller = new AbortController();
 
     // Show what we already know for this view at once; keep the old figures otherwise.
     untrack(() => {
       summary = peek<FlowSummary>(summaryPath(period)) ?? summary;
-      sellers = peek<Board>(boardPath(period, 'sellers', who, sure)) ?? sellers;
-      buyers = peek<Board>(boardPath(period, 'buyers', who, sure)) ?? buyers;
+      sellers = peek<Board>(boardPath(period, 'sellers', who, sure, tag)) ?? sellers;
+      buyers = peek<Board>(boardPath(period, 'buyers', who, sure, tag)) ?? buyers;
       series = peek<Series>(seriesPath(period)) ?? series;
       hops = peek<HopsResponse>(hopsPath(period)) ?? hops;
       foundation = peek<Foundation>(foundationPath(period)) ?? foundation;
     });
 
-    void load(period, who, sure, controller.signal);
+    void load(period, who, sure, tag, controller.signal);
     return () => controller.abort();
   });
 
@@ -252,6 +254,19 @@
           </select>
         </label>
       {/if}
+      <label>
+        <span>Behaviour</span>
+        <select
+          value={view.tag}
+          onchange={(event) =>
+            navigate({ tag: event.currentTarget.value as BehaviourTagName | '' })}
+        >
+          <option value="">Any</option>
+          {#each BEHAVIOUR_TAGS as tag (tag)}
+            <option value={tag}>{tagLabel(tag)}</option>
+          {/each}
+        </select>
+      </label>
     </div>
     <div class="boards" class:dim={boardsStale}>
       <Leaderboard

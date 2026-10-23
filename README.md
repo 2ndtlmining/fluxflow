@@ -252,6 +252,7 @@ Transfers between Foundation wallets produce no flow at all.
 | `flows`                                                                  | the derived buying / selling / p2p rows                           |
 | `rollup_*`, `wallet_*`                                                   | hourly/daily totals and per-wallet totals, kept exact by triggers |
 | `label_candidates`, `exchange_hops`, `address_clusters`, `relabel_queue` | intelligence state                                                |
+| `behaviour_tags`                                                         | how a wallet behaves (#68), informational only                    |
 
 Facts are never rewritten. When a label changes, the affected transactions are re-derived
 from `tx_deltas` in small batches, and the triggers move the totals in the same write, so
@@ -300,6 +301,22 @@ What this means in practice:
   (by name), node collateral (verified against the node list), returned, or still held.
   Payments through a Foundation intermediary count as the Foundation's own outflow to their
   real destinations.
+
+### Behaviour tags
+
+Labels say **who** a wallet is; behaviour tags say **how it acts**. They are shown as badges
+on the wallet page (with the evidence) and on the leaderboards, which can be filtered by
+them. They are informational only and never change a label, a kind or a total.
+
+| Tag                    | When                                                                                                                         |
+| ---------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| Recurring payer        | ≥20 payments to one counterparty on ≥10 days, that counterparty taking at least half of the wallet's payments                |
+| Automated              | ≥100 sends, spread over ≥22 hours of the UTC day (hour-of-day entropy ≥4.2 bits): people sleep, scripts do not               |
+| Collateral-sized sends | ≥2 sends of exactly 1,000, 12,500 or 40,000 FLUX                                                                             |
+| Woke up after a sleep  | a spend of ≥1,000 FLUX after ≥90 days without activity (only the stored window can be seen)                                  |
+| Peel chain             | ≥4 hops in a row, each paying a little away and sending ≥80% to a never-seen address that is spent the same way within a day |
+
+They are recomputed with each clustering pass, in a few seconds on a six-month database.
 
 ---
 

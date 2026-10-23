@@ -144,6 +144,7 @@ Leaderboards: who withdrew from, or deposited to, exchanges.
 | ------- | ----------------------------------------------- |
 | `limit` | 1–100 (default 10)                              |
 | `kind`  | `unknown`, `node_operator` or `foundation` only |
+| `tag`   | a behaviour tag (#68), e.g. `automated`         |
 
 ```json
 {
@@ -494,6 +495,12 @@ Labels carry a confidence: `confirmed` (≥ 0.95), `likely` (≥ 0.7), `possible
 - `GET /api/flow/:period/{buyers,sellers}` rows add `name`, `confidence`, `level`,
   `labelSource`. `?minConfidence=` (`confirmed` | `likely` | `possible` | a number 0–1) keeps
   only wallets labelled at least that surely; anything else is `400`.
+- Behaviour tags (#68): leaderboard rows add `tags` (tag names), and `?tag=` keeps only
+  wallets with that tag (`recurring_payer`, `automated`, `collateral_amounts`,
+  `dormant_waking`, `peel_chain`; anything else is `400`). `GET /api/wallets/:address` adds
+  `tags: [{tag, evidence, updatedAt}]`, and `GET /api/intel/status` adds
+  `behaviour: {at, ms, tags}` (wallets per tag after the last pass). Tags never change a
+  label, a kind or a flow.
 - `GET /api/wallets/:address` adds `label` (the one that classifies its flows, or `null`),
   `labels[]` (every label on record with `source`, `confidence`, `level`, `applied`,
   `validFrom`, `validTo`, `evidence`), `cluster: {clusterId, size, sample[]} | null` and

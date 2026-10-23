@@ -75,6 +75,7 @@ import { candidateCounts, decideCandidates, reviewCandidates } from '../intel/re
 import { fetchBalances, foundationReport, type BalanceSnapshot } from '../intel/foundation.js';
 import { traceFoundation } from '../intel/destinations.js';
 import { listHops, summariseHops } from '../intel/hops.js';
+import { BEHAVIOUR_TAGS, tagNamesOf, tagsOf, type BehaviourTagName } from '../intel/behaviour.js';
 
 export interface ApiDependencies {
   readonly config: Config;
@@ -810,6 +811,16 @@ export function createApiRouter(deps: ApiDependencies): Router {
         return;
       }
 
+      // Behaviour tags (#68) narrow a board without changing who counts as what.
+      const tag = req.query.tag;
+      if (tag !== undefined && !BEHAVIOUR_TAGS.includes(tag as BehaviourTagName)) {
+        res.status(400).json({
+          error: 'Invalid tag',
+          message: `tag must be one of: ${BEHAVIOUR_TAGS.join(', ')}`
+        });
+        return;
+      }
+
       cache.send(
         req,
         res,
@@ -819,8 +830,13 @@ export function createApiRouter(deps: ApiDependencies): Router {
           // Over-fetch when filtering by confidence, so the filter still returns `limit` rows.
           const board = leaderboard(db, openRange(window), flowType, {
             limit: minConfidence === null ? limit : Math.min(limit * 5, 100),
-            ...(kind ? { kind: kind as LeaderboardKind } : {})
+            ...(kind ? { kind: kind as LeaderboardKind } : {}),
+            ...(tag ? { tag: tag as BehaviourTagName } : {})
           });
+          const tags = tagNamesOf(
+            db,
+            board.leaders.map((leader) => leader.address)
+          );
 
           const leaders = board.leaders
             .map((leader) => {
@@ -830,14 +846,22 @@ export function createApiRouter(deps: ApiDependencies): Router {
                 name: label?.name ?? null,
                 confidence: label?.confidence ?? null,
                 level: label ? label.level : null,
-                labelSource: label?.source ?? null
+                labelSource: label?.source ?? null,
+                tags: tags.get(leader.address) ?? []
               };
             })
             .filter((leader) => minConfidence === null || (leader.confidence ?? 0) >= minConfidence)
             .slice(0, limit)
             .map((leader, index) => ({ ...leader, rank: index + 1 }));
 
-          return { period, flowType, total: board.total, minConfidence, [key]: leaders };
+          return {
+            period,
+            flowType,
+            total: board.total,
+            minConfidence,
+            tag: tag ?? null,
+            [key]: leaders
+          };
         },
         leaderboardStaleness(period)
       );
@@ -951,6 +975,7 @@ export function createApiRouter(deps: ApiDependencies): Router {
             }
           : null,
         entity: EntityIndex.build(db, labels).entityOf(address),
+        tags: tagsOf(db, address),
         candidates: listCandidates(db, { address, limit: 10 }),
         recent: walletEvents(db, address, { limit: 20 })
       };
