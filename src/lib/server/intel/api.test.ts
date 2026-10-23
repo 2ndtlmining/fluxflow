@@ -150,9 +150,14 @@ describe('intelligence API', () => {
   it('runs the whole pass on demand, behind the admin token', async () => {
     expect((await send('POST', '/api/admin/intel/run', undefined, '')).status).toBe(401);
 
+    // Answers at once and runs in the background (#21): a full pass can take minutes.
     const run = await send('POST', '/api/admin/intel/run');
-    expect(run.status).toBe(200);
-    expect(run.body.status).toMatchObject({
+    expect(run.status).toBe(202);
+    expect(run.body).toMatchObject({ accepted: true });
+
+    // A second call while it runs joins the same pass instead of starting another.
+    const joined = await intel.runAll();
+    expect(joined).toMatchObject({
       relabelQueue: 0,
       nodeList: { addresses: 1, source: 'explorer' },
       nodeOperators: { list: 1, rewards: 1 }
@@ -161,6 +166,18 @@ describe('intelligence API', () => {
 
     const status = await get('/api/intel/status');
     expect(status.body.labels).toMatchObject({ nodeOperators: 2, exchanges: 1, foundation: 1 });
+  });
+
+  it('runs one pass at a time, however often it is asked', async () => {
+    const first = intel.runAll();
+    const second = intel.runAll();
+
+    expect(second).toBe(first);
+    await first;
+    // Once finished, the next request starts a fresh pass.
+    const third = intel.runAll();
+    expect(third).not.toBe(first);
+    await third;
   });
 
   it('shows node operators selling, with confidence, and filters by it', async () => {
