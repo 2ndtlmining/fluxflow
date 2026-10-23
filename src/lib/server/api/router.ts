@@ -654,7 +654,8 @@ export function createApiRouter(deps: ApiDependencies): Router {
           eventsSent: runtime?.stream?.eventsSent ?? 0
         },
         alerts: runtime?.alerts?.stats() ?? { sent: 0, failed: 0, suppressed: 0 },
-        rateLimited: rateLimiter.rejected()
+        rateLimited: rateLimiter.rejected(),
+        coverage: intel?.status().coverage ?? null
       })
     );
   });

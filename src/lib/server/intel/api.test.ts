@@ -166,6 +166,16 @@ describe('intelligence API', () => {
 
     const status = await get('/api/intel/status');
     expect(status.body.labels).toMatchObject({ nodeOperators: 2, exchanges: 1, foundation: 1 });
+
+    // Classification coverage is measured with the pass and published (#20).
+    const coverage = (status.body as { intel?: { coverage?: Record<string, unknown> } }).intel
+      ?.coverage;
+    expect(coverage).toMatchObject({ share: expect.any(Number), at: expect.any(Number) });
+    expect(coverage!.volume as number).toBeGreaterThan(0);
+
+    const metrics = await (await fetch(`${server.url}/api/metrics`)).text();
+    expect(metrics).toMatch(/^fluxflow_classified_share \d/m);
+    expect(metrics).toMatch(/^fluxflow_exchange_volume_flux\{classified="yes"\} \d+$/m);
   });
 
   it('runs one pass at a time, however often it is asked', async () => {

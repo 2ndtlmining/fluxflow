@@ -37,6 +37,7 @@ import {
   type BehaviourTagName
 } from './behaviour.js';
 import { clusterAddresses, storeCandidates, type ClusterResult } from './clusters.js';
+import { classificationCoverage, type Coverage } from './coverage.js';
 import { fetchBalances, type BalanceSnapshot } from './foundation.js';
 import { detectDepositForwarders } from './forwarders.js';
 import { detectFoundationFunded, dropStaleFoundationFunded } from './foundation-funded.js';
@@ -82,6 +83,8 @@ export interface IntelStatus {
     ms: number;
     tags: Partial<Record<BehaviourTagName, number>>;
   } | null;
+  /** Share of exchange volume with a classified counterparty (#20), after the last pass. */
+  readonly coverage: (Coverage & { at: number }) | null;
   readonly lastError: string | null;
 }
 
@@ -111,6 +114,7 @@ export class IntelService {
   private clustering: IntelStatus['clustering'] = null;
   private hops: IntelStatus['hops'] = null;
   private behaviour: IntelStatus['behaviour'] = null;
+  private coverage: IntelStatus['coverage'] = null;
   private hopHeight = 0;
   private lastError: string | null = null;
   private balances: BalanceSnapshot | null = null;
@@ -141,7 +145,9 @@ export class IntelService {
     every(config.nodeRefreshSeconds * 1000, () => this.refreshNodes());
     every(config.intel.clusterSeconds * 1000, () => this.cluster());
     every(HOP_INTERVAL_MS, () => this.detectHops());
-    every(config.intel.clusterSeconds * 1000, () => this.tagBehaviour());
+    every(config.intel.clusterSeconds * 1000, () =>
+      this.tagBehaviour().then(() => this.measureCoverage())
+    );
     every(FOUNDATION_REFRESH_MS, () => this.refreshFoundation());
     if (config.dataSources.fluxNodeUrl) every(BALANCE_INTERVAL_MS, () => this.refreshBalances());
 
@@ -150,7 +156,8 @@ export class IntelService {
       void this.refreshNodes()
         .then(() => this.cluster())
         .then(() => this.detectHops())
-        .then(() => this.tagBehaviour());
+        .then(() => this.tagBehaviour())
+        .then(() => this.measureCoverage());
       void this.refreshBalances();
     }, 5_000);
     soon.unref?.();
@@ -183,6 +190,7 @@ export class IntelService {
       clustering: this.clustering,
       hops: this.hops,
       behaviour: this.behaviour,
+      coverage: this.coverage,
       lastError: this.lastError
     };
   }
@@ -262,6 +270,7 @@ export class IntelService {
         await this.detectHops();
         await this.relabel(Number.POSITIVE_INFINITY);
         await this.tagBehaviour();
+        await this.measureCoverage();
         return this.status();
       } finally {
         this.allRun = null;
@@ -436,6 +445,14 @@ export class IntelService {
       for (const row of tags) counts[row.tag] = (counts[row.tag] ?? 0) + 1;
       this.behaviour = { at: Date.now(), ms: Date.now() - started, tags: counts };
       log.info({ ...this.behaviour, changed }, 'behaviour tags computed');
+    });
+  }
+
+  /** Re-measure classification coverage (#20): a few rollup reads. */
+  async measureCoverage(): Promise<void> {
+    await this.guard('coverage', async () => {
+      const coverage = await this.exclusive(() => classificationCoverage(this.options.db));
+      this.coverage = { ...coverage, at: Date.now() };
     });
   }
 

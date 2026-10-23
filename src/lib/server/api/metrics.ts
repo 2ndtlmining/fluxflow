@@ -57,6 +57,8 @@ export interface MetricsInput {
   readonly pool?: Record<string, unknown>;
   readonly cache: { hits: number; misses: number; notModified: number };
   readonly eventLoop: { p50: number; p99: number; max: number };
+  /** Classification coverage (#20) from the last intelligence pass, when there has been one. */
+  readonly coverage?: { volume: number; classified: number; share: number | null } | null;
   readonly stream: { clients: number; eventsSent: number };
   readonly alerts: { sent: number; failed: number; suppressed: number };
   readonly rateLimited: number;
@@ -235,6 +237,26 @@ export function renderMetrics(input: MetricsInput): string {
     { labels: { outcome: 'failed' }, value: input.alerts.failed },
     { labels: { outcome: 'suppressed' }, value: input.alerts.suppressed }
   ]);
+
+  // Cached by the intelligence pass, so a scrape reads two numbers, not the rollups (#20).
+  const coverage = input.coverage;
+  if (coverage && coverage.share !== null) {
+    metric(
+      'fluxflow_classified_share',
+      'gauge',
+      'Share of exchange volume (stored window) whose counterparty is classified.',
+      one(Number(coverage.share.toFixed(6)))
+    );
+    metric(
+      'fluxflow_exchange_volume_flux',
+      'gauge',
+      'Exchange volume in the stored window by whether the counterparty is classified.',
+      [
+        { labels: { classified: 'yes' }, value: Math.round(coverage.classified) },
+        { labels: { classified: 'no' }, value: Math.round(coverage.volume - coverage.classified) }
+      ]
+    );
+  }
 
   return `${lines.join('\n')}\n`;
 }
