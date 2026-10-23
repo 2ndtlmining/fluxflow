@@ -522,6 +522,30 @@ describe('api router', () => {
       }
     });
 
+    it('finds a path between two wallets and validates the query (#70)', async () => {
+      await boot();
+      seedWallet();
+
+      const found = await get(`/api/path?src=${WHALE}&dst=${KUCOIN}`);
+      expect(found.status).toBe(200);
+      expect(found.body).toMatchObject({ src: WHALE, dst: KUCOIN, maxHops: 4, truncated: false });
+      expect(found.body.paths).toEqual([
+        expect.objectContaining({
+          bottleneck: 200,
+          hops: [expect.objectContaining({ from: WHALE, to: KUCOIN, total: 200, internal: false })]
+        })
+      ]);
+
+      for (const bad of [
+        `src=nope&dst=${KUCOIN}`,
+        `src=${WHALE}`,
+        `src=${WHALE}&dst=${KUCOIN}&maxHops=9`,
+        `src=${WHALE}&dst=${KUCOIN}&through=everything`
+      ]) {
+        expect((await get(`/api/path?${bad}`)).status, bad).toBe(400);
+      }
+    });
+
     it('rejects an unknown leaderboard kind', async () => {
       await boot();
       expect((await get('/api/flow/24H/buyers?kind=everyone')).status).toBe(400);

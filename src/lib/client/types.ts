@@ -599,3 +599,27 @@ export interface BalanceHistory {
   readonly consistent: boolean;
   readonly tipHeight: number | null;
 }
+
+/** One hop of a path between two wallets (#70). */
+export interface PathHop {
+  readonly from: string;
+  readonly to: string;
+  readonly total: number;
+  readonly count: number;
+  readonly first: number;
+  readonly last: number;
+  /** A move between Foundation wallets, never counted as a transfer elsewhere. */
+  readonly internal: boolean;
+}
+
+export interface PathResult {
+  readonly src: string;
+  readonly dst: string;
+  readonly maxHops: number;
+  readonly throughExchanges: boolean;
+  readonly paths: { readonly hops: PathHop[]; readonly bottleneck: number }[];
+  readonly nodes: Record<string, { readonly kind: AddressKind; readonly name: string | null }>;
+  readonly explored: { readonly forward: number; readonly backward: number };
+  readonly trimmed: number;
+  readonly truncated: boolean;
+}
