@@ -196,3 +196,70 @@ it('counts app payments as soon as the hosting label exists, before any re-deriv
   expect(appPayments(db, labels, ALL)).toMatchObject({ total: 500, payers: 3 });
   db.close();
 });
+
+describe('moves between Foundation wallets on a wallet page', () => {
+  // A transfer between two Foundation wallets is never a flow (#31), so a wallet funded only
+  // by other Foundation wallets read "received 0". These moves are reported on their own.
+  const FOUND2 = 't1found2';
+  const OUTSIDER = 't1outsider';
+  let db: Db;
+  let labels: LabelLookup;
+
+  beforeEach(() => {
+    db = createTestDb();
+    labels = labelBook(db, {
+      ...LABELS,
+      foundation: { name: 'Flux Foundation', addresses: [FOUND, FOUND2] }
+    });
+    writeChain(db, labels, [
+      pay(50, 'move', FOUND, 1_000, [[FOUND2, 1_000]]),
+      {
+        height: 51,
+        txid: 'mixed',
+        inputs: [
+          [FOUND, 100],
+          [OUTSIDER, 100]
+        ],
+        outputs: [[FOUND2, 200]]
+      },
+      pay(52, 'back', FOUND2, 250, [[FOUND, 250]]),
+      pay(53, 'fees', FOUND2, 300, [[HOSTING, 300]])
+    ]);
+  });
+
+  afterEach(() => db.close());
+
+  it('reports what other Foundation wallets sent and received, split like flows', () => {
+    const result = walletCounterparties(db, labels, FOUND2);
+
+    expect(result.foundationMoves).toMatchObject({
+      incoming: {
+        total: 1_100,
+        count: 2,
+        distinct: 1,
+        parties: [{ address: FOUND, kind: 'foundation', total: 1_100, count: 2, share: 1 }]
+      },
+      outgoing: {
+        total: 250,
+        count: 1,
+        distinct: 1,
+        parties: [{ address: FOUND, total: 250, count: 1, share: 1 }]
+      }
+    });
+    // The outsider's half of the mixed transaction is an ordinary flow, as before.
+    expect(result.incoming).toMatchObject({ total: 100, count: 1 });
+    expect(result.incoming.parties[0]).toMatchObject({ address: OUTSIDER });
+  });
+
+  it('reports the mirror image on the other wallet', () => {
+    expect(walletCounterparties(db, labels, FOUND).foundationMoves).toMatchObject({
+      incoming: { total: 250, count: 1 },
+      outgoing: { total: 1_100, count: 2 }
+    });
+  });
+
+  it('is null for a wallet that is not the Foundation', () => {
+    expect(walletCounterparties(db, labels, OUTSIDER).foundationMoves).toBeNull();
+    expect(walletCounterparties(db, labels, HOSTING).foundationMoves).toBeNull();
+  });
+});

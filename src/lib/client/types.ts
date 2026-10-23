@@ -345,6 +345,14 @@ export interface WalletCounterparties {
     readonly amount: number;
   } | null;
   readonly appPayments: { readonly total: number; readonly count: number };
+  /**
+   * A Foundation wallet's moves to and from the Foundation's other wallets, which are never
+   * flows; null for other wallets, absent from an older server.
+   */
+  readonly foundationMoves?: {
+    readonly incoming: CounterpartySide;
+    readonly outgoing: CounterpartySide;
+  } | null;
 }
 
 /** A wallet kind, or coinbase rewards (source of funds), or money a wallet kept (destination). */

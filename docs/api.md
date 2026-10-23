@@ -249,13 +249,17 @@ The wallet's flows, either side, newest first. Same `cursor`/`limit` as the peri
   "incoming": { "total": 1000, "count": 3, "distinct": 2, "parties": [Party] },
   "outgoing": { "total": 550, "count": 3, "distinct": 2, "parties": [Party] },
   "firstFunder": { "address": "t1…", "kind": "foundation", "name": "Flux Foundation", "txid": "…", "time": 1792227904, "amount": 1000 },
-  "appPayments": { "total": 150, "count": 2 }
+  "appPayments": { "total": 150, "count": 2 },
+  "foundationMoves": null
 }
 ```
 
 `Party` is `{address, kind, name, total, count, share, firstSeen, lastSeen}`; `share` is of that side's
 total. `firstFunder` is the earliest stored transfer into the wallet (`null` if none), and
-`appPayments` what it paid to `app_hosting` addresses.
+`appPayments` what it paid to `app_hosting` addresses. For a Foundation wallet,
+`foundationMoves` is `{incoming, outgoing}` in the same shape as above: what it moved to and
+from the Foundation's other wallets. Those moves are never flows, so `incoming` and `outgoing`
+leave them out. It is `null` for every other wallet.
 
 ### `GET /api/wallets/:address/sources` and `/destinations`
 

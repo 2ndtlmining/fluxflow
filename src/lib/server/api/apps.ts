@@ -19,6 +19,7 @@
 import type { Db } from '../db/database.js';
 import type { AddressKind } from '../ingest/datasource/types.js';
 import { SATS_PER_FLUX } from '../ingest/datasource/types.js';
+import { flowsFromDeltas, type DeltaRow, type FlowRow } from '../ingest/derive.js';
 import type { LabelLookup } from '../labels.js';
 import { FUNDS_LIMITS, fundsTracer, toFlux, type FundsKind, type FundsMix } from './funds.js';
 
@@ -59,6 +60,16 @@ export interface WalletCounterparties {
   } | null;
   /** What this wallet paid in Flux app hosting fees. */
   readonly appPayments: { readonly total: number; readonly count: number };
+  /**
+   * For a Foundation wallet: money moved to and from the Foundation's other wallets. Those
+   * moves are never flows (#31), so `incoming`/`outgoing` leave them out; without this a
+   * wallet funded only by other Foundation wallets would show nothing received. Null for
+   * any other wallet.
+   */
+  readonly foundationMoves: {
+    readonly incoming: CounterpartySide;
+    readonly outgoing: CounterpartySide;
+  } | null;
 }
 
 type Column = 'from_address' | 'to_address';
@@ -112,6 +123,109 @@ function side(
   };
 }
 
+/** One side of a wallet's moves, from rows already filtered to that side. */
+function sideFromRows(
+  labels: LabelLookup,
+  rows: readonly FlowRow[],
+  other: (row: FlowRow) => string,
+  limit: number
+): CounterpartySide {
+  const byParty = new Map<string, { sat: number; count: number; first: number; last: number }>();
+  let total = 0;
+  for (const row of rows) {
+    total += row.sat;
+    const party = byParty.get(other(row));
+    if (party) {
+      party.sat += row.sat;
+      party.count++;
+      party.first = Math.min(party.first, row.time);
+      party.last = Math.max(party.last, row.time);
+    } else {
+      byParty.set(other(row), { sat: row.sat, count: 1, first: row.time, last: row.time });
+    }
+  }
+
+  return {
+    total: flux(total),
+    count: rows.length,
+    distinct: byParty.size,
+    parties: [...byParty]
+      .sort(([a, x], [b, y]) => y.sat - x.sat || (a < b ? -1 : a > b ? 1 : 0))
+      .slice(0, limit)
+      .map(([address, party]) => ({
+        address,
+        kind: labels.kindOf(address),
+        name: labels.nameOf(address),
+        total: flux(party.sat),
+        count: party.count,
+        share: total > 0 ? party.sat / total : 0,
+        firstSeen: party.first,
+        lastSeen: party.last
+      }))
+  };
+}
+
+/**
+ * What a Foundation wallet moved to and from the Foundation's other wallets.
+ *
+ * Only the wallet's transactions that touch another Foundation address are read (through
+ * `idx_tx_deltas_address`, then the `(txid, address)` key), and each is split between its
+ * funders exactly as flows are, so a move funded partly from outside counts only the
+ * Foundation's share.
+ */
+function foundationMoves(
+  db: Db,
+  labels: LabelLookup,
+  address: string,
+  limit: number
+): WalletCounterparties['foundationMoves'] {
+  if (labels.kindOf(address) !== 'foundation') return null;
+
+  const others = labels.addressesOf('foundation').filter((other) => other !== address);
+  const txids =
+    others.length === 0
+      ? []
+      : db
+          .prepare<string[], { txid: string }>(
+            `SELECT d.txid FROM tx_deltas d INDEXED BY idx_tx_deltas_address
+             WHERE d.address = ? AND EXISTS (
+               SELECT 1 FROM tx_deltas o
+               WHERE o.txid = d.txid AND o.address IN (${others.map(() => '?').join(', ')})
+             )`
+          )
+          .all(address, ...others);
+
+  const deltas = db.prepare<[string], DeltaRow>(
+    `SELECT txid, address, height, time, sat_in AS satIn, sat_out AS satOut
+     FROM tx_deltas WHERE txid = ?`
+  );
+  const moves = txids.flatMap(({ txid }) => {
+    const values = deltas.all(txid);
+    const { height, time } = values[0]!;
+    return flowsFromDeltas(txid, height, time, values, labels, { keepInternal: true }).filter(
+      (row) =>
+        row.fromKind === 'foundation' &&
+        row.toKind === 'foundation' &&
+        (row.toAddress === address || row.fromAddress === address)
+    );
+  });
+
+  return {
+    incoming: sideFromRows(
+      labels,
+      moves.filter((row) => row.toAddress === address),
+      (row) => row.fromAddress,
+      limit
+    ),
+    outgoing: sideFromRows(
+      labels,
+      moves.filter((row) => row.fromAddress === address),
+      (row) => row.toAddress,
+      limit
+    )
+  };
+}
+
 /**
  * A wallet's largest senders and recipients over the stored window.
  *
@@ -162,7 +276,8 @@ export function walletCounterparties(
           amount: flux(first.sat)
         }
       : null,
-    appPayments: { total: flux(apps?.sat ?? 0), count: apps?.count ?? 0 }
+    appPayments: { total: flux(apps?.sat ?? 0), count: apps?.count ?? 0 },
+    foundationMoves: foundationMoves(db, labels, address, limit)
   };
 }
 
