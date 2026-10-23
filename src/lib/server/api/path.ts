@@ -96,21 +96,49 @@ interface Edge {
 
 const key = (from: string, to: string) => `${from}\u0000${to}`;
 
-/** Foundation-to-Foundation moves in the window, aggregated per (from, to). */
-function foundationEdges(db: Db, labels: LabelLookup, window: HeightWindow): Map<string, Edge> {
-  const edges = new Map<string, Edge>();
-  const foundation = labels.addressesOf('foundation');
-  if (foundation.length < 2) return edges;
+/** One move between two Foundation wallets, as derived from one transaction. */
+interface Move {
+  readonly from: string;
+  readonly to: string;
+  readonly sat: number;
+  readonly height: number;
+  readonly time: number;
+}
 
+/**
+ * Foundation moves kept per database, so a search does not re-derive them every time. On the
+ * live database that took about 3.5 s per search: the Foundation's node wallets and swap
+ * pools touch a great many transactions. Kept up to date by reading only blocks newer than
+ * the last search; rebuilt when the Foundation's addresses change or the tip moves back (a
+ * reorg). Rows below the retention floor stay but fall outside every search window.
+ */
+const MOVES = new WeakMap<Db, { addresses: string; tip: number; moves: Move[] }>();
+
+function foundationMoves(db: Db, labels: LabelLookup): Move[] {
+  const foundation = labels.addressesOf('foundation');
+  if (foundation.length < 2) return [];
+
+  const addresses = [...foundation].sort().join(',');
+  const tip =
+    db.prepare<[], { h: number | null }>(`SELECT MAX(height) AS h FROM tx_deltas`).get()?.h ?? 0;
+  let kept = MOVES.get(db);
+  if (!kept || kept.addresses !== addresses || tip < kept.tip) {
+    kept = { addresses, tip: -1, moves: [] };
+    MOVES.set(db, kept);
+  }
+  if (tip === kept.tip) return kept.moves;
+
+  // A move needs a Foundation wallet that spent, so receipts alone (node rewards, the bulk
+  // of these wallets' rows) are never read past the index.
   const marks = foundation.map(() => '?').join(', ');
   const txids = db
     .prepare<(string | number)[], { txid: string }>(
       `SELECT DISTINCT d.txid FROM tx_deltas d INDEXED BY idx_tx_deltas_address
-       WHERE d.address IN (${marks}) AND d.height BETWEEN ? AND ?
+       WHERE d.address IN (${marks}) AND d.height > ? AND d.height <= ? AND d.sat_in > d.sat_out
          AND EXISTS (SELECT 1 FROM tx_deltas o
                      WHERE o.txid = d.txid AND o.address IN (${marks}) AND o.address <> d.address)`
     )
-    .all(...foundation, window.fromHeight, window.toHeight, ...foundation);
+    .all(...foundation, kept.tip, tip, ...foundation);
 
   const deltas = db.prepare<[string], DeltaRow>(
     `SELECT txid, address, height, time, sat_in AS satIn, sat_out AS satOut
@@ -121,21 +149,32 @@ function foundationEdges(db: Db, labels: LabelLookup, window: HeightWindow): Map
     const { height, time } = values[0]!;
     for (const row of flowsFromDeltas(txid, height, time, values, labels, { keepInternal: true })) {
       if (row.fromKind !== 'foundation' || row.toKind !== 'foundation') continue;
-      const edge = edges.get(key(row.fromAddress, row.toAddress));
-      if (edge) {
-        edge.sat += row.sat;
-        edge.count++;
-        edge.first = Math.min(edge.first, row.time);
-        edge.last = Math.max(edge.last, row.time);
-      } else {
-        edges.set(key(row.fromAddress, row.toAddress), {
-          sat: row.sat,
-          count: 1,
-          first: row.time,
-          last: row.time,
-          internal: true
-        });
-      }
+      kept.moves.push({ from: row.fromAddress, to: row.toAddress, sat: row.sat, height, time });
+    }
+  }
+  kept.tip = tip;
+  return kept.moves;
+}
+
+/** Foundation-to-Foundation moves in the window, aggregated per (from, to). */
+function foundationEdges(db: Db, labels: LabelLookup, window: HeightWindow): Map<string, Edge> {
+  const edges = new Map<string, Edge>();
+  for (const move of foundationMoves(db, labels)) {
+    if (move.height < window.fromHeight || move.height > window.toHeight) continue;
+    const edge = edges.get(key(move.from, move.to));
+    if (edge) {
+      edge.sat += move.sat;
+      edge.count++;
+      edge.first = Math.min(edge.first, move.time);
+      edge.last = Math.max(edge.last, move.time);
+    } else {
+      edges.set(key(move.from, move.to), {
+        sat: move.sat,
+        count: 1,
+        first: move.time,
+        last: move.time,
+        internal: true
+      });
     }
   }
   return edges;
