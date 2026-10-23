@@ -17,7 +17,13 @@ export interface PeriodWindow {
   readonly fromHeight: number;
   readonly toHeight: number;
   readonly fromTime: number;
+  /** Inclusive: the newest second the window covers. */
   readonly toTime: number;
+  /**
+   * True for a range picked inside a period (#29) that ends before the newest stored data.
+   * Such a window is a closed range: the bucket holding its end needs a raw tail.
+   */
+  readonly closed?: boolean;
 }
 
 /**
@@ -79,6 +85,50 @@ export function rawCoverageFrom(db: Db): number {
 /** The open range a period window describes: from its start to the newest block, inclusive. */
 export function openRange(window: PeriodWindow): TimeRange {
   return { fromTime: window.fromTime, toTime: window.toTime + 1, open: true };
+}
+
+/** The time range of a window: open for a period, closed for a range picked inside one. */
+export function rangeOf(window: PeriodWindow): TimeRange {
+  return window.closed
+    ? { fromTime: window.fromTime, toTime: window.toTime + 1, open: false }
+    : openRange(window);
+}
+
+/**
+ * Narrow a period's window to `[from, to)` (#29), clamped to the period and to the oldest
+ * stored block. Null when nothing of the range is inside it. A range reaching the newest
+ * data stays open, like the period.
+ *
+ * The oldest-block clamp matters for leaderboards: their finest rollup is a day, and a raw
+ * slice before the first stored block is rounded to whole days — so a short range starting
+ * before the data would vanish rather than read the rows it does contain.
+ */
+export function narrowWindow(
+  db: Db,
+  window: PeriodWindow,
+  from: number,
+  to: number
+): PeriodWindow | null {
+  const start = Math.max(from, window.fromTime, rawCoverageFrom(db));
+  const end = Math.min(to, window.toTime + 1);
+  if (start >= end) return null;
+
+  const height = (sql: string, time: number) =>
+    db.prepare<[number], { height: number }>(sql).get(time)?.height;
+  const fromHeight =
+    height(`SELECT height FROM blocks WHERE time >= ? ORDER BY height ASC LIMIT 1`, start) ??
+    window.toHeight + 1;
+  const toHeight =
+    height(`SELECT height FROM blocks WHERE time < ? ORDER BY height DESC LIMIT 1`, end) ??
+    window.fromHeight - 1;
+
+  return {
+    fromHeight: Math.max(fromHeight, window.fromHeight),
+    toHeight: Math.min(toHeight, window.toHeight),
+    fromTime: start,
+    toTime: end - 1,
+    closed: end <= window.toTime
+  };
 }
 
 /** The equally long window immediately before `range`, for "vs previous period" deltas. */
@@ -162,7 +212,7 @@ export function summariseFlow(
   window: PeriodWindow,
   flowType: 'buying' | 'selling'
 ): FlowSummary {
-  return summariseFlowRange(db, openRange(window), flowType);
+  return summariseFlowRange(db, rangeOf(window), flowType);
 }
 
 /** {@link summariseFlow} over any range, open or closed (a previous-period window). */

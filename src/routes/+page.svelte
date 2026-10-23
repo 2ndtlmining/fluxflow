@@ -27,7 +27,7 @@
     seriesPath,
     summaryPath
   } from '$lib/client/endpoints';
-  import { BEHAVIOUR_TAGS, kindLabel, tagLabel } from '$lib/client/format';
+  import { BEHAVIOUR_TAGS, formatTime, kindLabel, tagLabel } from '$lib/client/format';
   import { live } from '$lib/client/live.svelte';
   import type {
     AddressKind,
@@ -45,7 +45,8 @@
     writeState,
     type BoardKind,
     type Certainty,
-    type DashboardState
+    type DashboardState,
+    type TimeSpan
   } from '$lib/client/urlState';
   import type { PeriodId } from '$lib/shared/constants';
   import Diverging from '$lib/ui/Diverging.svelte';
@@ -69,7 +70,14 @@
   let foundation = $state<Foundation | undefined>();
   let error = $state<string | null>(null);
 
-  const stale = $derived(summary !== undefined && summary.period !== view.period);
+  /** Which view the shown figures belong to: period plus any span picked on the chart (#29). */
+  const viewKey = (period: PeriodId, range: TimeSpan | null) =>
+    range ? `${period}:${range.from}-${range.to}` : period;
+  let loadedKey = $state('');
+  const stale = $derived(
+    summary !== undefined &&
+      (summary.period !== view.period || loadedKey !== viewKey(view.period, view.range))
+  );
 
   /**
    * Each section settles on its own: a leaderboard or chart that fails must not take the
@@ -81,21 +89,23 @@
     who: BoardKind,
     sure: Certainty,
     tag: BehaviourTagName | '',
+    range: TimeSpan | null,
     signal: AbortSignal
   ): Promise<void> {
     const [nextSummary, nextSellers, nextBuyers, nextSeries, nextHops, nextFoundation] =
       await Promise.allSettled([
-        fetchSummary(period, signal),
-        fetchBoard(period, 'sellers', who, sure, tag, signal),
-        fetchBoard(period, 'buyers', who, sure, tag, signal),
+        fetchSummary(period, range, signal),
+        fetchBoard(period, 'sellers', who, sure, tag, range, signal),
+        fetchBoard(period, 'buyers', who, sure, tag, range, signal),
         fetchSeries(period, signal),
-        fetchHops(period, signal),
+        fetchHops(period, range, signal),
         fetchFoundation(period, signal)
       ]);
     if (signal.aborted) return;
 
     if (nextSummary.status === 'fulfilled') {
       summary = nextSummary.value;
+      loadedKey = viewKey(period, range);
       error = null;
     } else if (!isAbort(nextSummary.reason)) {
       error = (nextSummary.reason as Error).message;
@@ -112,25 +122,34 @@
 
   $effect(() => {
     const { period, who, sure, tag } = view;
+    // By value: `view` is rebuilt on every URL change, so its range object always looks new.
+    const from = view.range?.from;
+    const to = view.range?.to;
+    const range = from !== undefined && to !== undefined ? { from, to } : null;
     void live.version;
     const controller = new AbortController();
 
     // Show what we already know for this view at once; keep the old figures otherwise.
     untrack(() => {
-      summary = peek<FlowSummary>(summaryPath(period)) ?? summary;
-      sellers = peek<Board>(boardPath(period, 'sellers', who, sure, tag)) ?? sellers;
-      buyers = peek<Board>(boardPath(period, 'buyers', who, sure, tag)) ?? buyers;
+      const cached = peek<FlowSummary>(summaryPath(period, range));
+      if (cached) {
+        summary = cached;
+        loadedKey = viewKey(period, range);
+      }
+      sellers = peek<Board>(boardPath(period, 'sellers', who, sure, tag, range)) ?? sellers;
+      buyers = peek<Board>(boardPath(period, 'buyers', who, sure, tag, range)) ?? buyers;
       series = peek<Series>(seriesPath(period)) ?? series;
-      hops = peek<HopsResponse>(hopsPath(period)) ?? hops;
+      hops = peek<HopsResponse>(hopsPath(period, range)) ?? hops;
       foundation = peek<Foundation>(foundationPath(period)) ?? foundation;
     });
 
-    void load(period, who, sure, tag, controller.signal);
+    void load(period, who, sure, tag, range, controller.signal);
     return () => controller.abort();
   });
 
   function hrefFor(period: PeriodId): string {
-    const query = writeState({ ...view, period });
+    // A picked span belongs to the period it was picked in.
+    const query = writeState({ ...view, period, range: null });
     return query ? `/?${query}` : '/';
   }
 
@@ -209,6 +228,18 @@
 <div class="dashboard" class:stale>
   <div class="bar">
     <PeriodTabs current={view.period} href={hrefFor} />
+    {#if view.range}
+      <p class="span">
+        <span
+          >Showing {formatTime(summary?.range?.from ?? view.range.from)} to {formatTime(
+            summary?.range?.to ?? view.range.to
+          )}</span
+        >
+        <button type="button" class="link" onclick={() => navigate({ range: null })}>
+          Show the whole period
+        </button>
+      </p>
+    {/if}
     {#if error}
       <p class="error" role="alert">{error}</p>
     {/if}
@@ -329,12 +360,18 @@
           <span class="buy">withdrawals</span> up, <span class="sell">deposits</span> down.
         </p>
       </header>
-      <SeriesChart points={series.points} bucketSeconds={series.bucketSeconds} />
+      <SeriesChart
+        points={series.points}
+        bucketSeconds={series.bucketSeconds}
+        selected={view.range}
+        onselect={(range) => navigate({ range })}
+      />
     </section>
   {/if}
 
   <div class="block">
     <Transactions
+      range={view.range}
       period={view.period}
       filters={view.filters}
       {exchanges}
@@ -362,6 +399,24 @@
     flex-wrap: wrap;
     gap: 1rem;
     align-items: center;
+  }
+
+  .link {
+    padding: 0;
+    border: 0;
+    background: none;
+    color: var(--brand);
+    text-decoration: underline;
+    cursor: pointer;
+  }
+
+  .span {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem 0.75rem;
+    margin: 0;
+    font-size: var(--step--1);
   }
 
   .boards {

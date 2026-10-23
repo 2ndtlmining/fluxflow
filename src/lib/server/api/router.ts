@@ -31,7 +31,9 @@ import { PERIODS, PERIOD_LABELS, isPeriodId, type PeriodId } from '../../shared/
 import {
   flowSeries,
   listFlowEvents,
-  openRange,
+  narrowWindow,
+  rangeOf,
+  type PeriodWindow,
   previousRange,
   resolvePeriod,
   summariseFlow,
@@ -324,11 +326,18 @@ export function createApiRouter(deps: ApiDependencies): Router {
   router.get('/flow/:period/hops', (req: Request, res: Response) => {
     const period = parsePeriod(req, res);
     if (!period) return;
+    const picked = parseRange(req, res);
+    if (picked === undefined) return;
+    if (picked && !windowFor(period, picked)) {
+      res.status(400).json(outsidePeriod(period));
+      return;
+    }
 
     cache.send(req, res, () => {
-      const window = periodWindow(period);
+      const window = windowFor(period, picked) ?? periodWindow(period);
       return {
         period,
+        range: rangeBody(window, picked),
         summary: summariseHops(db, window.fromTime, window.toTime),
         hops: listHops(db, window.fromTime, window.toTime, Number(req.query.limit) || 50)
       };
@@ -657,11 +666,17 @@ export function createApiRouter(deps: ApiDependencies): Router {
   router.get('/flow/:period', (req: Request, res: Response) => {
     const period = parsePeriod(req, res);
     if (!period) return;
+    const picked = parseRange(req, res);
+    if (picked === undefined) return;
+    if (picked && !windowFor(period, picked)) {
+      res.status(400).json(outsidePeriod(period));
+      return;
+    }
 
-    cache.send(req, res, () => flowSummary(period));
+    cache.send(req, res, () => flowSummary(period, picked));
   });
 
-  function flowSummary(period: PeriodId): unknown {
+  function flowSummary(period: PeriodId, picked: PickedRange | null = null): unknown {
     const database = cache.databaseSummary();
     const requiredBlocks = PERIODS[period];
     const progress = syncProgress(database.blocks, requiredBlocks);
@@ -678,13 +693,12 @@ export function createApiRouter(deps: ApiDependencies): Router {
       };
     }
 
-    const fromTime = Math.floor(database.maxTime - PERIOD_SECONDS[period]);
-    const window = resolvePeriod(db, fromTime);
+    const window = windowFor(period, picked) ?? periodWindow(period);
     const buying = summariseFlow(db, window, 'buying');
     const selling = summariseFlow(db, window, 'selling');
 
     // The equally long window just before this one, for "vs previous period" deltas (#28).
-    const before = previousRange(openRange(window));
+    const before = previousRange(rangeOf(window));
     const previousBuying = summariseFlowRange(db, before, 'buying');
     const previousSelling = summariseFlowRange(db, before, 'selling');
 
@@ -692,6 +706,7 @@ export function createApiRouter(deps: ApiDependencies): Router {
 
     return {
       period,
+      range: rangeBody(window, picked),
       label: PERIOD_LABELS[period],
       ready: complete,
       partial: !complete,
@@ -752,8 +767,13 @@ export function createApiRouter(deps: ApiDependencies): Router {
     const period = parsePeriod(req, res);
     if (!period) return;
 
-    const database = cache.databaseSummary();
-    const window = resolvePeriod(db, Math.floor(database.maxTime - PERIOD_SECONDS[period]));
+    const picked = parseRange(req, res);
+    if (picked === undefined) return;
+    const window = windowFor(period, picked);
+    if (!window) {
+      res.status(400).json(outsidePeriod(period));
+      return;
+    }
 
     const query = parseQuery(eventsQuery, req, res);
     if (!query) return;
@@ -775,7 +795,12 @@ export function createApiRouter(deps: ApiDependencies): Router {
         ...(cursor ? { cursor } : {})
       });
 
-      return { period, events: page.events, nextCursor: page.nextCursor };
+      return {
+        period,
+        range: rangeBody(window, picked),
+        events: page.events,
+        nextCursor: page.nextCursor
+      };
     });
   });
 
@@ -811,6 +836,13 @@ export function createApiRouter(deps: ApiDependencies): Router {
         return;
       }
 
+      const picked = parseRange(req, res);
+      if (picked === undefined) return;
+      if (picked && !windowFor(period, picked)) {
+        res.status(400).json(outsidePeriod(period));
+        return;
+      }
+
       // Behaviour tags (#68) narrow a board without changing who counts as what.
       const tag = req.query.tag;
       if (tag !== undefined && !BEHAVIOUR_TAGS.includes(tag as BehaviourTagName)) {
@@ -825,10 +857,10 @@ export function createApiRouter(deps: ApiDependencies): Router {
         req,
         res,
         () => {
-          const window = periodWindow(period);
+          const window = windowFor(period, picked) ?? periodWindow(period);
           const limit = query.limit;
           // Over-fetch when filtering by confidence, so the filter still returns `limit` rows.
-          const board = leaderboard(db, openRange(window), flowType, {
+          const board = leaderboard(db, rangeOf(window), flowType, {
             limit: minConfidence === null ? limit : Math.min(limit * 5, 100),
             ...(kind ? { kind: kind as LeaderboardKind } : {}),
             ...(tag ? { tag: tag as BehaviourTagName } : {})
@@ -856,6 +888,7 @@ export function createApiRouter(deps: ApiDependencies): Router {
 
           return {
             period,
+            range: rangeBody(window, picked),
             flowType,
             total: board.total,
             minConfidence,
@@ -1256,6 +1289,12 @@ export function createApiRouter(deps: ApiDependencies): Router {
     return resolvePeriod(db, Math.floor(database.maxTime - PERIOD_SECONDS[period]));
   }
 
+  /** The period's window, narrowed to a picked range (#29); null when they do not overlap. */
+  function windowFor(period: PeriodId, picked: PickedRange | null): PeriodWindow | null {
+    const window = periodWindow(period);
+    return picked ? narrowWindow(db, window, picked.from, picked.to) : window;
+  }
+
   // ── Compatibility shims ───────────────────────────────────────────────────
   // The v1 dashboard and its components still call these. The v2 intelligence worker
   // replaces them; until then they report an honest "not available" rather than pretending
@@ -1475,6 +1514,45 @@ function entityId(req: Request, res: Response): string | null {
     return null;
   }
   return id;
+}
+
+/** A time range picked inside a period on the chart (#29): `[from, to)`, unix seconds. */
+interface PickedRange {
+  readonly from: number;
+  readonly to: number;
+}
+
+const rangeQuery = z
+  .object({
+    from: z.coerce.number().int().nonnegative(),
+    to: z.coerce.number().int().nonnegative()
+  })
+  .refine((range) => range.from < range.to, { message: 'from must be before to' });
+
+/**
+ * `?from=&to=`: both or neither. Returns null for neither, undefined after answering 400.
+ */
+function parseRange(req: Request, res: Response): PickedRange | null | undefined {
+  const { from, to } = req.query;
+  if (from === undefined && to === undefined) return null;
+  const parsed = rangeQuery.safeParse({ from, to });
+  if (!parsed.success) {
+    res.status(400).json({
+      error: 'Invalid range',
+      message: `from and to must both be unix seconds with from < to (${parsed.error.issues[0]?.message})`
+    });
+    return undefined;
+  }
+  return parsed.data;
+}
+
+function outsidePeriod(period: PeriodId) {
+  return { error: 'Invalid range', message: `The range does not overlap the ${period} period` };
+}
+
+/** The range a response covers, as clamped to the period; null when none was picked. */
+function rangeBody(window: PeriodWindow, picked: PickedRange | null) {
+  return picked ? { from: window.fromTime, to: window.toTime + 1 } : null;
 }
 
 const leaderboardQuery = z.object({

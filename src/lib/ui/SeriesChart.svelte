@@ -3,6 +3,10 @@
   columns above the line, deposits amber columns below it, and the running net is drawn
   across them, so a steady build-up of selling or buying is visible at a glance.
   Plain SVG: at most a few hundred buckets, so no charting library is needed.
+
+  With `onselect`, dragging across the columns (or tapping one) picks a span (#29). The
+  position is read from the pointer across the whole chart rather than per column, so it
+  works the same with a mouse and a finger; vertical swipes still scroll the page.
 -->
 <script lang="ts">
   import { formatFlux, formatFluxFull, formatSigned } from '$lib/client/format';
@@ -21,9 +25,20 @@
     /** Draw the running net line. Off for a single wallet, where it adds little. */
     showNet?: boolean;
     label?: string;
+    /** The picked span, shown by dimming the columns outside it. */
+    selected?: { from: number; to: number } | null;
+    /** Called with `[from, to)` in unix seconds when a span is picked. */
+    onselect?: (span: { from: number; to: number }) => void;
   }
 
-  let { points, bucketSeconds, showNet = true, label = 'Net flow over time' }: Props = $props();
+  let {
+    points,
+    bucketSeconds,
+    showNet = true,
+    label = 'Net flow over time',
+    selected = null,
+    onselect
+  }: Props = $props();
 
   const WIDTH = 1000;
   const HEIGHT = 240;
@@ -52,6 +67,46 @@
   const final = $derived(points.at(-1)?.cumulativeNet ?? 0);
 
   let active = $state<number | null>(null);
+  let dragFrom = $state<number | null>(null);
+  let dragTo = $state<number | null>(null);
+
+  /** The column under the pointer, from its position across the chart. */
+  function indexAt(event: PointerEvent): number {
+    const box = (event.currentTarget as Element).getBoundingClientRect();
+    const share = (event.clientX - box.left) / Math.max(box.width, 1);
+    return Math.min(points.length - 1, Math.max(0, Math.floor(share * points.length)));
+  }
+
+  function inside(i: number): boolean {
+    if (dragFrom !== null && dragTo !== null) {
+      return i >= Math.min(dragFrom, dragTo) && i <= Math.max(dragFrom, dragTo);
+    }
+    const time = points[i]?.time ?? 0;
+    return selected !== null && time >= selected.from && time < selected.to;
+  }
+
+  const picking = $derived((dragFrom !== null && dragTo !== null) || selected !== null);
+
+  function down(event: PointerEvent): void {
+    if (!onselect || points.length === 0) return;
+    (event.currentTarget as Element).setPointerCapture?.(event.pointerId);
+    dragFrom = dragTo = indexAt(event);
+  }
+
+  function move(event: PointerEvent): void {
+    if (points.length === 0) return;
+    const i = indexAt(event);
+    active = i;
+    if (dragFrom !== null) dragTo = i;
+  }
+
+  function up(): void {
+    if (dragFrom === null || dragTo === null || !onselect) return;
+    const first = points[Math.min(dragFrom, dragTo)]!;
+    const last = points[Math.max(dragFrom, dragTo)]!;
+    dragFrom = dragTo = null;
+    onselect({ from: first.time, to: last.time + bucketSeconds });
+  }
 
   function bucketLabel(time: number): string {
     const date = new Date(time * 1000);
@@ -62,9 +117,19 @@
 </script>
 
 <figure>
+  <!-- Picking a span is a pointer shortcut: the page's period tabs and its "whole period"
+       button reach every view without it. -->
   <svg
     viewBox="0 0 {WIDTH} {HEIGHT}"
     preserveAspectRatio="none"
+    class:pickable={onselect !== undefined}
+    onpointerdown={down}
+    onpointermove={move}
+    onpointerup={up}
+    onpointercancel={() => (dragFrom = dragTo = null)}
+    onpointerleave={() => {
+      if (dragFrom === null) active = null;
+    }}
     role="img"
     aria-label="{label}: {formatFluxFull(totals.buying)} FLUX withdrawn and {formatFluxFull(
       totals.selling
@@ -75,12 +140,7 @@
       {@const up = (point.buying / scale) * (MID - PAD)}
       {@const down = (point.selling / scale) * (MID - PAD)}
       <!-- Hover only reveals per-bucket totals; the chart's label carries the totals for assistive tech. -->
-      <!-- svelte-ignore a11y_no_static_element_interactions -->
-      <g
-        class:dim={active !== null && active !== i}
-        onpointerenter={() => (active = i)}
-        onpointerleave={() => (active = null)}
-      >
+      <g class:dim={picking ? !inside(i) : active !== null && active !== i}>
         <rect x={i * step} y="0" width={step} height={HEIGHT} fill="transparent" />
         <rect class="buy-col" {x} y={MID - up} width={column} height={up} />
         <rect class="sell-col" {x} y={MID} width={column} height={down} />
@@ -105,7 +165,8 @@
         {#if showNet}
           The line is the running net, ending at {formatSigned(final)} FLUX.
         {/if}
-        Hover a column for its totals.
+        Hover a column for its totals{#if onselect}; drag across columns to narrow the page to that
+          span{/if}.
       </span>
     {/if}
   </figcaption>
@@ -148,6 +209,12 @@
 
   .dim {
     opacity: 0.45;
+  }
+
+  .pickable {
+    cursor: crosshair;
+    touch-action: pan-y;
+    user-select: none;
   }
 
   figcaption {

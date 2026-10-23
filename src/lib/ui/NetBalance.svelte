@@ -4,7 +4,7 @@
   visual idea every other breakdown on the page repeats.
 -->
 <script lang="ts">
-  import { formatCount, formatFlux, formatFluxFull } from '$lib/client/format';
+  import { formatCount, formatFlux, formatFluxFull, formatTime } from '$lib/client/format';
   import type { FlowSummary } from '$lib/client/types';
   import type { PeriodId } from '$lib/shared/constants';
 
@@ -35,6 +35,11 @@
   const scale = $derived(Math.max(bought, sold, 1));
   const empty = $derived(summary !== undefined && bought === 0 && sold === 0);
   const previous = $derived(summary?.previousPeriod);
+  // A span picked on the chart (#29) replaces "in the last N days".
+  const span = $derived(summary?.range ?? null);
+  const phrase = $derived(
+    span ? `between ${formatTime(span.from)} and ${formatTime(span.to)}` : PHRASE[period]
+  );
 
   const BEFORE: Record<PeriodId, string> = {
     '24H': 'The 24 hours before',
@@ -58,11 +63,11 @@
   {:else}
     <h1 id="net-heading" class="lede">
       {#if empty}
-        No FLUX moved to or from tracked exchanges {PHRASE[period]}.
+        No FLUX moved to or from tracked exchanges {phrase}.
       {:else if net < 0}
-        More FLUX went onto exchanges than came off them {PHRASE[period]}.
+        More FLUX went onto exchanges than came off them {phrase}.
       {:else}
-        More FLUX came off exchanges than went onto them {PHRASE[period]}.
+        More FLUX came off exchanges than went onto them {phrase}.
       {/if}
     </h1>
 
@@ -122,7 +127,9 @@
 
     {#if previous && (previous.buying.total > 0 || previous.selling.total > 0)}
       <p class="previous muted">
-        {BEFORE[period]}: net {formatFlux(Math.abs(previous.netFlow))} FLUX
+        {span ? 'The same length of time before' : BEFORE[period]}: net {formatFlux(
+          Math.abs(previous.netFlow)
+        )} FLUX
         {previous.netFlow < 0 ? 'deposited' : 'withdrawn'}
         ({formatFlux(previous.selling.total)} deposited, {formatFlux(previous.buying.total)} withdrawn).
       </p>

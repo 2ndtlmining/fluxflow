@@ -469,6 +469,59 @@ describe('api router', () => {
       ]);
     });
 
+    it('narrows the summary, leaderboards, events and hops to a range inside the period (#29)', async () => {
+      await boot();
+      seedWallet();
+      // Covers the 500 FLUX withdrawal an hour ago, not the 200 FLUX deposit now.
+      const range = `from=${NOW - 7_200}&to=${NOW - 1_800}`;
+
+      const summary = await get(`/api/flow/24H?${range}`);
+      expect(summary.status).toBe(200);
+      expect(summary.body).toMatchObject({
+        // Clamped to the oldest stored block, the withdrawal itself.
+        range: { from: NOW - 3_600, to: NOW - 1_800 },
+        buying: { total: 500 },
+        selling: { total: 0 }
+      });
+      // The whole period still sees both.
+      expect((await get('/api/flow/24H')).body).toMatchObject({
+        range: null,
+        buying: { total: 500 },
+        selling: { total: 200 }
+      });
+
+      const buyers = await get(`/api/flow/24H/buyers?${range}`);
+      expect((buyers.body.buyers as { address: string }[]).map((row) => row.address)).toEqual([
+        WHALE
+      ]);
+      expect((await get(`/api/flow/24H/sellers?${range}`)).body.sellers).toEqual([]);
+
+      const events = await get(`/api/flow/24H/events?${range}`);
+      expect((events.body.events as { txid: string }[]).map((event) => event.txid)).toEqual(['w1']);
+
+      expect((await get(`/api/flow/24H/hops?${range}`)).status).toBe(200);
+    });
+
+    it('clamps a range to the period and rejects a malformed one (#29)', async () => {
+      await boot();
+      seedWallet();
+
+      // Starting before the 24H window is clamped rather than refused: to the window, and
+      // further to the oldest stored block (here the withdrawal, an hour ago).
+      const wide = await get(`/api/flow/24H?from=${NOW - 10 * 86_400}&to=${NOW - 1_800}`);
+      expect(wide.status).toBe(200);
+      expect((wide.body.range as { from: number }).from).toBe(NOW - 3_600);
+
+      for (const bad of [
+        `from=${NOW}`,
+        `from=${NOW}&to=${NOW - 60}`,
+        'from=abc&to=def',
+        `from=${NOW - 30 * 86_400}&to=${NOW - 20 * 86_400}`
+      ]) {
+        expect((await get(`/api/flow/24H?${bad}`)).status, bad).toBe(400);
+      }
+    });
+
     it('rejects an unknown leaderboard kind', async () => {
       await boot();
       expect((await get('/api/flow/24H/buyers?kind=everyone')).status).toBe(400);

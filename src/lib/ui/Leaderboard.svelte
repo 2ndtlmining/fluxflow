@@ -73,7 +73,8 @@
     </ol>
   {:else if rows.length === 0}
     <p class="muted empty">
-      No transfers {side === 'selling' ? 'to' : 'from'} exchanges by this kind of wallet in this period.
+      No wallet matching these filters {side === 'selling' ? 'deposited to' : 'withdrew from'}
+      exchanges in this period.
     </p>
   {:else}
     <ol class="list">

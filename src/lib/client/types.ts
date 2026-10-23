@@ -25,6 +25,8 @@ export interface Direction {
 }
 
 export interface FlowSummary {
+  /** The span the figures cover when one was picked on the chart (#29), as clamped. */
+  readonly range?: { readonly from: number; readonly to: number } | null;
   readonly period: PeriodId;
   readonly label?: string;
   readonly ready: boolean;
