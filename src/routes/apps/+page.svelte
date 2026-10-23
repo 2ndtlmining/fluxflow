@@ -72,6 +72,32 @@
   });
   const peak = $derived(Math.max(1, ...days.map((day) => day.total)));
   let active = $state<number | null>(null);
+
+  /** Left/Right (Home/End) move the shown day, as hovering does. */
+  function stepDays(event: KeyboardEvent): void {
+    const last = days.length - 1;
+    const current = active ?? last;
+    const next =
+      event.key === 'ArrowLeft'
+        ? current - 1
+        : event.key === 'ArrowRight'
+          ? current + 1
+          : event.key === 'Home'
+            ? 0
+            : event.key === 'End'
+              ? last
+              : null;
+    if (next === null) return;
+    active = Math.min(last, Math.max(0, next));
+    event.preventDefault();
+  }
+
+  function dayText(i: number): string {
+    const day = days[i];
+    return day
+      ? `${dayLabel(day.time)}: ${formatFlux(day.total)} FLUX in ${formatCount(day.count)} payments`
+      : '';
+  }
   const dayLabel = (time: number) =>
     new Date(time * 1000).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
   const foundationShare = $derived(data?.fundingOfPayments.foundation ?? 0);
@@ -146,28 +172,42 @@
         <section aria-labelledby="when-heading" class="block">
           <h2 id="when-heading">Per day</h2>
           <figure>
-            <svg
-              viewBox="0 0 {days.length * 10} 100"
-              preserveAspectRatio="none"
-              role="img"
-              aria-label="FLUX paid for Flux apps per day: {formatFluxFull(
-                data.total
-              )} FLUX over {days.length} days, peaking at {formatFluxFull(peak)}"
+            <!-- Keyboard and screen readers step through the days like a slider (#33). -->
+            <div
+              class="days"
+              role="slider"
+              tabindex="0"
+              aria-label="FLUX paid for Flux apps per day: arrow keys move between days"
+              aria-valuemin={0}
+              aria-valuemax={days.length - 1}
+              aria-valuenow={active ?? days.length - 1}
+              aria-valuetext={dayText(active ?? days.length - 1)}
+              onkeydown={stepDays}
+              onblur={() => (active = null)}
             >
-              {#each days as day, i (day.time)}
-                {@const height = (day.total / peak) * 96}
-                <!-- Hover only reveals one day's figures; the label carries the summary. -->
-                <!-- svelte-ignore a11y_no_static_element_interactions -->
-                <g
-                  class:dim={active !== null && active !== i}
-                  onpointerenter={() => (active = i)}
-                  onpointerleave={() => (active = null)}
-                >
-                  <rect x={i * 10} y="0" width="10" height="100" fill="transparent" />
-                  <rect class="col" x={i * 10 + 1.5} y={100 - height} width="7" {height} />
-                </g>
-              {/each}
-            </svg>
+              <svg
+                viewBox="0 0 {days.length * 10} 100"
+                preserveAspectRatio="none"
+                role="img"
+                aria-label="FLUX paid for Flux apps per day: {formatFluxFull(
+                  data.total
+                )} FLUX over {days.length} days, peaking at {formatFluxFull(peak)}"
+              >
+                {#each days as day, i (day.time)}
+                  {@const height = (day.total / peak) * 96}
+                  <!-- Hover only reveals one day's figures; the label carries the summary. -->
+                  <!-- svelte-ignore a11y_no_static_element_interactions -->
+                  <g
+                    class:dim={active !== null && active !== i}
+                    onpointerenter={() => (active = i)}
+                    onpointerleave={() => (active = null)}
+                  >
+                    <rect x={i * 10} y="0" width="10" height="100" fill="transparent" />
+                    <rect class="col" x={i * 10 + 1.5} y={100 - height} width="7" {height} />
+                  </g>
+                {/each}
+              </svg>
+            </div>
             <figcaption class="small">
               {#if active !== null && days[active]}
                 {@const day = days[active]}
@@ -175,7 +215,10 @@
                 <strong>{formatFlux(day.total)} FLUX</strong>
                 <span class="muted">in {formatCount(day.count)} payments</span>
               {:else}
-                <span class="muted">Hover a column for that day's payments.</span>
+                <span class="muted"
+                  >Hover a column, or focus the chart and use the arrow keys, for that day's
+                  payments.</span
+                >
               {/if}
             </figcaption>
           </figure>
@@ -203,6 +246,7 @@
                 <tr>
                   <td>
                     <a
+                      class="target"
                       href="/wallet/{payer.address}"
                       class:mono={!payer.name}
                       title={payer.address}
@@ -226,6 +270,7 @@
                   <td class="funders small">
                     {#each payer.topFunders as funder (funder.address)}
                       <a
+                        class="target"
                         href="/wallet/{funder.address}"
                         class:mono={!funder.name}
                         title={funder.address}
@@ -365,6 +410,13 @@
 
   td.mix span {
     margin-top: 0.25rem;
+  }
+
+  /* At least 24px tall (WCAG 2.5.8): these tables are dense lists of links (#33). */
+  .target {
+    display: inline-block;
+    min-height: 24px;
+    line-height: 24px;
   }
 
   .funders {

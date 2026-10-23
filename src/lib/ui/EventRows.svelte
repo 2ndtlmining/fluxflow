@@ -163,6 +163,12 @@
     display: block;
   }
 
+  /* At least 24px tall (WCAG 2.5.8): rows of short links are tapped on phones (#33). */
+  .wallet > a {
+    min-height: 24px;
+    line-height: 24px;
+  }
+
   .small {
     font-size: var(--step--1);
   }

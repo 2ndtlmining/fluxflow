@@ -196,6 +196,9 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    /* At least 24px tall (WCAG 2.5.8) for a finger on a phone (#33). */
+    min-height: 24px;
+    line-height: 24px;
   }
 
   /* Only the trailing details truncate; the kind and its badge must stay whole, and the

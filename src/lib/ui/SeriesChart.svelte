@@ -7,6 +7,10 @@
   With `onselect`, dragging across the columns (or tapping one) picks a span (#29). The
   position is read from the pointer across the whole chart rather than per column, so it
   works the same with a mouse and a finger; vertical swipes still scroll the page.
+
+  The keyboard does the same (#33): the chart is a slider over its columns. Left/Right
+  (Home/End) move between columns, Shift extends a span, Enter or Space picks it and Escape
+  lets go; each column's totals are its `aria-valuetext`, read out as the focus moves.
 -->
 <script lang="ts">
   import { formatFlux, formatFluxFull, formatSigned } from '$lib/client/format';
@@ -100,6 +104,49 @@
     if (dragFrom !== null) dragTo = i;
   }
 
+  function key(event: KeyboardEvent): void {
+    if (!onselect || points.length === 0) return;
+    const last = points.length - 1;
+    const current = active ?? last;
+    const go = (to: number) => {
+      const next = Math.min(last, Math.max(0, to));
+      if (event.shiftKey) {
+        dragFrom ??= current;
+        dragTo = next;
+      } else {
+        dragFrom = dragTo = null;
+      }
+      active = next;
+    };
+
+    switch (event.key) {
+      case 'ArrowLeft':
+        go(current - 1);
+        break;
+      case 'ArrowRight':
+        go(current + 1);
+        break;
+      case 'Home':
+        go(0);
+        break;
+      case 'End':
+        go(last);
+        break;
+      case 'Enter':
+      case ' ':
+        if (dragFrom === null) dragFrom = dragTo = current;
+        up();
+        break;
+      case 'Escape':
+        dragFrom = dragTo = null;
+        active = null;
+        break;
+      default:
+        return;
+    }
+    event.preventDefault();
+  }
+
   function up(): void {
     if (dragFrom === null || dragTo === null || !onselect) return;
     const first = points[Math.min(dragFrom, dragTo)]!;
@@ -114,11 +161,17 @@
       ? date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
       : date.toLocaleString(undefined, { weekday: 'short', hour: '2-digit', minute: '2-digit' });
   }
+
+  /** What a screen reader hears for the focused column: when, and both totals. */
+  function valueText(i: number): string {
+    const p = points[i];
+    if (!p) return '';
+    const span = inside(i) && (dragFrom !== null || selected !== null) ? ', in the span' : '';
+    return `${bucketLabel(p.time)}: ${formatFlux(p.buying)} withdrawn, ${formatFlux(p.selling)} deposited${span}`;
+  }
 </script>
 
-<figure>
-  <!-- Picking a span is a pointer shortcut: the page's period tabs and its "whole period"
-       button reach every view without it. -->
+{#snippet chart()}
   <svg
     viewBox="0 0 {WIDTH} {HEIGHT}"
     preserveAspectRatio="none"
@@ -151,6 +204,30 @@
       <polyline points={netLine} class="net" />
     {/if}
   </svg>
+{/snippet}
+
+<figure>
+  {#if onselect}
+    <!-- The keyboard way to pick a span (#33): a slider over the columns; the chart inside stays an image. -->
+    <div
+      class="keys"
+      role="slider"
+      aria-label="{label}: arrow keys move between {bucketSeconds >= 86_400
+        ? 'days'
+        : 'hours'}, Shift extends a span, Enter picks it"
+      aria-valuemin={0}
+      aria-valuemax={Math.max(points.length - 1, 0)}
+      aria-valuenow={active ?? points.length - 1}
+      aria-valuetext={valueText(active ?? points.length - 1)}
+      tabindex="0"
+      onkeydown={key}
+      onblur={() => (dragFrom = dragTo = null)}
+    >
+      {@render chart()}
+    </div>
+  {:else}
+    {@render chart()}
+  {/if}
   <figcaption>
     {#if active !== null && points[active]}
       {@const p = points[active]}
@@ -166,7 +243,7 @@
           The line is the running net, ending at {formatSigned(final)} FLUX.
         {/if}
         Hover a column for its totals{#if onselect}; drag across columns to narrow the page to that
-          span{/if}.
+          span, or focus the chart and use the arrow keys (Shift to extend, Enter to pick){/if}.
       </span>
     {/if}
   </figcaption>
@@ -209,6 +286,10 @@
 
   .dim {
     opacity: 0.45;
+  }
+
+  .keys {
+    border-radius: var(--radius-s);
   }
 
   .pickable {

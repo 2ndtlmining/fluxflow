@@ -276,6 +276,7 @@
             {#each nodes as node (node.address)}
               {@const x = at.x(node)}
               {@const y = at.y(node)}
+              {@const second = `${kindLabel(node.kind)}${node.name ? ` · ${shortAddress(node.address, 4)}` : ''}`}
               <g
                 class="node k-{node.kind}"
                 class:root={node.address === graph.root}
@@ -283,20 +284,21 @@
                 transform="translate({x} {y})"
                 role="button"
                 tabindex="0"
-                aria-label="{label(node)}, {kindLabel(node.kind)}"
+                aria-label="{label(node)}, {second}"
                 aria-pressed={node.address === selected}
                 onclick={() => (selected = node.address)}
                 onkeydown={(event) => onKey(event, () => (selected = node.address))}
               >
                 <rect class="box" width={SIZE.nodeWidth} height={SIZE.nodeHeight} rx="8"></rect>
                 <rect class="accent" width="6" height={SIZE.nodeHeight} rx="3"></rect>
-                <text x="16" y="19" class="name" class:mono={!node.name}>{label(node)}</text>
-                <text x="16" y="36" class="kind"
-                  >{kindLabel(node.kind)}{node.name
-                    ? ` · ${shortAddress(node.address, 4)}`
-                    : ''}</text
+                <!-- The label says what the two lines show, word for word (#33: voice control), so
+                     the drawn text and the full-address tooltip are hidden from assistive tech
+                     rather than read a second time. -->
+                <text x="16" y="19" class="name" class:mono={!node.name} aria-hidden="true"
+                  >{label(node)}</text
                 >
-                <title>{node.address}</title>
+                <text x="16" y="36" class="kind" aria-hidden="true">{second}</text>
+                <title aria-hidden="true">{node.address}</title>
               </g>
               {#each [{ side: 'in', cx: x, text: 'Show who paid' }, { side: 'out', cx: x + SIZE.nodeWidth, text: 'Show who it paid' }] as handle (handle.side)}
                 {@const side = handle.side as 'in' | 'out'}
@@ -312,8 +314,9 @@
                     onkeydown={(event) => onKey(event, () => expand(node.address, side))}
                   >
                     <circle r="10"></circle>
-                    <text y="4" text-anchor="middle">+</text>
-                    <title>{handle.text} {label(node)}</title>
+                    <!-- An icon: the label names the action (#33). -->
+                    <text y="4" text-anchor="middle" aria-hidden="true">+</text>
+                    <title aria-hidden="true">{handle.text} {label(node)}</title>
                   </g>
                 {/if}
               {/each}
@@ -322,7 +325,7 @@
         </div>
 
         {#if detail}
-          <aside class="detail" aria-live="polite">
+          <section class="detail" aria-live="polite" aria-label="Selected wallet">
             <h2>
               {#if detail.node.name}{detail.node.name}{:else}<span class="mono"
                   >{shortAddress(detail.node.address)}</span
@@ -384,7 +387,7 @@
                 </button>
               {/if}
             </div>
-          </aside>
+          </section>
         {/if}
       </div>
 

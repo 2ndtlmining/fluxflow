@@ -18,13 +18,17 @@
   --text: #191b33;
   --text-muted: #565b80;
   --brand: #7b4ae2;
-  --buy: #0e8fb0;
+  /* Text on a --brand fill: white on this purple (5.4:1); the dark theme overrides it. */
+  --on-brand: #fff;
+  /* Light-theme text colours reach 4.5:1 (WCAG AA) on --bg, --surface and --surface-2 (#33). */
+  --buy: #0a6c85;
   --buy-soft: #d3f0f7;
-  --sell: #c25a12;
+  --sell: #a0490e;
   --sell-soft: #fbe3d2;
-  --warn: #9a6a00;
+  --warn: #8e6200;
   --bad: #b3261e;
-  --good: #1d7a45;
+  /* Also on its own 14% tint, as the confirmed badge (6.0:1 on --bg). */
+  --good: #1a6b3d;
   --focus: #7b4ae2;
 
   --radius-s: 4px;
@@ -48,6 +52,8 @@
     --text: #e8e9f7;
     --text-muted: #9ea3cc;
     --brand: #a07cff;
+    /* White on this lighter purple is only 3.1:1; the page background reads (5.9:1). */
+    --on-brand: #12142e;
     --buy: #22b8d9;
     --buy-soft: #133a52;
     --sell: #ff8a3d;
@@ -68,6 +74,8 @@
   --text: #e8e9f7;
   --text-muted: #9ea3cc;
   --brand: #a07cff;
+  /* White on this lighter purple is only 3.1:1; the page background reads (5.9:1). */
+  --on-brand: #12142e;
   --buy: #22b8d9;
   --buy-soft: #133a52;
   --sell: #ff8a3d;

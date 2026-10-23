@@ -462,7 +462,7 @@
   .primary {
     background: var(--brand);
     border-color: var(--brand);
-    color: #fff;
+    color: var(--on-brand);
   }
 
   .danger {
