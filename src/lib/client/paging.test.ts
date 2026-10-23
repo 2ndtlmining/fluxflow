@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
   boardPath,
+  graphHref,
   hopsPath,
   isAddress,
   isTxid,
   normaliseBoard,
   pathPath,
+  parseTags,
   summaryPath
 } from './endpoints';
 import { evidenceText, sourceText, tagEvidenceText, tagLabel } from './format';
@@ -365,6 +367,25 @@ describe('path finder query (#70)', () => {
     );
     expect(pathPath({ src, dst, maxHops: 6, throughExchanges: true, period: '30D' })).toBe(
       `/path?src=${src}&dst=${dst}&maxHops=6&through=exchanges&period=30D`
+    );
+  });
+});
+
+describe('investigation workspace (#69)', () => {
+  it('reads tags as typed: comma separated, trimmed, each once', () => {
+    expect(parseTags(' team, apps ,, team ,fiat gateway')).toEqual([
+      'team',
+      'apps',
+      'fiat gateway'
+    ]);
+    expect(parseTags('')).toEqual([]);
+  });
+
+  it('reopens a saved graph view with its period, minimum and expansions in order', () => {
+    const root = 't1Mzja9iJcEYeW5B4m4s1tJG8M42odFZ16A';
+    expect(graphHref({ root, period: null, min: 0, expand: [] })).toBe(`/graph?root=${root}`);
+    expect(graphHref({ root, period: '30D', min: 5, expand: [`${root}:in`, `${root}:out`] })).toBe(
+      `/graph?root=${root}&period=30D&min=5&expand=${root}%3Ain%2C${root}%3Aout`
     );
   });
 });

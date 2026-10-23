@@ -80,7 +80,7 @@
     unlabelled wallet may belong to anyone. <a href="/foundation">Flux Foundation</a> ·
     <a href="/apps">App payments</a> ·
     <a href="/entities">Entities</a>
-    · <a href="/path">Path finder</a> ·
+    · <a href="/path">Path finder</a> · <a href="/cases">Cases</a> ·
     <a href="/review">Review proposed labels</a> (admin).
   </p>
 </footer>

@@ -260,6 +260,9 @@ export interface WalletProfile {
   readonly entity?: EntityRef | null;
   /** Behaviour tags with their evidence (#68); absent from an older server. */
   readonly tags?: BehaviourTag[];
+  /** The reader's own note and tags (#69), and the cases this wallet is in. */
+  readonly note?: WalletNote | null;
+  readonly cases?: { readonly id: string; readonly name: string }[];
   readonly candidates?: WalletLabel[];
   readonly totals: {
     readonly bought: number;
@@ -278,7 +281,14 @@ export interface WalletProfile {
 }
 
 export type SearchResult =
-  | { type: 'wallet'; address: string; name: string | null; kind: AddressKind }
+  | {
+      type: 'wallet';
+      address: string;
+      name: string | null;
+      kind: AddressKind;
+      /** The reader's note, when the wallet has one (#69). */
+      note?: WalletNote | null;
+    }
   | { type: 'tx'; txid: string; height: number };
 
 export interface SearchResponse {
@@ -622,4 +632,45 @@ export interface PathResult {
   readonly explored: { readonly forward: number; readonly backward: number };
   readonly trimmed: number;
   readonly truncated: boolean;
+}
+
+/** A wallet's note and custom tags (#69): the reader's own words, never a label. */
+export interface WalletNote {
+  readonly address: string;
+  readonly note: string;
+  readonly tags: string[];
+  readonly updatedAt: number;
+}
+
+/** The fund-flow graph view saved with a case (#69). */
+export interface CaseGraph {
+  readonly root: string;
+  readonly period: string | null;
+  readonly min: number;
+  /** Expansions to replay, `address:in` or `address:out`, in order. */
+  readonly expand: string[];
+}
+
+export interface CaseSummary {
+  readonly id: string;
+  readonly name: string;
+  readonly description: string;
+  readonly count: number;
+  readonly updatedAt: number;
+}
+
+export interface CaseDetail {
+  readonly id: string;
+  readonly name: string;
+  readonly description: string;
+  readonly addresses: string[];
+  readonly graph: CaseGraph | null;
+  readonly createdAt: number;
+  readonly updatedAt: number;
+  readonly members: {
+    readonly address: string;
+    readonly kind: AddressKind;
+    readonly name: string | null;
+    readonly note: WalletNote | null;
+  }[];
 }

@@ -36,6 +36,7 @@
   import EventRows from '$lib/ui/EventRows.svelte';
   import SeriesChart from '$lib/ui/SeriesChart.svelte';
   import ConfidenceBadge from '$lib/ui/ConfidenceBadge.svelte';
+  import NotePanel from '$lib/ui/NotePanel.svelte';
   import PartyTable from '$lib/ui/PartyTable.svelte';
   import FundsPanel from '$lib/ui/FundsPanel.svelte';
   import BalancePanel from '$lib/ui/BalancePanel.svelte';
@@ -308,6 +309,8 @@
           </p>
         </section>
       {/if}
+
+      <NotePanel {address} note={profile.note ?? null} cases={profile.cases ?? []} />
 
       {#if profile.totals.p2pIn > 0 || profile.totals.p2pOut > 0}
         <p class="muted small">

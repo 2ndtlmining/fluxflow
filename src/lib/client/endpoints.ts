@@ -11,6 +11,9 @@ import type {
   AppPayments,
   BalanceHistory,
   BehaviourTagName,
+  CaseDetail,
+  CaseGraph,
+  CaseSummary,
   ClusterSummary,
   Counterparty,
   EntityList,
@@ -28,6 +31,7 @@ import type {
   TxDetail,
   WalletCounterparties,
   WalletFunds,
+  WalletNote,
   WalletProfile
 } from './types';
 import { withRange, type BoardKind, type Certainty, type TimeSpan } from './urlState';
@@ -229,6 +233,63 @@ export function pathPath(query: PathQuery): string {
 
 export const fetchPath = (query: PathQuery, signal?: AbortSignal) =>
   cachedFetch<PathResult>(pathPath(query), signal);
+// ── Investigation workspace (#69) ───────────────────────────────────────────
+
+export function saveNote(
+  address: string,
+  note: { note: string; tags: string[] }
+): Promise<{ address: string; note: WalletNote | null }> {
+  return apiFetch(`/notes/${encodeURIComponent(address)}`, {
+    method: 'PUT',
+    body: JSON.stringify(note)
+  });
+}
+
+/** Tags as typed: comma separated, trimmed, empty ones dropped, duplicates once. */
+export function parseTags(text: string): string[] {
+  return [
+    ...new Set(
+      text
+        .split(',')
+        .map((tag) => tag.trim())
+        .filter(Boolean)
+    )
+  ];
+}
+
+export const fetchCases = (signal?: AbortSignal) =>
+  apiFetch<{ cases: CaseSummary[] }>('/cases', signal ? { signal } : {});
+
+export const fetchCase = (id: string, signal?: AbortSignal) =>
+  apiFetch<CaseDetail>(`/cases/${encodeURIComponent(id)}`, signal ? { signal } : {});
+
+export interface CaseInput {
+  readonly name?: string;
+  readonly description?: string;
+  readonly addresses?: string[];
+  readonly graph?: CaseGraph | null;
+}
+
+export const createCase = (input: CaseInput & { name: string }) =>
+  apiFetch<{ id: string }>('/cases', { method: 'POST', body: JSON.stringify(input) });
+
+export const updateCase = (id: string, patch: CaseInput) =>
+  apiFetch<{ id: string }>(`/cases/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    body: JSON.stringify(patch)
+  });
+
+export const deleteCase = (id: string) =>
+  apiFetch<{ deleted: boolean }>(`/cases/${encodeURIComponent(id)}`, { method: 'DELETE' });
+
+/** The fund-flow graph link that reopens a saved view: root, period, minimum, expansions. */
+export function graphHref(graph: CaseGraph): string {
+  const params = new URLSearchParams({ root: graph.root });
+  if (graph.period) params.set('period', graph.period);
+  if (graph.min > 0) params.set('min', String(graph.min));
+  if (graph.expand.length > 0) params.set('expand', graph.expand.join(','));
+  return `/graph?${params.toString()}`;
+}
 
 export function search(query: string, signal?: AbortSignal): Promise<SearchResponse> {
   const params = new URLSearchParams({ q: query, limit: '10' });

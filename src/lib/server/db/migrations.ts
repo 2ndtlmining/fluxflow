@@ -685,6 +685,49 @@ const behaviourTags: Migration = {
   }
 };
 
+/**
+ * Version 8 (#69): the investigation workspace — a note and tags per wallet, and saved cases.
+ *
+ * Both are the reader's own words, kept apart from labels: a note never changes how a flow
+ * is counted. Writes bump the data version, so cached wallet pages and searches show them.
+ */
+const workspace: Migration = {
+  version: 8,
+  name: 'workspace',
+  up: (db) => {
+    db.exec(`
+      CREATE TABLE notes (
+        address    TEXT    PRIMARY KEY,
+        note       TEXT    NOT NULL DEFAULT '',
+        tags       TEXT    NOT NULL DEFAULT '[]',
+        updated_at INTEGER NOT NULL DEFAULT (${now})
+      ) WITHOUT ROWID;
+
+      CREATE TABLE cases (
+        id          TEXT    PRIMARY KEY,
+        name        TEXT    NOT NULL,
+        description TEXT    NOT NULL DEFAULT '',
+        addresses   TEXT    NOT NULL DEFAULT '[]',
+        graph       TEXT,
+        created_at  INTEGER NOT NULL DEFAULT (${now}),
+        updated_at  INTEGER NOT NULL DEFAULT (${now})
+      ) WITHOUT ROWID;
+    `);
+
+    const bump = `
+      INSERT INTO sync_state (key, value) VALUES ('${DATA_VERSION_KEY}', '1')
+      ON CONFLICT (key) DO UPDATE SET value = CAST(value AS INTEGER) + 1;`;
+    for (const table of ['notes', 'cases']) {
+      for (const event of ['INSERT', 'UPDATE', 'DELETE']) {
+        db.exec(`
+          CREATE TRIGGER ${table}_${event.toLowerCase()}_version AFTER ${event} ON ${table}
+          BEGIN ${bump} END;
+        `);
+      }
+    }
+  }
+};
+
 /** Every migration, in ascending version order. Append only — never edit a shipped one. */
 export const MIGRATIONS: readonly Migration[] = [
   initialSchema,
@@ -693,7 +736,8 @@ export const MIGRATIONS: readonly Migration[] = [
   intelligence,
   splitFunders,
   entities,
-  behaviourTags
+  behaviourTags,
+  workspace
 ];
 
 /** The version a fresh database ends up at. */

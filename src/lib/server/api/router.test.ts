@@ -116,6 +116,19 @@ describe('api router', () => {
     return { status: response.status, body: (await response.json()) as Record<string, unknown> };
   }
 
+  async function send(
+    method: string,
+    path: string,
+    body?: unknown
+  ): Promise<{ status: number; body: Record<string, unknown> }> {
+    const response = await fetch(`${server.url}${path}`, {
+      method,
+      headers: { 'content-type': 'application/json' },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) })
+    });
+    return { status: response.status, body: (await response.json()) as Record<string, unknown> };
+  }
+
   describe('GET /api/health', () => {
     it('is 200 and ok when sync is fresh', async () => {
       await boot();
@@ -544,6 +557,95 @@ describe('api router', () => {
       ]) {
         expect((await get(`/api/path?${bad}`)).status, bad).toBe(400);
       }
+    });
+
+    it('keeps a note on a wallet, shows it on its page and finds it in search (#69)', async () => {
+      await boot();
+      seedWallet();
+
+      const saved = await send('PUT', `/api/notes/${WHALE}`, {
+        note: 'Flux paying for its own app deployments',
+        tags: ['team', 'apps']
+      });
+      expect(saved.status).toBe(200);
+
+      const profile = await get(`/api/wallets/${WHALE}`);
+      expect(profile.body.note).toMatchObject({
+        note: 'Flux paying for its own app deployments',
+        tags: ['team', 'apps']
+      });
+
+      // By note text, and by tag; the match carries the note.
+      for (const q of ['own%20app', 'apps']) {
+        const found = await get(`/api/search?q=${q}`);
+        expect(found.body.results, q).toEqual([
+          expect.objectContaining({
+            address: WHALE,
+            note: expect.objectContaining({ tags: ['team', 'apps'] })
+          })
+        ]);
+      }
+
+      expect((await send('PUT', `/api/notes/${WHALE}`, { tags: ['<script>'] })).status).toBe(400);
+      expect((await send('PUT', `/api/notes/${WHALE}`, { note: 'x'.repeat(4_001) })).status).toBe(
+        400
+      );
+      expect((await send('PUT', '/api/notes/nope', { note: 'x' })).status).toBe(400);
+    });
+
+    it('saves a case with five addresses and a graph view, reopens, changes and deletes it (#69)', async () => {
+      await boot();
+      seedWallet();
+      const FIVE = [WHALE, KUCOIN, ...['t1A', 't1B', 't1C'].map((p) => p.padEnd(35, 'Z'))];
+
+      const created = await send('POST', '/api/cases', {
+        name: 'Whale cycling through Kucoin',
+        addresses: FIVE,
+        graph: { root: WHALE, period: '24h', expand: [`${WHALE}:out`] }
+      });
+      expect(created.status).toBe(201);
+      const id = created.body.id as string;
+
+      const opened = await get(`/api/cases/${id}`);
+      expect(opened.body).toMatchObject({
+        name: 'Whale cycling through Kucoin',
+        addresses: FIVE,
+        graph: { root: WHALE, period: '24H', min: 0, expand: [`${WHALE}:out`] }
+      });
+      expect((opened.body.members as { address: string; kind: string }[])[1]).toMatchObject({
+        address: KUCOIN
+      });
+      expect((await get('/api/cases')).body.cases).toEqual([
+        expect.objectContaining({ id, count: 5 })
+      ]);
+      expect((await get(`/api/wallets/${WHALE}`)).body.cases).toEqual([
+        { id, name: 'Whale cycling through Kucoin' }
+      ]);
+
+      expect((await send('PATCH', `/api/cases/${id}`, { name: 'Renamed' })).status).toBe(200);
+      expect((await get(`/api/cases/${id}`)).body).toMatchObject({
+        name: 'Renamed',
+        addresses: FIVE
+      });
+
+      expect((await send('DELETE', `/api/cases/${id}`)).status).toBe(200);
+      expect((await get(`/api/cases/${id}`)).status).toBe(404);
+      expect((await send('DELETE', `/api/cases/${id}`)).status).toBe(404);
+    });
+
+    it('validates cases (#69)', async () => {
+      await boot();
+      for (const bad of [
+        {},
+        { name: '' },
+        { name: 'x', addresses: ['nope'] },
+        { name: 'x', graph: { root: 'nope' } },
+        { name: 'x', graph: { root: WHALE, expand: [`${WHALE}:sideways`] } }
+      ]) {
+        expect((await send('POST', '/api/cases', bad)).status, JSON.stringify(bad)).toBe(400);
+      }
+      expect((await send('PATCH', '/api/cases/none', { name: 'x' })).status).toBe(404);
+      expect((await send('PATCH', '/api/cases/none', {})).status).toBe(400);
     });
 
     it('rejects an unknown leaderboard kind', async () => {
