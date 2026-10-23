@@ -18,6 +18,8 @@
   --text: #191b33;
   --text-muted: #565b80;
   --brand: #7b4ae2;
+  /* Text on a --brand fill: white reads on both the light and the dark brand. */
+  --on-brand: #fff;
   --buy: #0e8fb0;
   --buy-soft: #d3f0f7;
   --sell: #c25a12;
