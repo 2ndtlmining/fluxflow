@@ -17,6 +17,7 @@ import type {
   EntityReport,
   EventsPage,
   FlowGraph,
+  PathResult,
   Foundation,
   HopsResponse,
   FlowSummary,
@@ -205,6 +206,29 @@ export function fetchWalletEvents(
     signal ? { signal } : {}
   );
 }
+
+/** What the path finder (#70) is asked: two wallets and how hard to look. */
+export interface PathQuery {
+  readonly src: string;
+  readonly dst: string;
+  readonly maxHops: number;
+  readonly throughExchanges: boolean;
+  readonly period: PeriodId | null;
+}
+
+export function pathPath(query: PathQuery): string {
+  const params = new URLSearchParams({
+    src: query.src,
+    dst: query.dst,
+    maxHops: String(query.maxHops)
+  });
+  if (query.throughExchanges) params.set('through', 'exchanges');
+  if (query.period) params.set('period', query.period);
+  return `/path?${params.toString()}`;
+}
+
+export const fetchPath = (query: PathQuery, signal?: AbortSignal) =>
+  cachedFetch<PathResult>(pathPath(query), signal);
 
 export function search(query: string, signal?: AbortSignal): Promise<SearchResponse> {
   const params = new URLSearchParams({ q: query, limit: '10' });

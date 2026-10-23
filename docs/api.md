@@ -269,6 +269,55 @@ total. `firstFunder` is the earliest stored transfer into the wallet (`null` if 
 from the Foundation's other wallets. Those moves are never flows, so `incoming` and `outgoing`
 leave them out. It is `null` for every other wallet.
 
+### `GET /api/path`
+
+Path finder (#70): the strongest routes from `src` to `dst`, ranked by their **bottleneck**
+(the smallest hop, which caps how much can have travelled the whole way).
+
+| Query     | Meaning                                                       |
+| --------- | ------------------------------------------------------------- |
+| `src`     | wallet the money starts at (required)                         |
+| `dst`     | wallet it ends at (required)                                  |
+| `maxHops` | 1–6, default 4                                                |
+| `limit`   | paths returned, 1–20, default 5                               |
+| `through` | `exchanges` to pass through exchange wallets (off by default) |
+| `period`  | `24H` … `6M`; everything stored when left out                 |
+
+```json
+{
+  "src": "t1…",
+  "dst": "t3…",
+  "maxHops": 4,
+  "throughExchanges": false,
+  "paths": [
+    {
+      "bottleneck": 1000,
+      "hops": [
+        {
+          "from": "t1…",
+          "to": "t1…",
+          "total": 80000,
+          "count": 1,
+          "first": 1792000000,
+          "last": 1792000000,
+          "internal": true
+        }
+      ]
+    }
+  ],
+  "nodes": { "t1…": { "kind": "foundation", "name": "Flux Foundation" } },
+  "explored": { "forward": 26, "backward": 26 },
+  "trimmed": 3,
+  "truncated": false
+}
+```
+
+Edges are wallet-to-wallet totals from `flows`, plus moves between Foundation wallets
+(`internal: true`), which are never flows but are part of a trail. The search goes
+breadth-first from both ends, takes at most 25 counterparties per wallet and side (largest
+first; `trimmed` counts the wallets that had more) and 1,500 wallets per side; `truncated`
+says when a budget stopped it. Under 250 ms at 6 hops on a synthetic six-month database.
+
 ### `GET /api/wallets/:address/sources` and `/destinations`
 
 `?hops=` (1-4, default 3). Source of funds (everything the wallet received, including coinbase

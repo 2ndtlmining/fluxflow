@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { boardPath, hopsPath, isAddress, isTxid, normaliseBoard, summaryPath } from './endpoints';
+import {
+  boardPath,
+  hopsPath,
+  isAddress,
+  isTxid,
+  normaliseBoard,
+  pathPath,
+  summaryPath
+} from './endpoints';
 import { evidenceText, sourceText, tagEvidenceText, tagLabel } from './format';
 import { compareEvents, MergedPager, type PageFetcher } from './pager';
 import type { FlowEvent, FlowType } from './types';
@@ -345,5 +353,18 @@ describe('labels and confidence (#19)', () => {
       })
     ).toEqual(['8 nodes', '8 Nimbus', '104 rewards received', 'last reward at block 3,004,249']);
     expect(evidenceText(null)).toEqual([]);
+  });
+});
+
+describe('path finder query (#70)', () => {
+  it('asks for two wallets, the hop limit, and only the options that are set', () => {
+    const src = 't1eabPBaLCqNgttQMnAoohPaQM6u2vFwTNJ';
+    const dst = 't3NryfAQLGeFs9jEoeqsxmBN2QLRaRKFLUX';
+    expect(pathPath({ src, dst, maxHops: 4, throughExchanges: false, period: null })).toBe(
+      `/path?src=${src}&dst=${dst}&maxHops=4`
+    );
+    expect(pathPath({ src, dst, maxHops: 6, throughExchanges: true, period: '30D' })).toBe(
+      `/path?src=${src}&dst=${dst}&maxHops=6&through=exchanges&period=30D`
+    );
   });
 });

@@ -53,6 +53,7 @@ import { ResponseCache } from './cache.js';
 import { appPayments, walletCounterparties } from './apps.js';
 import { FUNDS_LIMITS, walletFunds } from './funds.js';
 import { GRAPH_LIMITS, flowGraph } from './graph.js';
+import { findPaths, PATH_LIMITS } from './path.js';
 import { TXID_PATTERN, txDetail } from './tx.js';
 import { BalanceCache, balanceHistory } from './balances.js';
 import {
@@ -1108,6 +1109,30 @@ export function createApiRouter(deps: ApiDependencies): Router {
     );
   });
 
+  /**
+   * Path finder (#70): the strongest routes from one wallet to another within `maxHops`,
+   * including moves between Foundation wallets. Bounded per wallet and per side; see path.ts.
+   */
+  router.get('/path', (req: Request, res: Response) => {
+    const query = pathQuery.safeParse(req.query);
+    if (!query.success) {
+      res.status(400).json({ error: 'Invalid query', message: query.error.issues[0]?.message });
+      return;
+    }
+    const { src, dst, period, maxHops, through, limit } = query.data;
+
+    cache.send(req, res, () =>
+      findPaths(
+        db,
+        named(),
+        src,
+        dst,
+        period ? periodWindow(period) : { fromHeight: 0, toHeight: Number.MAX_SAFE_INTEGER },
+        { maxHops, limit, throughExchanges: through === 'exchanges' }
+      )
+    );
+  });
+
   // ── Balance history (#67) ─────────────────────────────────────────────────
   /**
    * Current balances for a set of addresses. Foundation wallets come from the snapshot the
@@ -1442,6 +1467,19 @@ const counterpartiesQuery = z.object({
 
 const fundsQuery = z.object({
   hops: z.coerce.number().int().min(1).max(FUNDS_LIMITS.maxHops).default(3)
+});
+
+const pathQuery = z.object({
+  src: z.string().regex(ADDRESS_PATTERN, 'src must be a FLUX transparent address'),
+  dst: z.string().regex(ADDRESS_PATTERN, 'dst must be a FLUX transparent address'),
+  maxHops: z.coerce.number().int().min(1).max(PATH_LIMITS.maxHops).default(PATH_LIMITS.defaultHops),
+  limit: z.coerce.number().int().min(1).max(PATH_LIMITS.maxPaths).default(PATH_LIMITS.paths),
+  through: z.enum(['exchanges']).optional(),
+  period: z
+    .string()
+    .transform((value) => value.toUpperCase())
+    .refine(isPeriodId, 'Unknown period')
+    .optional()
 });
 
 const graphQuery = z.object({
