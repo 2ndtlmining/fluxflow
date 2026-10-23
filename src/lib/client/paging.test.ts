@@ -9,6 +9,7 @@ import {
   eventsPath,
   hasFilters,
   readState,
+  transfersHref,
   writeState
 } from './urlState';
 
@@ -85,6 +86,30 @@ describe('URL state (#26, #27, #28)', () => {
     expect(hasFilters(EMPTY_FILTERS)).toBe(false);
     expect(hasFilters({ ...EMPTY_FILTERS, min: 1 })).toBe(true);
     expect(hasFilters({ ...EMPTY_FILTERS, type: 'all' })).toBe(true);
+  });
+
+  it('links a breakdown number to the transfers behind it, keeping the rest of the view', () => {
+    const view = {
+      ...DEFAULTS,
+      period: '30D' as const,
+      who: 'node_operator' as const,
+      filters: { ...EMPTY_FILTERS, min: 500 }
+    };
+
+    // One exchange, one direction; the previous transaction filters are replaced, not merged.
+    expect(transfersHref(view, { type: 'selling', exchange: 'Kucoin' })).toBe(
+      '/?period=30D&who=node_operator&type=selling&exchange=Kucoin#tx-heading'
+    );
+    // One kind of wallet, the other direction.
+    expect(transfersHref(DEFAULTS, { type: 'buying', kind: 'node_operator' })).toBe(
+      '/?type=buying&kind=node_operator#tx-heading'
+    );
+
+    const opened = readState(
+      new URL(transfersHref(view, { type: 'buying', exchange: 'GateIO' }), 'http://x').searchParams
+    );
+    expect(opened.period).toBe('30D');
+    expect(opened.filters).toEqual({ ...EMPTY_FILTERS, type: 'buying', exchange: 'GateIO' });
   });
 });
 

@@ -582,14 +582,16 @@ export function createApiRouter(deps: ApiDependencies): Router {
   }
 
   if (intel) {
+    /*
+     * Starts a full pass and answers at once, like `/admin/sync`: waiting held the request
+     * open for as long as the pass takes, minutes on a 6-month database (#21). Progress and
+     * the outcome are on `/api/intel/status`.
+     */
     router.post('/admin/intel/run', admin, (_req: Request, res: Response) => {
-      void intel.runAll().then(
-        (status) => res.json({ success: true, status }),
-        (error: unknown) => {
-          log.error({ ...serialiseError(error) }, 'intelligence run failed');
-          res.status(500).json({ error: 'Intelligence run failed', message: 'see server logs' });
-        }
-      );
+      void intel.runAll().catch((error: unknown) => {
+        log.error({ ...serialiseError(error) }, 'intelligence run failed');
+      });
+      res.status(202).json({ accepted: true, status: intel.status() });
     });
   }
 

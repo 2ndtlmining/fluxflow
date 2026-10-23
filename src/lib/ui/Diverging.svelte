@@ -1,7 +1,8 @@
 <!--
   The balance axis, per row: deposits to exchanges grow left in amber, withdrawals grow right
   in cyan, on one shared scale so rows compare with each other. Used for exchanges and for
-  participant types.
+  participant types. With `link`, each deposit and withdrawal figure opens the transfers
+  behind it (#28).
 -->
 <script lang="ts">
   import { formatFlux, formatFluxFull } from '$lib/client/format';
@@ -10,9 +11,11 @@
   interface Props {
     rows: DivergingRow[];
     caption: string;
+    /** Where a figure leads: the transfers for that row and direction. */
+    link?: (row: DivergingRow, side: 'selling' | 'buying') => string;
   }
 
-  let { rows, caption }: Props = $props();
+  let { rows, caption, link }: Props = $props();
 
   const scale = $derived(Math.max(1, ...rows.flatMap((row) => [row.sell, row.buy])));
 </script>
@@ -33,7 +36,11 @@
       <tr>
         <th scope="row">{row.label}</th>
         <td class="side left" title="{formatFluxFull(row.sell)} FLUX deposited">
-          <span class="value sell">{row.sell > 0 ? formatFlux(row.sell) : ''}</span>
+          {#if row.sell > 0 && link}
+            <a class="value sell" href={link(row, 'selling')}>{formatFlux(row.sell)}</a>
+          {:else}
+            <span class="value sell">{row.sell > 0 ? formatFlux(row.sell) : ''}</span>
+          {/if}
           <span class="track">
             <span class="bar sell-bar" style:width="{(row.sell / scale) * 100}%"></span>
           </span>
@@ -42,7 +49,11 @@
           <span class="track">
             <span class="bar buy-bar" style:width="{(row.buy / scale) * 100}%"></span>
           </span>
-          <span class="value buy">{row.buy > 0 ? formatFlux(row.buy) : ''}</span>
+          {#if row.buy > 0 && link}
+            <a class="value buy" href={link(row, 'buying')}>{formatFlux(row.buy)}</a>
+          {:else}
+            <span class="value buy">{row.buy > 0 ? formatFlux(row.buy) : ''}</span>
+          {/if}
         </td>
         <td class="net {net < 0 ? 'sell' : net > 0 ? 'buy' : 'muted'}">
           {net === 0 ? '0' : `${net > 0 ? '+' : '−'}${formatFlux(Math.abs(net))}`}
@@ -122,6 +133,16 @@
     width: 4.25rem;
     font-size: var(--step--1);
     font-weight: 500;
+  }
+
+  a.value {
+    color: inherit;
+    text-decoration: underline dotted;
+    text-underline-offset: 0.2em;
+  }
+
+  a.value:hover {
+    text-decoration-style: solid;
   }
 
   .left .value {

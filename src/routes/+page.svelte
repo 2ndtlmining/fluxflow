@@ -30,6 +30,7 @@
   import { kindLabel } from '$lib/client/format';
   import { live } from '$lib/client/live.svelte';
   import type {
+    AddressKind,
     ExchangeHop,
     FlowSummary,
     Foundation,
@@ -39,6 +40,7 @@
   } from '$lib/client/types';
   import {
     readState,
+    transfersHref,
     writeState,
     type BoardKind,
     type Certainty,
@@ -277,7 +279,11 @@
           the right, net on the end{#if excludeHops && hopsComplete}, with exchange hops left out{/if}.
         </p>
       </header>
-      <Diverging rows={exchangeRows} caption="Deposits and withdrawals by exchange" />
+      <Diverging
+        rows={exchangeRows}
+        caption="Deposits and withdrawals by exchange"
+        link={(row, side) => transfersHref(view, { type: side, exchange: row.key })}
+      />
     </section>
   {/if}
 
@@ -287,7 +293,11 @@
         <h2 id="by-kind">By kind of wallet</h2>
         <p class="muted">Who was on the other side of the exchange transfers.</p>
       </header>
-      <Diverging rows={kindRows} caption="Deposits and withdrawals by kind of wallet" />
+      <Diverging
+        rows={kindRows}
+        caption="Deposits and withdrawals by kind of wallet"
+        link={(row, side) => transfersHref(view, { type: side, kind: row.key as AddressKind })}
+      />
     </section>
   {/if}
 

@@ -86,6 +86,8 @@ export class IntelService {
   private timers: NodeJS.Timeout[] = [];
   private watching = false;
   private running = new Set<string>();
+  /** The full pass in flight, so a repeated `runAll` joins it rather than queueing another. */
+  private allRun: Promise<IntelStatus> | null = null;
   private nodeList: {
     list: NodeList;
     source: string;
@@ -230,14 +232,24 @@ export class IntelService {
     return this.nodeList?.list ?? null;
   }
 
-  /** Run every job once, now (`POST /api/admin/intel/run`). */
-  async runAll(): Promise<IntelStatus> {
-    await this.refreshNodes();
-    await this.cluster();
-    this.hopHeight = 0;
-    await this.detectHops();
-    await this.relabel(Number.POSITIVE_INFINITY);
-    return this.status();
+  /**
+   * Run every job once, now (`POST /api/admin/intel/run`). A call while a pass is running
+   * gets that pass, not a second one.
+   */
+  runAll(): Promise<IntelStatus> {
+    this.allRun ??= (async () => {
+      try {
+        await this.refreshNodes();
+        await this.cluster();
+        this.hopHeight = 0;
+        await this.detectHops();
+        await this.relabel(Number.POSITIVE_INFINITY);
+        return this.status();
+      } finally {
+        this.allRun = null;
+      }
+    })();
+    return this.allRun;
   }
 
   /** Drain the relabel queue in budgeted batches; `rounds` caps how many per call. */
