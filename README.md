@@ -302,6 +302,18 @@ What this means in practice:
   Payments through a Foundation intermediary count as the Foundation's own outflow to their
   real destinations.
 
+### Classification coverage
+
+The headline "who is selling" is only as good as the share of exchange volume whose
+counterparty wallet has a kind. FluxFlow measures it after every intelligence pass: the
+share of FLUX moved to or from exchanges in the stored window whose counterparty is
+classified rather than unknown. It is in `/api/intel/status` (`intel.coverage`) and in
+`/api/metrics` as `fluxflow_classified_share`, so a label change shows up as a step in the
+graph. `npm run precision` prints it before and after its own pass on a database copy.
+
+In October 2026 it was **12.3%** of 26.8M FLUX over six months, almost all of it node
+operators: most exchange volume still comes from wallets nobody has identified.
+
 ### Behaviour tags
 
 Labels say **who** a wallet is; behaviour tags say **how it acts**. They are shown as badges

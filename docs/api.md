@@ -499,7 +499,11 @@ Labels carry a confidence: `confirmed` (≥ 0.95), `likely` (≥ 0.7), `possible
   wallets with that tag (`recurring_payer`, `automated`, `collateral_amounts`,
   `dormant_waking`, `peel_chain`; anything else is `400`). `GET /api/wallets/:address` adds
   `tags: [{tag, evidence, updatedAt}]`, and `GET /api/intel/status` adds
-  `behaviour: {at, ms, tags}` (wallets per tag after the last pass). Tags never change a
+  `behaviour: {at, ms, tags}` (wallets per tag after the last pass), and
+  `coverage: {volume, classified, share, byKind, at}` (#20): exchange volume in the stored
+  window, the part with a classified counterparty, and the share (`null` with no volume).
+  `/api/metrics` exposes it as `fluxflow_classified_share` and
+  `fluxflow_exchange_volume_flux{classified="yes"|"no"}`. Tags never change a
   label, a kind or a flow.
 - `GET /api/wallets/:address` adds `label` (the one that classifies its flows, or `null`),
   `labels[]` (every label on record with `source`, `confidence`, `level`, `applied`,

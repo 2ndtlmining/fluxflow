@@ -29,6 +29,7 @@ import { clusterAddresses, storeCandidates } from '../src/lib/server/intel/clust
 import { detectHops, summariseHops } from '../src/lib/server/intel/hops.js';
 import { Relabeler } from '../src/lib/server/intel/relabel.js';
 import { precisionReport } from '../src/lib/server/intel/precision.js';
+import { classificationCoverage } from '../src/lib/server/intel/coverage.js';
 import { rollupMismatchCount } from '../src/lib/server/intel/consistency.js';
 
 const args = process.argv.slice(2);
@@ -60,6 +61,9 @@ const time = <T>(label: string, work: () => T): T => {
 
 const migrated = time('migrate', () => migrate(db));
 const labels = time('labels', () => loadLabels(db, config, silentLogger()));
+// The share of exchange volume with a classified counterparty as stored, before this pass
+// re-derives anything (#20); compared with the same figure after it below.
+const coverageBefore = time('coverage before', () => classificationCoverage(db));
 
 const nodesArg = option('nodes');
 const list = nodesArg
@@ -166,6 +170,7 @@ console.log(
         )
         .all(),
       precision: report,
+      coverage: { before: coverageBefore, after: classificationCoverage(db) },
       timingsMs: timings
     },
     null,
