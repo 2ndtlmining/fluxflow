@@ -183,14 +183,16 @@ export function deriveFlows(
  *
  * A transfer between two Foundation wallets produces no flow at all: moving money between
  * its own wallets is neither buying nor selling, and counted as p2p it dwarfed every real
- * p2p figure (#31).
+ * p2p figure (#31). `keepInternal` keeps those rows, for reporting such moves on their own
+ * (a Foundation wallet's page); they are never stored as flows.
  */
 export function flowsFromDeltas(
   txid: string,
   height: number,
   time: number,
   values: readonly { address: string; satIn: number; satOut: number }[],
-  resolve: Resolver
+  resolve: Resolver,
+  options: { keepInternal?: boolean } = {}
 ): FlowRow[] {
   const deltas = [...values].sort((a, b) =>
     a.address < b.address ? -1 : a.address > b.address ? 1 : 0
@@ -223,7 +225,8 @@ export function flowsFromDeltas(
     payers.forEach((from, f) => {
       const sat = shares[f]!;
       const fromKind = fromKinds[f]!;
-      if (sat <= 0 || (fromKind === 'foundation' && toKind === 'foundation')) return;
+      const internal = fromKind === 'foundation' && toKind === 'foundation';
+      if (sat <= 0 || (internal && !options.keepInternal)) return;
 
       rows.push({
         txid,

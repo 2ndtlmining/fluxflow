@@ -43,6 +43,11 @@
 
   let profile = $state<WalletProfile | null>(null);
   let parties = $state<WalletCounterparties | null>(null);
+  const internalMoves = $derived(
+    (parties?.foundationMoves?.incoming.count ?? 0) +
+      (parties?.foundationMoves?.outgoing.count ?? 0) >
+      0
+  );
   let missing = $state(false);
   let error = $state<string | null>(null);
   let watched = $state(false);
@@ -299,7 +304,7 @@
 
       <BalancePanel key={address} load={(signal) => fetchBalance(address, signal)} />
 
-      {#if parties && (parties.incoming.count > 0 || parties.outgoing.count > 0)}
+      {#if parties && (parties.incoming.count > 0 || parties.outgoing.count > 0 || internalMoves)}
         <section aria-labelledby="parties-heading" class="block">
           <h2 id="parties-heading">Who it deals with</h2>
           <ul class="headline">
@@ -367,6 +372,54 @@
               {/if}
             </div>
           </div>
+          {#if internalMoves && parties.foundationMoves}
+            {@const moves = parties.foundationMoves}
+            <h3 class="internal-heading">Between Foundation wallets</h3>
+            <p class="muted small">
+              Moves between the Foundation's own wallets are not counted as transfers anywhere else
+              on FluxFlow, so they are listed here on their own.
+            </p>
+            <div class="sides">
+              <div>
+                <h4>
+                  Received from
+                  <span class="muted small">
+                    {formatCount(moves.incoming.distinct)}
+                    {moves.incoming.distinct === 1 ? 'wallet' : 'wallets'},
+                    {formatFlux(moves.incoming.total)} FLUX
+                  </span>
+                </h4>
+                {#if moves.incoming.parties.length > 0}
+                  <PartyTable
+                    parties={moves.incoming.parties}
+                    column="From"
+                    caption="Foundation wallets that sent FLUX to this one, largest first"
+                  />
+                {:else}
+                  <p class="muted small">Nothing received from other Foundation wallets.</p>
+                {/if}
+              </div>
+              <div>
+                <h4>
+                  Sent to
+                  <span class="muted small">
+                    {formatCount(moves.outgoing.distinct)}
+                    {moves.outgoing.distinct === 1 ? 'wallet' : 'wallets'},
+                    {formatFlux(moves.outgoing.total)} FLUX
+                  </span>
+                </h4>
+                {#if moves.outgoing.parties.length > 0}
+                  <PartyTable
+                    parties={moves.outgoing.parties}
+                    column="To"
+                    caption="Foundation wallets this one sent FLUX to, largest first"
+                  />
+                {:else}
+                  <p class="muted small">Nothing sent to other Foundation wallets.</p>
+                {/if}
+              </div>
+            </div>
+          {/if}
           <p class="muted small">
             Within the stored window. Click a wallet to follow the money a step further.
           </p>
@@ -592,13 +645,18 @@
     gap: 1.25rem 2rem;
   }
 
-  h3 {
+  h3,
+  h4 {
     display: flex;
     flex-wrap: wrap;
     align-items: baseline;
     gap: 0.25rem 0.6rem;
     margin: 0 0 0.25rem;
     font-size: var(--step-0);
+  }
+
+  .internal-heading {
+    margin-top: 1.5rem;
   }
 
   .history-head {
