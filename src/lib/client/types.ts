@@ -92,6 +92,18 @@ export interface Counterparty {
   readonly level: ConfidenceLevel | null;
   /** Where the label came from, e.g. `node_list`, `forwarding`, `config`. */
   readonly labelSource: string | null;
+  /** Behaviour tags (#68); empty from an older server. */
+  readonly tags: BehaviourTagName[];
+}
+
+/** How a wallet behaves (#68): informational, never part of its kind. */
+export type BehaviourTagName =
+  'recurring_payer' | 'automated' | 'collateral_amounts' | 'dormant_waking' | 'peel_chain';
+
+export interface BehaviourTag {
+  readonly tag: BehaviourTagName;
+  readonly evidence: Record<string, unknown>;
+  readonly updatedAt: number;
 }
 
 /** Confidence bands (#19): confirmed ≥ 0.95, likely ≥ 0.7, possible ≥ 0.45. */
@@ -244,6 +256,8 @@ export interface WalletProfile {
   readonly cluster?: { clusterId: string; size: number; sample: string[] } | null;
   /** The entity this address belongs to (#65), if any. */
   readonly entity?: EntityRef | null;
+  /** Behaviour tags with their evidence (#68); absent from an older server. */
+  readonly tags?: BehaviourTag[];
   readonly candidates?: WalletLabel[];
   readonly totals: {
     readonly bought: number;

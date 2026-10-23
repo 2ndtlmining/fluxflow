@@ -8,6 +8,7 @@
  */
 
 import type { Db } from '../db/database.js';
+import type { BehaviourTagName } from '../intel/behaviour.js';
 import { WALLET_LEVELS } from '../db/migrations.js';
 import { SATS_PER_FLUX } from '../ingest/datasource/types.js';
 import { decompose } from './ranges.js';
@@ -78,17 +79,33 @@ export function leaderboard(
   db: Db,
   range: TimeRange,
   flowType: Direction,
-  options: { limit?: number; kind?: LeaderboardKind } = {}
+  options: { limit?: number; kind?: LeaderboardKind; tag?: BehaviourTagName } = {}
 ): Leaderboard {
   const limit = Math.min(Math.max(1, Math.trunc(options.limit ?? 10) || 1), 100);
   const rawFrom = rawCoverageFrom(db);
 
-  const kindFilter = options.kind
-    ? {
-        rollupWhere: { sql: 'AND kind = ?', params: [options.kind] },
-        rawWhere: { sql: `AND ${KIND} = ?`, params: [options.kind] }
-      }
-    : {};
+  // `?kind=` and the behaviour tag (#68) narrow both the rollup rows and the raw ones.
+  const rollupSql: string[] = [];
+  const rawSql: string[] = [];
+  const params: string[] = [];
+  if (options.kind) {
+    rollupSql.push('AND kind = ?');
+    rawSql.push(`AND ${KIND} = ?`);
+    params.push(options.kind);
+  }
+  if (options.tag) {
+    const tagged = 'IN (SELECT address FROM behaviour_tags WHERE tag = ?)';
+    rollupSql.push(`AND address ${tagged}`);
+    rawSql.push(`AND ${ADDRESS} ${tagged}`);
+    params.push(options.tag);
+  }
+  const kindFilter =
+    params.length > 0
+      ? {
+          rollupWhere: { sql: rollupSql.join(' '), params },
+          rawWhere: { sql: rawSql.join(' '), params }
+        }
+      : {};
 
   const union = unionOver(
     decompose(range.fromTime, range.toTime, {

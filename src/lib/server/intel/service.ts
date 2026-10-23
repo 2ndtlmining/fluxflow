@@ -29,6 +29,13 @@ import type { HttpRequestOptions } from '../http.js';
 import type { SyncService } from '../ingest/sync.js';
 import { APPLY_MIN_CONFIDENCE, replaceSourceLabels, type LabelLookup } from '../labels.js';
 import { serialiseError } from '../logger.js';
+import {
+  BEHAVIOUR_TAGS,
+  DETECTORS,
+  replaceBehaviourTags,
+  type BehaviourTag,
+  type BehaviourTagName
+} from './behaviour.js';
 import { clusterAddresses, storeCandidates, type ClusterResult } from './clusters.js';
 import { fetchBalances, type BalanceSnapshot } from './foundation.js';
 import { detectDepositForwarders } from './forwarders.js';
@@ -69,6 +76,12 @@ export interface IntelStatus {
     forwarders: number;
   } | null;
   readonly hops: { at: number; total: number } | null;
+  /** Behaviour tags (#68): wallets per tag after the last pass, and how long it took. */
+  readonly behaviour: {
+    at: number;
+    ms: number;
+    tags: Partial<Record<BehaviourTagName, number>>;
+  } | null;
   readonly lastError: string | null;
 }
 
@@ -97,6 +110,7 @@ export class IntelService {
   private nodeCounts: IntelStatus['nodeOperators'] = null;
   private clustering: IntelStatus['clustering'] = null;
   private hops: IntelStatus['hops'] = null;
+  private behaviour: IntelStatus['behaviour'] = null;
   private hopHeight = 0;
   private lastError: string | null = null;
   private balances: BalanceSnapshot | null = null;
@@ -127,6 +141,7 @@ export class IntelService {
     every(config.nodeRefreshSeconds * 1000, () => this.refreshNodes());
     every(config.intel.clusterSeconds * 1000, () => this.cluster());
     every(HOP_INTERVAL_MS, () => this.detectHops());
+    every(config.intel.clusterSeconds * 1000, () => this.tagBehaviour());
     every(FOUNDATION_REFRESH_MS, () => this.refreshFoundation());
     if (config.dataSources.fluxNodeUrl) every(BALANCE_INTERVAL_MS, () => this.refreshBalances());
 
@@ -134,7 +149,8 @@ export class IntelService {
     const soon = setTimeout(() => {
       void this.refreshNodes()
         .then(() => this.cluster())
-        .then(() => this.detectHops());
+        .then(() => this.detectHops())
+        .then(() => this.tagBehaviour());
       void this.refreshBalances();
     }, 5_000);
     soon.unref?.();
@@ -166,6 +182,7 @@ export class IntelService {
       nodeOperators: this.nodeCounts,
       clustering: this.clustering,
       hops: this.hops,
+      behaviour: this.behaviour,
       lastError: this.lastError
     };
   }
@@ -244,6 +261,7 @@ export class IntelService {
         this.hopHeight = 0;
         await this.detectHops();
         await this.relabel(Number.POSITIVE_INFINITY);
+        await this.tagBehaviour();
         return this.status();
       } finally {
         this.allRun = null;
@@ -396,6 +414,28 @@ export class IntelService {
         at: Date.now(),
         total: db.prepare<[], { n: number }>(`SELECT COUNT(*) AS n FROM exchange_hops`).get()!.n
       };
+    });
+  }
+
+  /**
+   * Recompute behaviour tags (#68). Each detector runs in its own exclusive section, with
+   * requests let in between: together they take seconds on a 6-month database.
+   */
+  async tagBehaviour(): Promise<void> {
+    await this.guard('behaviour', async () => {
+      const { db, log } = this.options;
+      const started = Date.now();
+      const tags: BehaviourTag[] = [];
+      for (const tag of BEHAVIOUR_TAGS) {
+        tags.push(...(await this.exclusive(() => DETECTORS[tag](db))));
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+      const changed = await this.exclusive(() => replaceBehaviourTags(db, tags));
+
+      const counts: Partial<Record<BehaviourTagName, number>> = {};
+      for (const row of tags) counts[row.tag] = (counts[row.tag] ?? 0) + 1;
+      this.behaviour = { at: Date.now(), ms: Date.now() - started, tags: counts };
+      log.info({ ...this.behaviour, changed }, 'behaviour tags computed');
     });
   }
 

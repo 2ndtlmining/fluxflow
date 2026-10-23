@@ -7,7 +7,7 @@
  */
 
 import { DEFAULT_PERIOD, isPeriodId, type PeriodId } from '$lib/shared/constants';
-import type { AddressKind, FlowType } from './types';
+import type { AddressKind, BehaviourTagName, FlowType } from './types';
 
 /**
  * What the transactions explorer lists. `exchange` (the default) is buying and selling
@@ -36,6 +36,8 @@ export interface DashboardState {
   readonly sure: Certainty;
   /** Leave exchange-to-exchange hops out of the headline and breakdowns (#20). */
   readonly noHops: boolean;
+  /** Narrow the leaderboards to wallets with one behaviour tag (#68); '' means any. */
+  readonly tag: BehaviourTagName | '';
   readonly filters: TxFilters;
 }
 
@@ -51,6 +53,13 @@ const KINDS: readonly string[] = [
 ];
 const BOARD_KINDS: readonly string[] = ['unknown', 'node_operator', 'foundation'];
 const CERTAINTIES: readonly string[] = ['confirmed', 'likely', 'possible'];
+const TAGS: readonly string[] = [
+  'recurring_payer',
+  'automated',
+  'collateral_amounts',
+  'dormant_waking',
+  'peel_chain'
+];
 
 /** Parse, ignoring anything malformed rather than failing: a bad link still opens the page. */
 export function readState(params: URLSearchParams): DashboardState {
@@ -59,6 +68,7 @@ export function readState(params: URLSearchParams): DashboardState {
   const kind = params.get('kind') ?? '';
   const who = params.get('who') ?? '';
   const sure = params.get('minConfidence') ?? '';
+  const tag = params.get('tag') ?? '';
   const exchange = (params.get('exchange') ?? '').slice(0, 40);
   const min = Number(params.get('min'));
 
@@ -68,6 +78,7 @@ export function readState(params: URLSearchParams): DashboardState {
     // A confidence filter on unlabelled wallets would always be empty, so it needs a kind.
     sure: CERTAINTIES.includes(sure) && who && who !== 'unknown' ? (sure as Certainty) : '',
     noHops: params.get('hops') === 'exclude',
+    tag: TAGS.includes(tag) ? (tag as BehaviourTagName) : '',
     filters: {
       type: VIEWS.includes(type) ? (type as TxView) : 'exchange',
       kind: KINDS.includes(kind) ? (kind as AddressKind) : '',
@@ -84,6 +95,7 @@ export function writeState(state: DashboardState): string {
   if (state.who) params.set('who', state.who);
   if (state.sure && state.who && state.who !== 'unknown') params.set('minConfidence', state.sure);
   if (state.noHops) params.set('hops', 'exclude');
+  if (state.tag) params.set('tag', state.tag);
   if (state.filters.type !== 'exchange') params.set('type', state.filters.type);
   if (state.filters.kind) params.set('kind', state.filters.kind);
   if (state.filters.exchange) params.set('exchange', state.filters.exchange);

@@ -11,6 +11,7 @@
     formatSigned,
     kindLabel,
     shortAddress,
+    tagLabel,
     timeAgo
   } from '$lib/client/format';
   import type { Counterparty, ExchangeHop } from '$lib/client/types';
@@ -91,6 +92,9 @@
                   confidence={row.confidence}
                 /></span
               >
+              {#each row.tags as tag (tag)}
+                <span class="tag">{tagLabel(tag)}</span>
+              {/each}
               {#if hops?.has(row.address)}
                 {@const hop = hops.get(row.address)!}
                 <span
@@ -226,6 +230,17 @@
     padding: 0 0.4rem;
     border-radius: 999px;
     background: var(--surface-2);
+    color: var(--text);
+    font-size: 0.7rem;
+    white-space: nowrap;
+  }
+
+  /* Behaviour tags (#68): outlined, so they never read as the wallet's kind. */
+  .tag {
+    flex: 0 0 auto;
+    padding: 0 0.4rem;
+    border: 1px solid var(--line);
+    border-radius: 999px;
     color: var(--text);
     font-size: 0.7rem;
     white-space: nowrap;

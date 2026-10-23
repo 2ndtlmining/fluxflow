@@ -24,7 +24,9 @@
     formatSigned,
     formatTime,
     kindLabel,
-    shortAddress
+    shortAddress,
+    tagEvidenceText,
+    tagLabel
   } from '$lib/client/format';
   import { live } from '$lib/client/live.svelte';
   import type { FlowEvent, FlowType, WalletCounterparties, WalletProfile } from '$lib/client/types';
@@ -282,6 +284,24 @@
           </div>
         {/if}
       </dl>
+
+      {#if profile.tags && profile.tags.length > 0}
+        <section aria-labelledby="behaviour-heading" class="behaviour">
+          <h2 id="behaviour-heading" class="visually-hidden">How it behaves</h2>
+          <ul>
+            {#each profile.tags as tag (tag.tag)}
+              <li>
+                <span class="tag">{tagLabel(tag.tag)}</span>
+                <span class="muted small">{tagEvidenceText(tag.tag, tag.evidence)}</span>
+              </li>
+            {/each}
+          </ul>
+          <p class="muted small">
+            How this wallet behaves in the stored window. Informational: it never changes how its
+            transfers are counted.
+          </p>
+        </section>
+      {/if}
 
       {#if profile.totals.p2pIn > 0 || profile.totals.p2pOut > 0}
         <p class="muted small">
@@ -584,6 +604,30 @@
     margin: 0;
     padding: 0;
     list-style: none;
+  }
+
+  .behaviour ul {
+    display: grid;
+    gap: 0.35rem;
+    margin: 0 0 0.25rem;
+    padding: 0;
+    list-style: none;
+  }
+
+  .behaviour li {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 0.25rem 0.6rem;
+  }
+
+  .tag {
+    padding: 0 0.5rem;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    font-size: var(--step--1);
+    font-weight: 500;
+    white-space: nowrap;
   }
 
   .sides {

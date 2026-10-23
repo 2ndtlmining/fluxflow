@@ -10,6 +10,7 @@ import { apiFetch, cachedFetch } from './api';
 import type {
   AppPayments,
   BalanceHistory,
+  BehaviourTagName,
   ClusterSummary,
   Counterparty,
   EntityList,
@@ -38,11 +39,13 @@ export function boardPath(
   period: PeriodId,
   side: 'buyers' | 'sellers',
   who: BoardKind,
-  sure: Certainty = ''
+  sure: Certainty = '',
+  tag: BehaviourTagName | '' = ''
 ): string {
   const params = new URLSearchParams({ limit: '10' });
   if (who) params.set('kind', who);
   if (sure) params.set('minConfidence', sure);
+  if (tag) params.set('tag', tag);
   return `/flow/${period}/${side}?${params.toString()}`;
 }
 
@@ -128,9 +131,13 @@ export const fetchBoard = async (
   side: 'buyers' | 'sellers',
   who: BoardKind,
   sure: Certainty,
+  tag: BehaviourTagName | '',
   signal?: AbortSignal
 ): Promise<Leaderboard> =>
-  normaliseBoard(await cachedFetch<Leaderboard>(boardPath(period, side, who, sure), signal), side);
+  normaliseBoard(
+    await cachedFetch<Leaderboard>(boardPath(period, side, who, sure, tag), signal),
+    side
+  );
 
 /**
  * Fill in leaderboard fields an older server does not send (#28 added rank, share,
@@ -162,7 +169,8 @@ export function normaliseBoard(board: Leaderboard, side: 'buyers' | 'sellers'): 
     change: row.change ?? Number.NaN,
     confidence: row.confidence ?? null,
     level: row.level ?? null,
-    labelSource: row.labelSource ?? null
+    labelSource: row.labelSource ?? null,
+    tags: row.tags ?? []
   }));
 
   return { ...board, total, [side]: normalised };

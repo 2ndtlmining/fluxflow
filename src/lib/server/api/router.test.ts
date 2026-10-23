@@ -1,4 +1,5 @@
 import express from 'express';
+import { replaceBehaviourTags } from '../intel/behaviour.js';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { FailoverDataSource } from '../ingest/datasource/circuitbreaker.js';
 import { loadLabels } from '../labels.js';
@@ -421,6 +422,51 @@ describe('api router', () => {
         exchanges: [{ name: 'Kucoin', total: 200, count: 1 }]
       });
       expect(first).toHaveProperty('name');
+    });
+
+    it('shows behaviour tags on leaderboard rows and filters by them (#68)', async () => {
+      await boot();
+      seedWallet();
+      const OTHER = 't1Other'.padEnd(35, 'D');
+      seedFlows(db, [
+        {
+          txid: 'w3',
+          height: 21,
+          time: NOW,
+          fromAddress: OTHER,
+          fromKind: 'unknown',
+          toAddress: KUCOIN,
+          toKind: 'exchange',
+          flowType: 'selling',
+          exchange: 'Kucoin',
+          amountFlux: 900
+        }
+      ]);
+      replaceBehaviourTags(db, [
+        { address: WHALE, tag: 'automated', evidence: { sends: 150 } },
+        { address: WHALE, tag: 'recurring_payer', evidence: { payments: 40 } }
+      ]);
+
+      const all = await get('/api/flow/24H/sellers');
+      const rows = all.body.sellers as { address: string; tags: string[] }[];
+      expect(rows.map((row) => [row.address, row.tags])).toEqual([
+        [OTHER, []],
+        [WHALE, ['recurring_payer', 'automated']]
+      ]);
+
+      const tagged = await get('/api/flow/24H/sellers?tag=automated');
+      expect(tagged.body.tag).toBe('automated');
+      expect((tagged.body.sellers as { address: string }[]).map((row) => row.address)).toEqual([
+        WHALE
+      ]);
+
+      expect((await get('/api/flow/24H/sellers?tag=whale')).status).toBe(400);
+
+      const profile = await get(`/api/wallets/${WHALE}`);
+      expect(profile.body.tags).toEqual([
+        expect.objectContaining({ tag: 'recurring_payer', evidence: { payments: 40 } }),
+        expect.objectContaining({ tag: 'automated', evidence: { sends: 150 } })
+      ]);
     });
 
     it('rejects an unknown leaderboard kind', async () => {
