@@ -29,6 +29,12 @@ export interface TxFilters {
   readonly min: number;
 }
 
+/** A span picked on the over-time chart (#29): `[from, to)` in unix seconds. */
+export interface TimeSpan {
+  readonly from: number;
+  readonly to: number;
+}
+
 export interface DashboardState {
   readonly period: PeriodId;
   readonly who: BoardKind;
@@ -38,6 +44,8 @@ export interface DashboardState {
   readonly noHops: boolean;
   /** Narrow the leaderboards to wallets with one behaviour tag (#68); '' means any. */
   readonly tag: BehaviourTagName | '';
+  /** A span inside the period that narrows everything but the chart (#29); null for all of it. */
+  readonly range: TimeSpan | null;
   readonly filters: TxFilters;
 }
 
@@ -69,6 +77,8 @@ export function readState(params: URLSearchParams): DashboardState {
   const who = params.get('who') ?? '';
   const sure = params.get('minConfidence') ?? '';
   const tag = params.get('tag') ?? '';
+  const from = Number(params.get('from'));
+  const to = Number(params.get('to'));
   const exchange = (params.get('exchange') ?? '').slice(0, 40);
   const min = Number(params.get('min'));
 
@@ -79,6 +89,8 @@ export function readState(params: URLSearchParams): DashboardState {
     sure: CERTAINTIES.includes(sure) && who && who !== 'unknown' ? (sure as Certainty) : '',
     noHops: params.get('hops') === 'exclude',
     tag: TAGS.includes(tag) ? (tag as BehaviourTagName) : '',
+    range:
+      Number.isInteger(from) && Number.isInteger(to) && from > 0 && from < to ? { from, to } : null,
     filters: {
       type: VIEWS.includes(type) ? (type as TxView) : 'exchange',
       kind: KINDS.includes(kind) ? (kind as AddressKind) : '',
@@ -96,6 +108,10 @@ export function writeState(state: DashboardState): string {
   if (state.sure && state.who && state.who !== 'unknown') params.set('minConfidence', state.sure);
   if (state.noHops) params.set('hops', 'exclude');
   if (state.tag) params.set('tag', state.tag);
+  if (state.range) {
+    params.set('from', String(state.range.from));
+    params.set('to', String(state.range.to));
+  }
   if (state.filters.type !== 'exchange') params.set('type', state.filters.type);
   if (state.filters.kind) params.set('kind', state.filters.kind);
   if (state.filters.exchange) params.set('exchange', state.filters.exchange);
@@ -128,9 +144,10 @@ export function eventsPath(
   period: PeriodId,
   direction: FlowType | null,
   filters: TxFilters,
-  options: { cursor?: string | null; limit?: number } = {}
+  options: { cursor?: string | null; limit?: number; range?: TimeSpan | null } = {}
 ): string {
   const params = new URLSearchParams();
+  withRange(params, options.range ?? null);
   if (direction) params.set('type', direction);
   if (filters.kind) params.set('kind', filters.kind);
   if (filters.exchange) params.set('exchange', filters.exchange);
@@ -138,6 +155,15 @@ export function eventsPath(
   params.set('limit', String(options.limit ?? 50));
   if (options.cursor) params.set('cursor', options.cursor);
   return `/flow/${period}/events?${params.toString()}`;
+}
+
+/** Add a picked span (#29) to an API query. */
+export function withRange(params: URLSearchParams, range: TimeSpan | null): URLSearchParams {
+  if (range) {
+    params.set('from', String(range.from));
+    params.set('to', String(range.to));
+  }
+  return params;
 }
 
 export function hasFilters(filters: TxFilters): boolean {

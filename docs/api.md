@@ -59,6 +59,13 @@ blocks of the tip. Times are unix seconds; `ingest.networkTip` is the same tip, 
 Totals per direction, by counterparty kind and by exchange, plus the same figures for the
 equally long window before this one.
 
+**A span inside the period (#29).** `?from=&to=` (unix seconds, `from < to`, both or neither)
+narrows this endpoint, the leaderboards (`/buyers`, `/sellers`), `/events` and `/hops` to
+`[from, to)`. The span is clamped to the period and to the oldest stored block, and each
+response reports what it covers as `range: {from, to}` (`null` without one). A malformed
+span, or one that does not overlap the period, is `400`. The "before" figures then cover the
+equally long span just before it. `/series` and `/foundation` always cover the whole period.
+
 ```json
 {
   "period": "7D",

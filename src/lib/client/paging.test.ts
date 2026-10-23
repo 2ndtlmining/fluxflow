@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { boardPath, isAddress, isTxid, normaliseBoard } from './endpoints';
+import { boardPath, hopsPath, isAddress, isTxid, normaliseBoard, summaryPath } from './endpoints';
 import { evidenceText, sourceText, tagEvidenceText, tagLabel } from './format';
 import { compareEvents, MergedPager, type PageFetcher } from './pager';
 import type { FlowEvent, FlowType } from './types';
@@ -20,6 +20,7 @@ describe('URL state (#26, #27, #28)', () => {
     sure: '' as const,
     noHops: false,
     tag: '' as const,
+    range: null,
     filters: EMPTY_FILTERS
   };
 
@@ -30,6 +31,7 @@ describe('URL state (#26, #27, #28)', () => {
       sure: 'likely' as const,
       noHops: true,
       tag: 'automated' as const,
+      range: { from: 1_792_000_000, to: 1_792_086_400 },
       filters: {
         type: 'selling' as const,
         kind: 'node_operator' as const,
@@ -262,6 +264,33 @@ describe('labels and confidence (#19)', () => {
       '/flow/7D/sellers?limit=10&kind=node_operator&minConfidence=likely'
     );
     expect(boardPath('7D', 'buyers', '')).toBe('/flow/7D/buyers?limit=10');
+  });
+
+  it('carries a span picked on the chart into the URL and every API path (#29)', () => {
+    const range = { from: 1_792_000_000, to: 1_792_086_400 };
+    expect(readState(new URLSearchParams('from=1792000000&to=1792086400')).range).toEqual(range);
+    // Backwards, partial or junk spans are ignored rather than sent to the API.
+    for (const bad of ['from=1792086400&to=1792000000', 'from=1792000000', 'from=x&to=y']) {
+      expect(readState(new URLSearchParams(bad)).range, bad).toBeNull();
+    }
+
+    expect(summaryPath('30D', range)).toBe('/flow/30D?from=1792000000&to=1792086400');
+    expect(summaryPath('30D')).toBe('/flow/30D');
+    expect(hopsPath('30D', range)).toBe('/flow/30D/hops?from=1792000000&to=1792086400');
+    expect(boardPath('30D', 'sellers', '', '', '', range)).toBe(
+      '/flow/30D/sellers?limit=10&from=1792000000&to=1792086400'
+    );
+    expect(eventsPath('30D', 'selling', EMPTY_FILTERS, { limit: 50, range })).toBe(
+      '/flow/30D/events?from=1792000000&to=1792086400&type=selling&limit=50'
+    );
+
+    // A breakdown link keeps the span, so it opens the transfers behind the figure shown.
+    expect(
+      transfersHref(
+        { ...readState(new URLSearchParams()), period: '30D', range },
+        { type: 'selling' }
+      )
+    ).toBe('/?period=30D&from=1792000000&to=1792086400&type=selling#tx-heading');
   });
 
   it('narrows the leaderboards by behaviour tag, and ignores an unknown one in a link (#68)', () => {

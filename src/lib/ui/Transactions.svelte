@@ -23,6 +23,7 @@
     eventsPath,
     hasFilters,
     EMPTY_FILTERS,
+    type TimeSpan,
     type TxFilters
   } from '$lib/client/urlState';
   import type { PeriodId } from '$lib/shared/constants';
@@ -30,12 +31,14 @@
 
   interface Props {
     period: PeriodId;
+    /** A span picked on the chart (#29); null for the whole period. */
+    range?: TimeSpan | null;
     filters: TxFilters;
     exchanges: string[];
     onfilters: (filters: TxFilters) => void;
   }
 
-  let { period, filters, exchanges, onfilters }: Props = $props();
+  let { period, range = null, filters, exchanges, onfilters }: Props = $props();
 
   const PAGE = 50;
   const EXPORT_PAGE = 500;
@@ -60,7 +63,7 @@
       directionsFor(filters.type).map(
         (direction) => (cursor: string | null) =>
           apiFetch<EventsPage>(
-            eventsPath(period, direction, filters, { cursor, limit }),
+            eventsPath(period, direction, filters, { cursor, limit, range }),
             signal ? { signal } : {}
           )
       )
@@ -76,6 +79,7 @@
   // aborted, so a slow answer can never overwrite a newer one (#26).
   $effect(() => {
     void period;
+    void range;
     void filters;
     controller?.abort();
     const current = new AbortController();

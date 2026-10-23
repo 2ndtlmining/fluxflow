@@ -29,10 +29,16 @@ import type {
   WalletFunds,
   WalletProfile
 } from './types';
-import type { BoardKind, Certainty } from './urlState';
+import { withRange, type BoardKind, type Certainty, type TimeSpan } from './urlState';
 
-export function summaryPath(period: PeriodId): string {
-  return `/flow/${period}`;
+/** `path`, with the picked span (#29) as a query when there is one. */
+function spanned(path: string, range: TimeSpan | null): string {
+  const query = withRange(new URLSearchParams(), range).toString();
+  return query ? `${path}?${query}` : path;
+}
+
+export function summaryPath(period: PeriodId, range: TimeSpan | null = null): string {
+  return spanned(`/flow/${period}`, range);
 }
 
 export function boardPath(
@@ -40,17 +46,19 @@ export function boardPath(
   side: 'buyers' | 'sellers',
   who: BoardKind,
   sure: Certainty = '',
-  tag: BehaviourTagName | '' = ''
+  tag: BehaviourTagName | '' = '',
+  range: TimeSpan | null = null
 ): string {
   const params = new URLSearchParams({ limit: '10' });
   if (who) params.set('kind', who);
   if (sure) params.set('minConfidence', sure);
   if (tag) params.set('tag', tag);
+  withRange(params, range);
   return `/flow/${period}/${side}?${params.toString()}`;
 }
 
-export function hopsPath(period: PeriodId): string {
-  return `/flow/${period}/hops`;
+export function hopsPath(period: PeriodId, range: TimeSpan | null = null): string {
+  return spanned(`/flow/${period}/hops`, range);
 }
 
 export function foundationPath(period: PeriodId): string {
@@ -113,8 +121,8 @@ export const fetchClusters = (unnamed: boolean, signal?: AbortSignal) =>
     signal
   );
 
-export const fetchHops = (period: PeriodId, signal?: AbortSignal) =>
-  cachedFetch<HopsResponse>(hopsPath(period), signal);
+export const fetchHops = (period: PeriodId, range: TimeSpan | null, signal?: AbortSignal) =>
+  cachedFetch<HopsResponse>(hopsPath(period, range), signal);
 
 export const fetchFoundation = (period: PeriodId, signal?: AbortSignal) =>
   cachedFetch<Foundation>(foundationPath(period), signal);
@@ -123,8 +131,8 @@ export function seriesPath(period: PeriodId): string {
   return `/flow/${period}/series`;
 }
 
-export const fetchSummary = (period: PeriodId, signal?: AbortSignal) =>
-  cachedFetch<FlowSummary>(summaryPath(period), signal);
+export const fetchSummary = (period: PeriodId, range: TimeSpan | null, signal?: AbortSignal) =>
+  cachedFetch<FlowSummary>(summaryPath(period, range), signal);
 
 export const fetchBoard = async (
   period: PeriodId,
@@ -132,10 +140,11 @@ export const fetchBoard = async (
   who: BoardKind,
   sure: Certainty,
   tag: BehaviourTagName | '',
+  range: TimeSpan | null,
   signal?: AbortSignal
 ): Promise<Leaderboard> =>
   normaliseBoard(
-    await cachedFetch<Leaderboard>(boardPath(period, side, who, sure, tag), signal),
+    await cachedFetch<Leaderboard>(boardPath(period, side, who, sure, tag, range), signal),
     side
   );
 
