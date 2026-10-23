@@ -1,3 +1,5 @@
+import { createServer, type Server } from 'node:http';
+import type { AddressInfo, Socket } from 'node:net';
 import { describe, expect, it, vi } from 'vitest';
 import {
   HttpError,
@@ -141,6 +143,27 @@ describe('httpRequest', () => {
     await httpRequest('https://example/api', baseOptions({ fetchImpl }));
 
     expect(fetchImpl).toHaveBeenCalledOnce();
+  });
+
+  it('gives up on a real server that accepts the connection and never answers (#10)', async () => {
+    // The v1 failure mode, end to end with the real `fetch`: the socket opens, no response
+    // ever comes. The call has to end at the timeout instead of awaiting forever.
+    const sockets = new Set<Socket>();
+    const server: Server = createServer(() => {});
+    server.on('connection', (socket) => sockets.add(socket));
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const { port } = server.address() as AddressInfo;
+
+    try {
+      const started = Date.now();
+      await expect(
+        httpRequest(`http://127.0.0.1:${port}/hang`, { timeoutMs: 200, retries: 0 })
+      ).rejects.toThrow(/timed out after 200ms/);
+      expect(Date.now() - started).toBeLessThan(2_000);
+    } finally {
+      for (const socket of sockets) socket.destroy();
+      await new Promise((resolve) => server.close(resolve));
+    }
   });
 
   it('returns the response on success', async () => {
