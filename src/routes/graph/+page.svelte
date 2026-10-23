@@ -4,13 +4,15 @@
   The wallet in `?root=` sits in the middle with its largest senders on the left and its
   largest recipients on the right. The + on a wallet's left shows who paid it; the + on its
   right shows who it paid. Each line is every transfer between two wallets in the period,
-  thicker for more FLUX. The period and minimum amount live in the URL; expansions do not.
+  thicker for more FLUX. The period and minimum amount live in the URL; expansions do not,
+  but a view can be saved as a case (#69), and `?expand=address:in,address:out,…` replays
+  expansions in order when the graph loads — that is how a saved case reopens.
 -->
 <script lang="ts">
   import { goto } from '$app/navigation';
   import { page } from '$app/state';
   import { isAbort } from '$lib/client/api';
-  import { fetchGraph, isAddress } from '$lib/client/endpoints';
+  import { createCase, fetchGraph, isAddress } from '$lib/client/endpoints';
   import { formatCount, formatFlux, formatTime, kindLabel, shortAddress } from '$lib/client/format';
   import {
     MAX_NODES,
@@ -39,6 +41,8 @@
   let graph = $state<GraphState | null>(null);
   let selected = $state<string | null>(null);
   let pending = $state<string[]>([]);
+  /** Expansions made so far, in order: what a saved case replays. */
+  let expansions = $state<string[]>([]);
   let error = $state<string | null>(null);
   let minInput = $state('');
 
@@ -55,12 +59,28 @@
     graph = null;
     selected = address;
     error = null;
+    expansions = [];
 
     fetchGraph({ address, direction: 'both', ...query }, controller.signal)
-      .then((response) => {
+      .then(async (response) => {
         if (controller.signal.aborted) return;
         const node = response.nodes.find((n) => n.address === address);
         graph = merge(emptyGraph(node ?? { address, kind: 'unknown', name: null }), response);
+
+        // Replay a saved view's expansions, one after another (#69).
+        const replay = (page.url.searchParams.get('expand') ?? '')
+          .split(',')
+          .map((key) => key.split(':'))
+          .filter(
+            (parts): parts is [string, 'in' | 'out'] =>
+              parts.length === 2 &&
+              isAddress(parts[0]!) &&
+              (parts[1] === 'in' || parts[1] === 'out')
+          );
+        for (const [wallet, side] of replay) {
+          if (controller.signal.aborted) return;
+          await expand(wallet, side);
+        }
       })
       .catch((reason: unknown) => {
         if (!isAbort(reason)) error = (reason as Error).message;
@@ -75,12 +95,35 @@
     pending = [...pending, key];
     try {
       const response = await fetchGraph({ address, direction: side, period, minAmount });
-      if (graph && graph.root === root) graph = merge(graph, response);
+      if (graph && graph.root === root) {
+        graph = merge(graph, response);
+        if (!expansions.includes(key)) expansions = [...expansions, key];
+      }
       error = null;
     } catch (reason) {
       if (!isAbort(reason)) error = (reason as Error).message;
     } finally {
       pending = pending.filter((entry) => entry !== key);
+    }
+  }
+
+  // Save the view as a case (#69): its wallets and how to rebuild it.
+  let saving = $state(false);
+  let caseName = $state('');
+
+  async function saveCase(event: SubmitEvent): Promise<void> {
+    event.preventDefault();
+    if (!graph) return;
+    const name = caseName.trim() || `Trail from ${label(graph.nodes.get(graph.root)!)}`;
+    try {
+      const { id } = await createCase({
+        name,
+        addresses: [...graph.nodes.keys()],
+        graph: { root: graph.root, period: period ?? null, min: minAmount, expand: expansions }
+      });
+      await goto(`/cases/${id}`);
+    } catch (reason) {
+      error = (reason as Error).message;
     }
   }
 
@@ -219,7 +262,11 @@
           onchange={() => setQuery({ min: Number(minInput) > 0 ? String(Number(minInput)) : null })}
         />
       </label>
-      <button type="button" class="button" onclick={() => setQuery({ period: null, min: null })}>
+      <button
+        type="button"
+        class="button"
+        onclick={() => setQuery({ period: null, min: null, expand: null })}
+      >
         Start again
       </button>
       <ul class="legend" aria-label="Colours">
@@ -228,6 +275,28 @@
         {/each}
       </ul>
     </form>
+
+    {#if graph}
+      {#if saving}
+        <form class="save" onsubmit={saveCase}>
+          <label>
+            <span class="visually-hidden">Case name</span>
+            <input
+              bind:value={caseName}
+              placeholder="Name the case, e.g. Flux paying for its own apps"
+              maxlength="120"
+            />
+          </label>
+          <button type="submit" class="button">Save {graph.nodes.size} wallets as a case</button>
+          <button type="button" class="link" onclick={() => (saving = false)}>Cancel</button>
+        </form>
+      {:else}
+        <p>
+          <button type="button" class="link" onclick={() => (saving = true)}>Save as a case…</button
+          >
+        </p>
+      {/if}
+    {/if}
 
     {#if error}
       <p class="error" role="alert">{error}</p>
@@ -452,6 +521,36 @@
 
   .button:hover {
     border-color: var(--brand);
+  }
+
+  .save {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem 0.75rem;
+    align-items: center;
+  }
+
+  .save label {
+    flex: 1 1 20rem;
+    display: grid;
+  }
+
+  .save input {
+    min-height: 2.5rem;
+    padding: 0.4rem 0.6rem;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-s);
+    background: var(--surface);
+  }
+
+  .link {
+    min-height: 24px;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: var(--brand);
+    text-decoration: underline;
+    cursor: pointer;
   }
 
   .legend {

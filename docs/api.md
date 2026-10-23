@@ -318,6 +318,27 @@ breadth-first from both ends, takes at most 25 counterparties per wallet and sid
 first; `trimmed` counts the wallets that had more) and 1,500 wallets per side; `truncated`
 says when a budget stopped it. Under 250 ms at 6 hops on a synthetic six-month database.
 
+### Investigation workspace (#69)
+
+Your own notes, tags and saved cases. FluxFlow runs for one person on a local network, so
+these need no admin token; every field is validated and size-limited. Notes and tags never
+change a label, a kind or a total.
+
+| Method | Path                  | Body / answer                                                                            |
+| ------ | --------------------- | ---------------------------------------------------------------------------------------- |
+| GET    | `/api/notes/:address` | `{address, note: {note, tags, updatedAt} \| null}`                                       |
+| PUT    | `/api/notes/:address` | `{note?, tags?}` (up to 4,000 characters, 10 tags of 32); clearing both removes the note |
+| GET    | `/api/cases`          | `{cases: [{id, name, description, count, updatedAt}]}`, most recently changed first      |
+| POST   | `/api/cases`          | `{name, description?, addresses?, graph?}` → `201 {id}`                                  |
+| GET    | `/api/cases/:id`      | the case plus `members: [{address, kind, name, note}]`; `404` when there is none         |
+| PATCH  | `/api/cases/:id`      | any of `name`, `description`, `addresses`, `graph` (`null` forgets the saved view)       |
+| DELETE | `/api/cases/:id`      | `{deleted: true}`; notes on its wallets stay                                             |
+
+`graph` is the fund-flow view to reopen: `{root, period, min, expand: ["address:in" | "address:out", …]}`,
+replayed in order by `/graph?root=…&expand=…`. A case holds up to 200 addresses.
+`GET /api/wallets/:address` adds `note` and `cases: [{id, name}]`, and `/api/search` also
+matches note text and tags, returning `note` with each wallet.
+
 ### `GET /api/wallets/:address/sources` and `/destinations`
 
 `?hops=` (1-4, default 3). Source of funds (everything the wallet received, including coinbase

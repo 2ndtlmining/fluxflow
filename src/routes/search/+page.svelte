@@ -57,7 +57,8 @@
   {:else if results.length === 0}
     <p class="muted">
       Nothing matches. Search finds wallets FluxFlow has seen move FLUX to or from an exchange,
-      exchange and other labels by name, and transactions by their full 64-character id.
+      exchange and other labels by name, your own notes and tags, and transactions by their full
+      64-character id.
     </p>
   {:else}
     <ul>
@@ -69,6 +70,17 @@
             </a>
             <span class="muted mono small">{result.address}</span>
             <span class="muted small">{kindLabel(result.kind)}</span>
+            {#if result.note}
+              <!-- The reader's own note and tags (#69), which search also matches. -->
+              <span class="note small">
+                {#each result.note.tags as tag (tag)}<span class="tag">{tag}</span>{/each}
+                {#if result.note.note}<span class="muted"
+                    >{result.note.note.length > 140
+                      ? `${result.note.note.slice(0, 140)}…`
+                      : result.note.note}</span
+                  >{/if}
+              </span>
+            {/if}
           {:else}
             <a href="/tx/{result.txid}" class="name">Transaction in block {result.height}</a>
             <span class="muted mono small">{result.txid}</span>
@@ -80,6 +92,19 @@
 </article>
 
 <style>
+  .note {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.25rem 0.5rem;
+    align-items: baseline;
+  }
+
+  .tag {
+    padding: 0 0.45rem;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+  }
+
   .results {
     display: grid;
     gap: 1rem;

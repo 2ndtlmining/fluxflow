@@ -54,6 +54,19 @@ import { appPayments, walletCounterparties } from './apps.js';
 import { FUNDS_LIMITS, walletFunds } from './funds.js';
 import { GRAPH_LIMITS, flowGraph } from './graph.js';
 import { findPaths, PATH_LIMITS } from './path.js';
+import {
+  WORKSPACE_LIMITS,
+  casesOf,
+  createCase,
+  deleteCase,
+  getCase,
+  getNote,
+  listCases,
+  notesFor,
+  searchNotes,
+  setNote,
+  updateCase
+} from './workspace.js';
 import { TXID_PATTERN, txDetail } from './tx.js';
 import { BalanceCache, balanceHistory } from './balances.js';
 import {
@@ -942,19 +955,115 @@ export function createApiRouter(deps: ApiDependencies): Router {
       return;
     }
 
-    cache.send(req, res, () => ({
-      query: q,
-      results: search(db, q, Number(req.query.limit) || 10).map((result) =>
-        result.type === 'wallet'
-          ? {
-              ...result,
-              name: result.name ?? labels.nameOf(result.address),
-              kind: labels.kindOf(result.address)
-            }
-          : result
-      )
-    }));
+    cache.send(req, res, () => {
+      const limit = Math.min(Math.max(1, Number(req.query.limit) || 10), 25);
+      const found = search(db, q, limit);
+      // Then wallets whose note or tags match (#69), after the label and address matches.
+      if (!/^[0-9a-f]{64}$/i.test(q.trim())) {
+        const seen = new Set(
+          found.map((result) => (result.type === 'wallet' ? result.address : ''))
+        );
+        for (const hit of searchNotes(db, q, limit)) {
+          if (found.length >= limit) break;
+          if (!seen.has(hit.address))
+            found.push({ type: 'wallet', address: hit.address, name: null });
+        }
+      }
+      const notes = notesFor(
+        db,
+        found.flatMap((result) => (result.type === 'wallet' ? [result.address] : []))
+      );
+      return {
+        query: q,
+        results: found.map((result) =>
+          result.type === 'wallet'
+            ? {
+                ...result,
+                name: result.name ?? labels.nameOf(result.address),
+                kind: labels.kindOf(result.address),
+                note: notes.get(result.address) ?? null
+              }
+            : result
+        )
+      };
+    });
   };
+
+  // ── Investigation workspace (#69) ─────────────────────────────────────────
+  // FluxFlow runs for one person on a local network, so these need no admin token (the
+  // owner's call); every field is still validated and size-limited.
+  router.get('/notes/:address', (req: Request, res: Response) => {
+    const address = parseAddress(req, res);
+    if (!address) return;
+    res.json({ address, note: getNote(db, address) });
+  });
+
+  router.put('/notes/:address', (req: Request, res: Response) => {
+    const address = parseAddress(req, res);
+    if (!address) return;
+    const body = noteBody.safeParse(req.body);
+    if (!body.success) {
+      res.status(400).json({ error: 'Invalid body', message: body.error.issues[0]?.message });
+      return;
+    }
+    setNote(db, address, body.data);
+    res.json({ address, note: getNote(db, address) });
+  });
+
+  router.get('/cases', (req: Request, res: Response) => {
+    cache.send(req, res, () => ({ cases: listCases(db) }));
+  });
+
+  router.post('/cases', (req: Request, res: Response) => {
+    const body = caseBody.safeParse(req.body);
+    if (!body.success) {
+      res.status(400).json({ error: 'Invalid body', message: body.error.issues[0]?.message });
+      return;
+    }
+    res.status(201).json({ id: createCase(db, body.data) });
+  });
+
+  router.get('/cases/:id', (req: Request, res: Response) => {
+    const found = getCase(db, req.params.id ?? '');
+    if (!found) {
+      res.status(404).json({ error: 'Not found', message: 'No such case' });
+      return;
+    }
+    cache.send(req, res, () => {
+      const notes = notesFor(db, found.addresses);
+      return {
+        ...found,
+        members: found.addresses.map((address) => ({
+          address,
+          kind: labels.kindOf(address),
+          name: labels.nameOf(address),
+          note: notes.get(address) ?? null
+        }))
+      };
+    });
+  });
+
+  router.patch('/cases/:id', (req: Request, res: Response) => {
+    const body = casePatch.safeParse(req.body);
+    if (!body.success) {
+      res.status(400).json({ error: 'Invalid body', message: body.error.issues[0]?.message });
+      return;
+    }
+    const id = req.params.id ?? '';
+    if (!updateCase(db, id, body.data)) {
+      res.status(404).json({ error: 'Not found', message: 'No such case' });
+      return;
+    }
+    res.json({ id, case: getCase(db, id) });
+  });
+
+  router.delete('/cases/:id', (req: Request, res: Response) => {
+    if (!deleteCase(db, req.params.id ?? '')) {
+      res.status(404).json({ error: 'Not found', message: 'No such case' });
+      return;
+    }
+    res.json({ deleted: true });
+  });
 
   // Registered before `/wallets/:address`, which would otherwise capture "search".
   router.get('/wallets/search', searchRoute);
@@ -1010,6 +1119,8 @@ export function createApiRouter(deps: ApiDependencies): Router {
             }
           : null,
         entity: EntityIndex.build(db, labels).entityOf(address),
+        note: getNote(db, address),
+        cases: casesOf(db, address),
         tags: tagsOf(db, address),
         candidates: listCandidates(db, { address, limit: 10 }),
         recent: walletEvents(db, address, { limit: 20 })
@@ -1481,6 +1592,61 @@ const pathQuery = z.object({
     .refine(isPeriodId, 'Unknown period')
     .optional()
 });
+
+const noteBody = z.object({
+  note: z.string().max(WORKSPACE_LIMITS.noteChars).default(''),
+  tags: z
+    .array(
+      z
+        .string()
+        .trim()
+        .min(1)
+        .max(WORKSPACE_LIMITS.tagChars)
+        .regex(/^[\p{L}\p{N} _.:-]+$/u, 'Tags are letters, digits, spaces and _ . : -')
+    )
+    .max(WORKSPACE_LIMITS.tags)
+    .default([])
+});
+
+const caseGraph = z.object({
+  root: z.string().regex(ADDRESS_PATTERN),
+  period: z
+    .string()
+    .transform((value) => value.toUpperCase())
+    .refine(isPeriodId, 'Unknown period')
+    .nullable()
+    .default(null),
+  min: z.number().min(0).max(1e10).default(0),
+  expand: z
+    .array(z.string().regex(/^t[13][1-9A-HJ-NP-Za-km-z]{33}:(in|out)$/, 'Expected address:in|out'))
+    .max(WORKSPACE_LIMITS.graphExpansions)
+    .default([])
+});
+
+const caseFields = {
+  name: z.string().trim().min(1).max(WORKSPACE_LIMITS.caseName),
+  description: z.string().max(WORKSPACE_LIMITS.caseDescription),
+  addresses: z
+    .array(z.string().regex(ADDRESS_PATTERN, 'Expected FLUX transparent addresses'))
+    .max(WORKSPACE_LIMITS.caseAddresses),
+  graph: caseGraph.nullable()
+};
+
+const caseBody = z.object({
+  name: caseFields.name,
+  description: caseFields.description.default(''),
+  addresses: caseFields.addresses.default([]),
+  graph: caseFields.graph.default(null)
+});
+
+const casePatch = z
+  .object({
+    name: caseFields.name.optional(),
+    description: caseFields.description.optional(),
+    addresses: caseFields.addresses.optional(),
+    graph: caseFields.graph.optional()
+  })
+  .refine((patch) => Object.keys(patch).length > 0, 'Nothing to change');
 
 const graphQuery = z.object({
   address: z.string().regex(ADDRESS_PATTERN, 'Expected a FLUX transparent address'),
