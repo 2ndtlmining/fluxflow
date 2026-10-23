@@ -15,7 +15,7 @@
  *    with a known exchange or Foundation address (which would be wrong).
  *
  * `npm run precision -- <db>` prints the report for a database; CI asserts thresholds on a
- * fixture (`precision.test.ts`).
+ * fixture (`intel.test.ts`, "precision report").
  */
 
 import type { Db } from '../db/database.js';
