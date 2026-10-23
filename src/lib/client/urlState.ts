@@ -92,6 +92,16 @@ export function writeState(state: DashboardState): string {
 }
 
 /**
+ * A link to the transfers behind one breakdown number (#28): the same period and
+ * leaderboard view, with the transaction filters replaced by `filters`, scrolled to the
+ * transfers list.
+ */
+export function transfersHref(state: DashboardState, filters: Partial<TxFilters>): string {
+  const query = writeState({ ...state, filters: { ...EMPTY_FILTERS, ...filters } });
+  return `/${query ? `?${query}` : ''}#tx-heading`;
+}
+
+/**
  * The directions to request for a view: two for `exchange`, none (unfiltered) for `all`.
  * Each entry becomes one stream for the merged pager.
  */
