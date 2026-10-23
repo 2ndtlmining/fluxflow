@@ -188,7 +188,9 @@ describe('the shipped config/labels.json', () => {
     ['t1Xizun9KfWLaJdgt5L62xhh9rmjbUR6LWn', 'team list'],
     ['t1UNoGzKKHsS9aUMaFKsPyHaSDh9SF43q6t', 'team list'],
     ['t3fAayHBRbMyuAM5HyEnpwzFbPgFezXicMh', 'team list'],
-    ['t1M6fBoxfTnCQrSyQVQFq39B2YXeashcbGR', 'team list']
+    ['t1M6fBoxfTnCQrSyQVQFq39B2YXeashcbGR', 'team list'],
+    // InFlux operations wallet: app fees and Foundation money in, round amounts out (#62).
+    ['t3dLRNHYXsRKW4cSec98YDC9G5zjqDN7NRu', '#62']
   ] as const;
   let db: Db;
 
@@ -250,6 +252,19 @@ describe('the shipped config/labels.json', () => {
         .map((label) => label.source)
         .sort()
     ).toEqual(['config', 'node_list']);
+  });
+
+  it('leaves Titan nodes to the node list: users deposit there to host nodes', () => {
+    // Flux controls t3c4Efx…, but the FLUX in it is users' node collateral, not the team's.
+    const TITAN = 't3c4EfxLoXXSRZCRnPRF3RpjPi9mBzF5yoJ';
+    const labels = shipped();
+    expect(labels.kindOf(TITAN)).not.toBe('foundation');
+
+    replaceSourceLabels(db, 'node_list', [
+      { address: TITAN, kind: 'node_operator', confidence: 1 }
+    ]);
+    labels.refresh('node list');
+    expect(labels.kindOf(TITAN)).toBe('node_operator');
   });
 
   it('keeps t1YvimnG… as GateIO, as the owner chose', () => {
